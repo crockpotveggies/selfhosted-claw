@@ -1,5 +1,9 @@
 import { readEnvFile, setEnvFileValues } from './env.js';
-import { CONTROL_SIGNAL_JID, SIGNAL_ACCOUNT, SIGNAL_RPC_URL } from './config.js';
+import {
+  CONTROL_SIGNAL_JID,
+  SIGNAL_ACCOUNT,
+  SIGNAL_RPC_URL,
+} from './config.js';
 import {
   ContactActivitySummary,
   getIncomingContactSummaries,

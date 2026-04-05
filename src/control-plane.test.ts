@@ -205,8 +205,8 @@ describe('control plane parity', () => {
     );
 
     expect(result.running).toBe(true);
-    expect(fs.existsSync(path.join(harness.root, 'signal-compose', '.env'))).toBe(
-      true,
-    );
+    expect(
+      fs.existsSync(path.join(harness.root, 'signal-compose', '.env')),
+    ).toBe(true);
   });
 });

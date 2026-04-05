@@ -125,7 +125,8 @@ export class SignalComposeManager {
 
   constructor(options: SignalComposeManagerOptions = {}) {
     this.composeDir =
-      options.composeDir || path.resolve(process.cwd(), 'scripts', 'signal-cli');
+      options.composeDir ||
+      path.resolve(process.cwd(), 'scripts', 'signal-cli');
     this.composeFile = path.join(this.composeDir, 'docker-compose.yml');
     this.envFile = path.join(this.composeDir, '.env');
     this.dataDir =
@@ -164,8 +165,11 @@ export class SignalComposeManager {
           .map((item) => item.trim())
           .includes('signal-cli');
       } else {
-        lastError = (result.stderr || result.stdout || 'docker compose ps failed')
-          .trim();
+        lastError = (
+          result.stderr ||
+          result.stdout ||
+          'docker compose ps failed'
+        ).trim();
       }
     }
 
@@ -201,14 +205,7 @@ export class SignalComposeManager {
     });
 
     const result = this.runner(
-      [
-        '-f',
-        this.composeFile,
-        '--env-file',
-        this.envFile,
-        'up',
-        '-d',
-      ],
+      ['-f', this.composeFile, '--env-file', this.envFile, 'up', '-d'],
       this.composeDir,
     );
     if (result.status !== 0) {

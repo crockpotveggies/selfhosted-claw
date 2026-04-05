@@ -21,11 +21,12 @@ describe('SignalComposeManager', () => {
 
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(Buffer.from('png-data'), {
-          status: 200,
-          headers: { 'Content-Type': 'image/png' },
-        }),
+      vi.fn(
+        async () =>
+          new Response(Buffer.from('png-data'), {
+            status: 200,
+            headers: { 'Content-Type': 'image/png' },
+          }),
       ),
     );
 
@@ -45,11 +46,12 @@ describe('SignalComposeManager', () => {
       runner: () => ({ stdout: '', stderr: '', status: 0 }),
     });
 
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ message: 'Verification code sent' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ message: 'Verification code sent' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
     );
     vi.stubGlobal('fetch', fetchMock);
 
@@ -80,11 +82,12 @@ describe('SignalComposeManager', () => {
 
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(JSON.stringify({ message: 'Registered successfully' }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ message: 'Registered successfully' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
       ),
     );
 

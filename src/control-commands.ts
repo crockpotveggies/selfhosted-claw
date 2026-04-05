@@ -353,7 +353,9 @@ export class SignalControlCommandParser {
             );
             return { handled: true };
           }
-          await respond('Usage: /signal-compose <status|up> [account] [rpcUrl]');
+          await respond(
+            'Usage: /signal-compose <status|up> [account] [rpcUrl]',
+          );
           return { handled: true };
         }
         case '/audit': {
