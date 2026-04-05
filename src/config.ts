@@ -18,6 +18,13 @@ const envConfig = readEnvFile([
   'SIGNAL_ACCOUNT',
   'SIGNAL_RPC_URL',
   'SIGNAL_RECEIVE_TIMEOUT_SEC',
+  'CONTROL_SIGNAL_JID',
+  'ADMIN_BIND_HOST',
+  'ADMIN_PORT',
+  'ADMIN_UI_TOKEN',
+  'SELF_HOSTED_CLAW_ADMIN_CONFIG_DIR',
+  'SELF_HOSTED_CLAW_ADMIN_DATA_DIR',
+  'INBOUND_GUARD_SCRIPT',
   'TZ',
 ]);
 
@@ -49,6 +56,16 @@ export const SENDER_ALLOWLIST_PATH = path.join(
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
+export const ADMIN_CONFIG_DIR = path.resolve(
+  process.env.SELF_HOSTED_CLAW_ADMIN_CONFIG_DIR ||
+    envConfig.SELF_HOSTED_CLAW_ADMIN_CONFIG_DIR ||
+    path.join(HOME_DIR, '.config', 'self-hosted-claw'),
+);
+export const ADMIN_DATA_DIR = path.resolve(
+  process.env.SELF_HOSTED_CLAW_ADMIN_DATA_DIR ||
+    envConfig.SELF_HOSTED_CLAW_ADMIN_DATA_DIR ||
+    path.join(HOME_DIR, '.local', 'share', 'self-hosted-claw'),
+);
 
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
@@ -100,9 +117,13 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
 );
 export const SIGNAL_RPC_URL =
-  process.env.SIGNAL_RPC_URL || envConfig.SIGNAL_RPC_URL || 'http://127.0.0.1:8080';
+  process.env.SIGNAL_RPC_URL ||
+  envConfig.SIGNAL_RPC_URL ||
+  'http://127.0.0.1:8080';
 export const SIGNAL_ACCOUNT =
   process.env.SIGNAL_ACCOUNT || envConfig.SIGNAL_ACCOUNT || '';
+export const CONTROL_SIGNAL_JID =
+  process.env.CONTROL_SIGNAL_JID || envConfig.CONTROL_SIGNAL_JID || '';
 export const SIGNAL_RECEIVE_TIMEOUT_SEC = Math.max(
   1,
   parseInt(
@@ -112,6 +133,20 @@ export const SIGNAL_RECEIVE_TIMEOUT_SEC = Math.max(
     10,
   ) || 5,
 );
+export const ADMIN_BIND_HOST =
+  process.env.ADMIN_BIND_HOST || envConfig.ADMIN_BIND_HOST || '127.0.0.1';
+export const ADMIN_PORT = Math.max(
+  1,
+  parseInt(process.env.ADMIN_PORT || envConfig.ADMIN_PORT || '3030', 10) ||
+    3030,
+);
+export const ADMIN_UI_TOKEN =
+  process.env.ADMIN_UI_TOKEN || envConfig.ADMIN_UI_TOKEN || '';
+export const ADMIN_PENDING_ACTION_TTL_MS = 15 * 60 * 1000;
+export const INBOUND_GUARD_SCRIPT =
+  process.env.INBOUND_GUARD_SCRIPT ||
+  envConfig.INBOUND_GUARD_SCRIPT ||
+  path.resolve(PROJECT_ROOT, 'scripts', 'inbound-message-guard.mjs');
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

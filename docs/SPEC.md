@@ -1,4 +1,4 @@
-# NanoClaw Specification
+# Self-Hosted Claw Specification
 
 A personal assistant with Signal-first messaging, OpenAI-compatible model backends, persistent per-conversation memory, scheduled tasks, and container-isolated agent execution.
 
@@ -78,7 +78,7 @@ A personal assistant with Signal-first messaging, OpenAI-compatible model backen
 | Channel System | Channel registry (`src/channels/registry.ts`) | Channels self-register at startup |
 | Message Storage | SQLite (better-sqlite3) | Store messages for polling |
 | Container Runtime | Containers (Linux VMs) | Isolated environments for agent execution |
-| Agent | NanoClaw OpenAI-compatible runtime | Run the assistant with native tools and local history management |
+| Agent | Self-Hosted Claw OpenAI-compatible runtime | Run the assistant with native tools and local history management |
 | Browser Automation | agent-browser + Chromium | Web interaction and screenshots |
 | Runtime | Node.js 20+ | Host process for routing and scheduling |
 
@@ -422,7 +422,7 @@ Files with `{{PLACEHOLDER}}` values need to be configured:
 
 ## Memory System
 
-NanoClaw uses a hierarchical memory system based on CLAUDE.md files.
+Self-Hosted Claw uses a hierarchical memory system based on CLAUDE.md files.
 
 ### Memory Hierarchy
 
@@ -555,7 +555,7 @@ This allows the agent to understand the conversation context even if it wasn't m
 
 ## Scheduled Tasks
 
-NanoClaw has a built-in scheduler that runs tasks as full agents in their group's context.
+Self-Hosted Claw has a built-in scheduler that runs tasks as full agents in their group's context.
 
 ### How Scheduling Works
 
@@ -616,7 +616,7 @@ From main channel:
 
 ## MCP Servers
 
-### NanoClaw MCP (built-in)
+### Self-Hosted Claw MCP (built-in)
 
 The `nanoclaw` MCP server is created dynamically per agent call with the current group's context.
 
@@ -636,12 +636,12 @@ The `nanoclaw` MCP server is created dynamically per agent call with the current
 
 ## Deployment
 
-NanoClaw runs as a single macOS launchd service.
+Self-Hosted Claw runs as a single macOS launchd service.
 
 ### Startup Sequence
 
-When NanoClaw starts, it:
-1. **Ensures container runtime is running** - Automatically starts it if needed; kills orphaned NanoClaw containers from previous runs
+When Self-Hosted Claw starts, it:
+1. **Ensures container runtime is running** - Automatically starts it if needed; kills orphaned Self-Hosted Claw containers from previous runs
 2. Initializes the SQLite database (migrates from JSON files if they exist)
 3. Loads state from SQLite (registered groups, sessions, router state)
 4. **Connects channels** — loops through registered channels, instantiates those with credentials, calls `connect()` on each
@@ -763,7 +763,7 @@ chmod 700 groups/
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | No response to messages | Service not running | Check `launchctl list | grep nanoclaw` |
-| "Claude Code process exited with code 1" | Container runtime failed to start | Check logs; NanoClaw auto-starts container runtime but may fail |
+| "Claude Code process exited with code 1" | Container runtime failed to start | Check logs; Self-Hosted Claw auto-starts container runtime but may fail |
 | "Claude Code process exited with code 1" | Session mount path wrong | Ensure mount is to `/home/node/.claude/` not `/root/.claude/` |
 | Session not continuing | Session ID not saved | Check SQLite: `sqlite3 store/messages.db "SELECT * FROM sessions"` |
 | Session not continuing | Mount path mismatch | Container user is `node` with HOME=/home/node; sessions must be at `/home/node/.claude/` |

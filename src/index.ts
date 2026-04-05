@@ -15,6 +15,7 @@ import {
   TIMEZONE,
 } from './config.js';
 import { ensureAgentMemoryFile } from './agent-memory.js';
+import { startAdminServer } from './admin-server.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -45,8 +46,11 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
+import { ControlActionService } from './control-actions.js';
+import { SignalControlCommandParser } from './control-commands.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
+import { sanitizeInboundMessage } from './inbound-guard.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
   restoreRemoteControl,
@@ -160,10 +164,7 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   // identity and instructions from the first run.  (Fixes #1391)
   ensureAgentMemoryFile(
     groupDir,
-    path.join(
-      GROUPS_DIR,
-      group.isMain ? 'main' : 'global',
-    ),
+    path.join(GROUPS_DIR, group.isMain ? 'main' : 'global'),
     ASSISTANT_NAME,
   );
 
@@ -529,6 +530,34 @@ async function main(): Promise<void> {
   }
 
   restoreRemoteControl();
+  const controlService = new ControlActionService();
+
+  const sendHostMessage = async (
+    jid: string,
+    rawText: string,
+    options?: { bypassPause?: boolean },
+  ): Promise<void> => {
+    const channel = findChannel(channels, jid);
+    if (!channel) {
+      logger.warn({ jid }, 'No channel owns JID, cannot send message');
+      return;
+    }
+    if (!options?.bypassPause && controlService.isProviderPaused(channel.name)) {
+      logger.warn(
+        { jid, provider: channel.name },
+        'Outbound message blocked because provider is paused',
+      );
+      return;
+    }
+    const text = formatOutbound(rawText);
+    if (text) await channel.sendMessage(jid, text);
+  };
+
+  const controlCommandParser = new SignalControlCommandParser({
+    service: controlService,
+    sendMessage: (jid, text) => sendHostMessage(jid, text, { bypassPause: true }),
+    registeredGroups: () => registeredGroups,
+  });
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
@@ -583,6 +612,44 @@ async function main(): Promise<void> {
   }
 
   // Channel callbacks (shared by all channels)
+  const storeInboundMessage = async (
+    chatJid: string,
+    msg: NewMessage,
+  ): Promise<void> => {
+    // Sender allowlist drop mode: discard messages from denied senders before storing
+    if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
+      const cfg = loadSenderAllowlist();
+      if (
+        shouldDropMessage(chatJid, cfg) &&
+        !isSenderAllowed(chatJid, msg.sender, cfg)
+      ) {
+        if (cfg.logDenied) {
+          logger.debug(
+            { chatJid, sender: msg.sender },
+            'sender-allowlist: dropping message (drop mode)',
+          );
+        }
+        return;
+      }
+    }
+
+    const sanitized = await sanitizeInboundMessage(msg);
+    if (sanitized.blocked) {
+      logger.warn(
+        { chatJid, sender: msg.sender, reason: sanitized.reason },
+        'Inbound message blocked by guard script',
+      );
+      return;
+    }
+    if (sanitized.reason) {
+      logger.info(
+        { chatJid, sender: msg.sender, reason: sanitized.reason },
+        'Inbound message sanitized by guard script',
+      );
+    }
+    storeMessage(sanitized.message);
+  };
+
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
       // Remote control commands — intercept before storage
@@ -594,23 +661,23 @@ async function main(): Promise<void> {
         return;
       }
 
-      // Sender allowlist drop mode: discard messages from denied senders before storing
-      if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
-        const cfg = loadSenderAllowlist();
-        if (
-          shouldDropMessage(chatJid, cfg) &&
-          !isSenderAllowed(chatJid, msg.sender, cfg)
-        ) {
-          if (cfg.logDenied) {
-            logger.debug(
-              { chatJid, sender: msg.sender },
-              'sender-allowlist: dropping message (drop mode)',
+      if (trimmed.startsWith('/')) {
+        controlCommandParser.handle(chatJid, msg).then(
+          ({ handled }) => {
+            if (handled) return;
+            storeInboundMessage(chatJid, msg).catch((err) =>
+              logger.error({ err, chatJid }, 'Inbound message guard error'),
             );
-          }
-          return;
-        }
+          },
+          (err) =>
+            logger.error({ err, chatJid }, 'Control command handling error'),
+        );
+        return;
       }
-      storeMessage(msg);
+
+      storeInboundMessage(chatJid, msg).catch((err) =>
+        logger.error({ err, chatJid }, 'Inbound message guard error'),
+      );
     },
     onChatMetadata: (
       chatJid: string,
@@ -643,28 +710,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  startAdminServer({ service: controlService });
+
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),
-    sendMessage: async (jid, rawText) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) {
-        logger.warn({ jid }, 'No channel owns JID, cannot send message');
-        return;
-      }
-      const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
-    },
+    sendMessage: (jid, rawText) => sendHostMessage(jid, rawText),
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
-    },
+    sendMessage: (jid, text) => sendHostMessage(jid, text),
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {

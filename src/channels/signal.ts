@@ -147,7 +147,9 @@ export class SignalChannel implements Channel {
     for (const group of groups) {
       const groupId = String(group.id || group.groupId || '').trim();
       if (!groupId) continue;
-      const name = String(group.name || group.title || group.groupName || groupId);
+      const name = String(
+        group.name || group.title || group.groupName || groupId,
+      );
       this.opts.onChatMetadata(
         makeSignalGroupJid(groupId),
         now,
@@ -195,9 +197,7 @@ export class SignalChannel implements Channel {
     }
   }
 
-  private parseEnvelope(
-    rawEnvelope: SignalEnvelope,
-  ): {
+  private parseEnvelope(rawEnvelope: SignalEnvelope): {
     chatJid: string;
     chatName: string;
     isGroup: boolean;

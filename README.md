@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/nanoclaw-logo.png" alt="NanoClaw" width="400">
+  <img src="assets/nanoclaw-logo.png" alt="Self-Hosted Claw" width="400">
 </p>
 
 <p align="center">
@@ -17,17 +17,17 @@
 
 ---
 
-## Why I Built NanoClaw
+## Why I Built Self-Hosted Claw
 
 [OpenClaw](https://github.com/openclaw/openclaw) is an impressive project, but I wouldn't have been able to sleep if I had given complex software I didn't understand full access to my life. OpenClaw has nearly half a million lines of code, 53 config files, and 70+ dependencies. Its security is at the application level (allowlists, pairing codes) rather than true OS-level isolation. Everything runs in one Node process with shared memory.
 
-NanoClaw provides that same core functionality, but in a codebase small enough to understand: one process and a handful of files. Agents run in their own Linux containers with filesystem isolation, not merely behind permission checks.
+Self-Hosted Claw provides that same core functionality, but in a codebase small enough to understand: one process and a handful of files. Agents run in their own Linux containers with filesystem isolation, not merely behind permission checks.
 
 ## Quick Start
 
 ```bash
-gh repo fork qwibitai/nanoclaw --clone
-cd nanoclaw
+gh repo fork crockpotveggies/selfhosted-claw --clone
+cd selfhosted-claw
 npm install
 cp .env.example .env
 ```
@@ -35,9 +35,9 @@ cp .env.example .env
 <details>
 <summary>Without GitHub CLI</summary>
 
-1. Fork [qwibitai/nanoclaw](https://github.com/qwibitai/nanoclaw) on GitHub (click the Fork button)
-2. `git clone https://github.com/<your-username>/nanoclaw.git`
-3. `cd nanoclaw`
+1. Fork [crockpotveggies/selfhosted-claw](https://github.com/crockpotveggies/selfhosted-claw) on GitHub (click the Fork button)
+2. `git clone https://github.com/<your-username>/selfhosted-claw.git`
+3. `cd selfhosted-claw`
 4. `npm install`
 5. `cp .env.example .env`
 
@@ -51,7 +51,7 @@ Then configure your OpenAI-compatible backend and Signal bridge in `.env`, run t
 
 **Secure by isolation.** Agents run in Linux containers (Apple Container on macOS, or Docker) and they can only see what's explicitly mounted. Bash access is safe because commands run inside the container, not on your host.
 
-**Built for the individual user.** NanoClaw isn't a monolithic framework; it's software that fits each user's exact needs. Instead of becoming bloatware, NanoClaw is designed to be bespoke. You make your own fork and tailor it to match your needs.
+**Built for the individual user.** Self-Hosted Claw isn't a monolithic framework; it's software that fits each user's exact needs. Instead of becoming bloatware, Self-Hosted Claw is designed to be bespoke. You make your own fork and tailor it to match your needs.
 
 **Customization = code changes.** No configuration sprawl. Want different behavior? Modify the code. The codebase is small enough that it's safe to make changes.
 
@@ -62,18 +62,18 @@ Then configure your OpenAI-compatible backend and Signal bridge in `.env`, run t
 
 **Skills over features.** Instead of adding every possible integration to the codebase, contributors can still keep their forks specialized and minimal.
 
-**Open backend by default.** NanoClaw now runs against an OpenAI-compatible chat completions backend such as vLLM, with NanoClaw's own tool loop and history management.
+**Open backend by default.** Self-Hosted Claw now runs against an OpenAI-compatible chat completions backend such as vLLM, with Self-Hosted Claw's own tool loop and history management.
 
 ## What It Supports
 
 - **Signal-first messaging** - Signal is the built-in default channel, with support for other channels still available through the channel registry model.
 - **Isolated group context** - Each group has its own `AGENT.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted to it.
 - **Main channel** - Your private channel (self-chat) for admin control; every group is completely isolated
-- **Scheduled tasks** - Recurring jobs that run the NanoClaw agent and can message you back
+- **Scheduled tasks** - Recurring jobs that run the Self-Hosted Claw agent and can message you back
 - **Web access** - Search and fetch content from the Web
 - **Container isolation** - Agents are sandboxed in Docker (macOS/Linux), [Docker Sandboxes](docs/docker-sandboxes.md) (micro VM isolation), or Apple Container (macOS)
 - **Credential security** - Agents can use [OneCLI's Agent Vault](https://github.com/onecli/onecli) for proxied credential injection, or connect directly to a local backend when you do not need proxying.
-- **Native tool loop** - Shell, files, web fetch/search, task controls, and nested delegation are handled by NanoClaw itself instead of a provider SDK
+- **Native tool loop** - Shell, files, web fetch/search, task controls, and nested delegation are handled by Self-Hosted Claw itself instead of a provider SDK
 
 ## Usage
 
@@ -94,7 +94,7 @@ From the main channel (your self-chat), you can manage groups and tasks:
 
 ## Customizing
 
-NanoClaw doesn't use large configuration surfaces. To make changes, edit the small codebase directly:
+Self-Hosted Claw doesn't use large configuration surfaces. To make changes, edit the small codebase directly:
 
 - "Change the trigger word to @Bob"
 - "Remember in the future to make responses shorter and more direct"
@@ -107,7 +107,7 @@ The codebase is small enough to customize safely.
 
 **Don't add features. Add skills.**
 
-If you want to add Telegram support, don't create a PR that adds Telegram to the core codebase. Instead, fork NanoClaw, make the code changes on a branch, and open a PR. We'll create a `skill/telegram` branch from your PR that other users can merge into their fork.
+If you want to add Telegram support, don't create a PR that adds Telegram to the core codebase. Instead, fork Self-Hosted Claw, make the code changes on a branch, and open a PR. We'll create a `skill/telegram` branch from your PR that other users can merge into their fork.
 
 Users then run `/add-telegram` on their fork and get clean code that does exactly what they need, not a bloated system trying to support every use case.
 
@@ -128,7 +128,7 @@ Skills we'd like to see:
 ## Architecture
 
 ```
-Channels --> SQLite --> Polling loop --> Container (NanoClaw OpenAI-compatible runtime) --> Response
+Channels --> SQLite --> Polling loop --> Container (Self-Hosted Claw OpenAI-compatible runtime) --> Response
 ```
 
 Single Node.js process. Channels are added via skills and self-register at startup — the orchestrator connects whichever ones have credentials present. Agents execute in isolated Linux containers with filesystem isolation. Only mounted directories are accessible. Per-group message queue with concurrency control. IPC via filesystem.
@@ -162,11 +162,11 @@ Agents run in containers, not behind application-level permission checks. They c
 
 **Why no configuration files?**
 
-We don't want configuration sprawl. Every user should customize NanoClaw so that the code does exactly what they want, rather than configuring a generic system. If you prefer having config files, you can tell Claude to add them.
+We don't want configuration sprawl. Every user should customize Self-Hosted Claw so that the code does exactly what they want, rather than configuring a generic system. If you prefer having config files, you can tell Claude to add them.
 
 **Can I use third-party or open-source models?**
 
-Yes. NanoClaw supports OpenAI-compatible chat completions endpoints such as vLLM. Set these environment variables in your `.env` file:
+Yes. Self-Hosted Claw supports OpenAI-compatible chat completions endpoints such as vLLM. Set these environment variables in your `.env` file:
 
 ```bash
 OPENAI_BASE_URL=http://127.0.0.1:8000/v1

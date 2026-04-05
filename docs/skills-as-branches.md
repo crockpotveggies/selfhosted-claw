@@ -2,9 +2,9 @@
 
 ## Overview
 
-This document covers **feature skills** — skills that add capabilities via git branch merges. This is the most complex skill type and the primary way NanoClaw is extended.
+This document covers **feature skills** — skills that add capabilities via git branch merges. This is the most complex skill type and the primary way Self-Hosted Claw is extended.
 
-NanoClaw has four types of skills overall. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full taxonomy:
+Self-Hosted Claw has four types of skills overall. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full taxonomy:
 
 | Type | Location | How it works |
 |------|----------|-------------|
@@ -23,9 +23,9 @@ This replaces the previous `skills-engine/` system (three-way file merging, `.na
 
 ### Repository structure
 
-The upstream repo (`qwibitai/nanoclaw`) maintains:
+The upstream repo (`crockpotveggies/selfhosted-claw`) maintains:
 
-- `main` — core NanoClaw (no skill code)
+- `main` — core Self-Hosted Claw (no skill code)
 - `skill/discord` — main + Discord integration
 - `skill/telegram` — main + Telegram integration
 - `skill/slack` — main + Slack integration
@@ -46,7 +46,7 @@ Skills are split into two categories:
 **Feature skills** (in marketplace, installed on demand):
 - `/add-discord`, `/add-telegram`, `/add-slack`, `/add-gmail`, etc.
 - Each has a SKILL.md with setup instructions and a corresponding `skill/*` branch with code
-- Live in the marketplace repo (`qwibitai/nanoclaw-skills`)
+- Live in the marketplace repo (`crockpotveggies/selfhosted-claw-skills`)
 
 Users never interact with the marketplace directly. The operational skills `/setup` and `/customize` handle plugin installation transparently:
 
@@ -70,7 +70,7 @@ Dependent skills (e.g., `telegram-swarm` depends on `telegram`) are only offered
 
 ### Marketplace configuration
 
-NanoClaw's `.claude/settings.json` registers the official marketplace:
+Self-Hosted Claw's `.claude/settings.json` registers the official marketplace:
 
 ```json
 {
@@ -78,7 +78,7 @@ NanoClaw's `.claude/settings.json` registers the official marketplace:
     "nanoclaw-skills": {
       "source": {
         "source": "github",
-        "repo": "qwibitai/nanoclaw-skills"
+        "repo": "crockpotveggies/selfhosted-claw-skills"
       }
     }
   }
@@ -88,7 +88,7 @@ NanoClaw's `.claude/settings.json` registers the official marketplace:
 The marketplace repo uses Claude Code's plugin structure:
 
 ```
-qwibitai/nanoclaw-skills/
+crockpotveggies/selfhosted-claw-skills/
   .claude-plugin/
     marketplace.json              # Plugin catalog
   plugins/
@@ -213,11 +213,11 @@ A GitHub Action runs on every push to `main`:
 
 ### New users (recommended)
 
-1. Fork `qwibitai/nanoclaw` on GitHub (click the Fork button)
+1. Fork `crockpotveggies/selfhosted-claw` on GitHub (click the Fork button)
 2. Clone your fork:
    ```bash
-   git clone https://github.com/<you>/nanoclaw.git
-   cd nanoclaw
+   git clone https://github.com/<you>/selfhosted-claw.git
+   cd selfhosted-claw
    ```
 3. Run Claude Code:
    ```bash
@@ -229,17 +229,17 @@ Forking is recommended because it gives users a remote to push their customizati
 
 ### Existing users migrating from clone
 
-Users who previously ran `git clone https://github.com/qwibitai/nanoclaw.git` and have local customizations:
+Users who previously ran `git clone https://github.com/qwibitai/selfhosted-claw.git` and have local customizations:
 
-1. Fork `qwibitai/nanoclaw` on GitHub
+1. Fork `crockpotveggies/selfhosted-claw` on GitHub
 2. Reroute remotes:
    ```bash
    git remote rename origin upstream
-   git remote add origin https://github.com/<you>/nanoclaw.git
+   git remote add origin https://github.com/<you>/selfhosted-claw.git
    git push --force origin main
    ```
    The `--force` is needed because the fresh fork's main is at upstream's latest, but the user wants their (possibly behind) version. The fork was just created so there's nothing to lose.
-3. From this point, `origin` = their fork, `upstream` = qwibitai/nanoclaw
+3. From this point, `origin` = their fork, `upstream` = crockpotveggies/selfhosted-claw
 
 ### Existing users migrating from the old skills engine
 
@@ -316,7 +316,7 @@ git fetch upstream main
 git checkout -b my-fix upstream/main
 # Make changes
 git push origin my-fix
-# Create PR from my-fix to qwibitai/nanoclaw:main
+# Create PR from my-fix to crockpotveggies/selfhosted-claw:main
 ```
 
 Standard fork contribution workflow. Their custom changes stay on their main and don't leak into the PR.
@@ -327,7 +327,7 @@ The flow below is for **feature skills** (branch-based). For utility skills (sel
 
 ### Contributor flow (feature skills)
 
-1. Fork `qwibitai/nanoclaw`
+1. Fork `crockpotveggies/selfhosted-claw`
 2. Branch from `main`
 3. Make the code changes (new channel file, modified integration points, updated package.json, .env.example additions, etc.)
 4. Open a PR to `main`
@@ -345,7 +345,7 @@ When a skill PR is reviewed and approved:
    ```
 2. Force-push to the contributor's PR branch, replacing it with a single commit that adds the contributor to `CONTRIBUTORS.md` (removing all code changes)
 3. Merge the slimmed PR into `main` (just the contributor addition)
-4. Add the skill's SKILL.md to the marketplace repo (`qwibitai/nanoclaw-skills`)
+4. Add the skill's SKILL.md to the marketplace repo (`crockpotveggies/selfhosted-claw-skills`)
 
 This way:
 - The contributor gets merge credit (their PR is merged)
@@ -374,13 +374,13 @@ Anyone can maintain their own fork with skill branches and their own marketplace
 
 A community contributor:
 
-1. Maintains a fork of NanoClaw (e.g., `alice/nanoclaw`)
+1. Maintains a fork of Self-Hosted Claw (e.g., `alice/selfhosted-claw`)
 2. Creates `skill/*` branches on their fork with their custom skills
-3. Creates a marketplace repo (e.g., `alice/nanoclaw-skills`) with a `.claude-plugin/marketplace.json` and plugin structure
+3. Creates a marketplace repo (e.g., `alice/selfhosted-claw-skills`) with a `.claude-plugin/marketplace.json` and plugin structure
 
 ### Adding a community marketplace
 
-If the community contributor is trusted, they can open a PR to add their marketplace to NanoClaw's `.claude/settings.json`:
+If the community contributor is trusted, they can open a PR to add their marketplace to Self-Hosted Claw's `.claude/settings.json`:
 
 ```json
 {
@@ -388,20 +388,20 @@ If the community contributor is trusted, they can open a PR to add their marketp
     "nanoclaw-skills": {
       "source": {
         "source": "github",
-        "repo": "qwibitai/nanoclaw-skills"
+        "repo": "crockpotveggies/selfhosted-claw-skills"
       }
     },
     "alice-nanoclaw-skills": {
       "source": {
         "source": "github",
-        "repo": "alice/nanoclaw-skills"
+        "repo": "alice/selfhosted-claw-skills"
       }
     }
   }
 }
 ```
 
-Once merged, all NanoClaw users automatically discover the community marketplace alongside the official one.
+Once merged, all Self-Hosted Claw users automatically discover the community marketplace alongside the official one.
 
 ### Installing community skills
 
@@ -421,20 +421,20 @@ Users can also browse and install community plugins manually via `/plugin`.
 - **Multiple marketplaces coexist.** Users see skills from all trusted marketplaces in `/plugin`.
 - **Community skills use the same merge pattern.** The SKILL.md just points to a different remote:
   ```bash
-  git remote add alice https://github.com/alice/nanoclaw.git
+  git remote add alice https://github.com/alice/selfhosted-claw.git
   git fetch alice skill/my-cool-feature
   git merge alice/skill/my-cool-feature
   ```
-- **Users can also add marketplaces manually.** Even without being listed in settings.json, users can run `/plugin marketplace add alice/nanoclaw-skills` to discover skills from any source.
+- **Users can also add marketplaces manually.** Even without being listed in settings.json, users can run `/plugin marketplace add alice/selfhosted-claw-skills` to discover skills from any source.
 - **CI is per-fork.** Each community maintainer runs their own CI to keep their skill branches merged-forward. They can use the same GitHub Action as the upstream repo.
 
 ## Flavors
 
-A flavor is a curated fork of NanoClaw — a combination of skills, custom changes, and configuration tailored for a specific use case (e.g., "NanoClaw for Sales," "NanoClaw Minimal," "NanoClaw for Developers").
+A flavor is a curated fork of Self-Hosted Claw — a combination of skills, custom changes, and configuration tailored for a specific use case (e.g., "Self-Hosted Claw for Sales," "Self-Hosted Claw Minimal," "Self-Hosted Claw for Developers").
 
 ### Creating a flavor
 
-1. Fork `qwibitai/nanoclaw`
+1. Fork `crockpotveggies/selfhosted-claw`
 2. Merge in the skills you want
 3. Make custom changes (trigger word, prompts, integrations, etc.)
 4. Your fork's `main` IS the flavor
@@ -443,15 +443,15 @@ A flavor is a curated fork of NanoClaw — a combination of skills, custom chang
 
 During `/setup`, users are offered a choice of flavors before any configuration happens. The setup skill reads `flavors.yaml` from the repo (shipped with upstream, always up to date) and presents options:
 
-AskUserQuestion: "Start with a flavor or default NanoClaw?"
-- Default NanoClaw
-- NanoClaw for Sales — Gmail + Slack + CRM (maintained by alice)
-- NanoClaw Minimal — Telegram-only, lightweight (maintained by bob)
+AskUserQuestion: "Start with a flavor or default Self-Hosted Claw?"
+- Default Self-Hosted Claw
+- Self-Hosted Claw for Sales — Gmail + Slack + CRM (maintained by alice)
+- Self-Hosted Claw Minimal — Telegram-only, lightweight (maintained by bob)
 
 If a flavor is chosen:
 
 ```bash
-git remote add <flavor-name> https://github.com/alice/nanoclaw.git
+git remote add <flavor-name> https://github.com/alice/selfhosted-claw.git
 git fetch <flavor-name> main
 git merge <flavor-name>/main
 ```
@@ -462,7 +462,7 @@ Then setup continues normally (dependencies, auth, container, service).
 
 After installation, the user's fork has three remotes:
 - `origin` — their fork (push customizations here)
-- `upstream` — `qwibitai/nanoclaw` (core updates)
+- `upstream` — `crockpotveggies/selfhosted-claw` (core updates)
 - `<flavor-name>` — the flavor fork (flavor updates)
 
 ### Updating a flavor
@@ -480,13 +480,13 @@ The flavor maintainer keeps their fork updated (merging upstream, updating skill
 
 ```yaml
 flavors:
-  - name: NanoClaw for Sales
-    repo: alice/nanoclaw
+  - name: Self-Hosted Claw for Sales
+    repo: alice/selfhosted-claw
     description: Gmail + Slack + CRM integration, daily pipeline summaries
     maintainer: alice
 
-  - name: NanoClaw Minimal
-    repo: bob/nanoclaw
+  - name: Self-Hosted Claw Minimal
+    repo: bob/selfhosted-claw
     description: Telegram-only, no container overhead
     maintainer: bob
 ```
@@ -538,16 +538,16 @@ Operational skills (`setup`, `debug`, `update-nanoclaw`, `customize`, `update-sk
 
 Before:
 ```bash
-git clone https://github.com/qwibitai/NanoClaw.git
-cd NanoClaw
+git clone https://github.com/qwibitai/Self-Hosted Claw.git
+cd Self-Hosted Claw
 claude
 ```
 
 After:
 ```
-1. Fork qwibitai/nanoclaw on GitHub
-2. git clone https://github.com/<you>/nanoclaw.git
-3. cd nanoclaw
+1. Fork crockpotveggies/selfhosted-claw on GitHub
+2. git clone https://github.com/<you>/selfhosted-claw.git
+3. cd selfhosted-claw
 4. claude
 5. /setup
 ```
@@ -556,7 +556,7 @@ After:
 
 Updates to the setup flow:
 
-- Check if `upstream` remote exists; if not, add it: `git remote add upstream https://github.com/qwibitai/nanoclaw.git`
+- Check if `upstream` remote exists; if not, add it: `git remote add upstream https://github.com/qwibitai/selfhosted-claw.git`
 - Check if `origin` points to the user's fork (not qwibitai). If it points to qwibitai, guide them through the fork migration.
 - **Install marketplace plugin:** `claude plugin install nanoclaw-skills@nanoclaw-skills --scope project` — makes all feature skills available (hot-loaded, no restart)
 - **Ask which channels to add:** present channel options (Discord, Telegram, Slack, WhatsApp, Gmail), run corresponding `/add-*` skills for selected channels
@@ -573,7 +573,7 @@ Marketplace configuration so the official marketplace is auto-registered:
     "nanoclaw-skills": {
       "source": {
         "source": "github",
-        "repo": "qwibitai/nanoclaw-skills"
+        "repo": "crockpotveggies/selfhosted-claw-skills"
       }
     }
   }
@@ -601,7 +601,7 @@ Operational skills (`setup`, `debug`, `update-nanoclaw`, `customize`, `update-sk
 
 ### New infrastructure
 
-- **Marketplace repo** (`qwibitai/nanoclaw-skills`) — single Claude Code plugin bundling SKILL.md files for all feature skills
+- **Marketplace repo** (`crockpotveggies/selfhosted-claw-skills`) — single Claude Code plugin bundling SKILL.md files for all feature skills
 - **CI GitHub Action** — merge-forward `main` into all `skill/*` branches on every push to `main`, using Claude (Haiku) for conflict resolution
 - **`/update-skills` skill** — checks for and applies skill branch updates using git history
 - **`CONTRIBUTORS.md`** — tracks skill contributors
@@ -639,7 +639,7 @@ Users only need to re-merge a skill branch if the skill itself was updated (not 
 
 > **Skills are now git branches**
 >
-> We've simplified how skills work in NanoClaw. Instead of a custom skills engine, skills are now git branches that you merge in.
+> We've simplified how skills work in Self-Hosted Claw. Instead of a custom skills engine, skills are now git branches that you merge in.
 >
 > **What this means for you:**
 > - Applying a skill: `git fetch upstream skill/discord && git merge upstream/skill/discord`
@@ -650,11 +650,11 @@ Users only need to re-merge a skill branch if the skill itself was updated (not 
 > **We now recommend forking instead of cloning.** This gives you a remote to push your customizations to.
 >
 > **If you currently have a clone with local changes**, migrate to a fork:
-> 1. Fork `qwibitai/nanoclaw` on GitHub
+> 1. Fork `crockpotveggies/selfhosted-claw` on GitHub
 > 2. Run:
 >    ```
 >    git remote rename origin upstream
->    git remote add origin https://github.com/<you>/nanoclaw.git
+>    git remote add origin https://github.com/<you>/selfhosted-claw.git
 >    git push --force origin main
 >    ```
 >    This works even if you're way behind — just push your current state.
@@ -668,10 +668,10 @@ Users only need to re-merge a skill branch if the skill itself was updated (not 
 > **Contributing skills**
 >
 > To contribute a skill:
-> 1. Fork `qwibitai/nanoclaw`
+> 1. Fork `crockpotveggies/selfhosted-claw`
 > 2. Branch from `main` and make your code changes
 > 3. Open a regular PR
 >
 > That's it. We'll create a `skill/<name>` branch from your PR, add you to CONTRIBUTORS.md, and add the SKILL.md to the marketplace. CI automatically keeps skill branches merged-forward with `main` using Claude to resolve any conflicts.
 >
-> **Want to run your own skill marketplace?** Maintain skill branches on your fork and create a marketplace repo. Open a PR to add it to NanoClaw's auto-discovered marketplaces — or users can add it manually via `/plugin marketplace add`.
+> **Want to run your own skill marketplace?** Maintain skill branches on your fork and create a marketplace repo. Open a PR to add it to Self-Hosted Claw's auto-discovered marketplaces — or users can add it manually via `/plugin marketplace add`.

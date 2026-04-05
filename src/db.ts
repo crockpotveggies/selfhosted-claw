@@ -152,15 +152,11 @@ function createSchema(database: Database.Database): void {
 
   // Add reply context columns if they don't exist (migration for existing DBs)
   try {
-    database.exec(
-      `ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT`,
-    );
+    database.exec(`ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT`);
     database.exec(
       `ALTER TABLE messages ADD COLUMN reply_to_message_content TEXT`,
     );
-    database.exec(
-      `ALTER TABLE messages ADD COLUMN reply_to_sender_name TEXT`,
-    );
+    database.exec(`ALTER TABLE messages ADD COLUMN reply_to_sender_name TEXT`);
   } catch {
     /* columns already exist */
   }
@@ -250,6 +246,13 @@ export interface ChatInfo {
   is_group: number;
 }
 
+export interface ContactActivitySummary {
+  sender: string;
+  sender_name: string;
+  last_message_time: string;
+  message_count: number;
+}
+
 /**
  * Get all known chats, ordered by most recent activity.
  */
@@ -263,6 +266,42 @@ export function getAllChats(): ChatInfo[] {
   `,
     )
     .all() as ChatInfo[];
+}
+
+export function getIncomingContactSummaries(): ContactActivitySummary[] {
+  return db
+    .prepare(
+      `
+      SELECT sender,
+             MAX(sender_name) AS sender_name,
+             MAX(timestamp) AS last_message_time,
+             COUNT(*) AS message_count
+      FROM messages
+      WHERE is_from_me = 0 AND is_bot_message = 0
+        AND sender IS NOT NULL AND sender != ''
+      GROUP BY sender
+      ORDER BY last_message_time DESC
+    `,
+    )
+    .all() as ContactActivitySummary[];
+}
+
+export function getMessagesBySender(
+  sender: string,
+  limit: number = 100,
+): NewMessage[] {
+  return db
+    .prepare(
+      `
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me,
+             reply_to_message_id, reply_to_message_content, reply_to_sender_name
+      FROM messages
+      WHERE sender = ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `,
+    )
+    .all(sender, limit) as NewMessage[];
 }
 
 /**

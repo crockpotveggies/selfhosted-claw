@@ -1,0 +1,254 @@
+:root {
+  color-scheme: light;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: #1a1c1a;
+  background:
+    radial-gradient(circle at top left, rgba(222, 237, 213, 0.85), transparent 32%),
+    linear-gradient(160deg, #f8f6ed 0%, #f1f0e6 55%, #e7e3d6 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #304b33;
+  border-radius: 999px;
+  background: #fffef9;
+  color: #193020;
+  cursor: pointer;
+  padding: 0.55rem 1rem;
+}
+
+button:hover {
+  background: #eef5ea;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid #b2b8ab;
+  border-radius: 0.8rem;
+  padding: 0.75rem 0.9rem;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+textarea {
+  resize: vertical;
+}
+
+.shell {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
+  align-items: flex-start;
+  margin-bottom: 1.25rem;
+}
+
+.topbar h1 {
+  margin: 0 0 0.25rem;
+  font-size: clamp(2rem, 4vw, 3.25rem);
+  line-height: 1;
+}
+
+.topbar p {
+  margin: 0;
+  max-width: 48rem;
+}
+
+.tokenBox {
+  min-width: 22rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.65rem;
+  margin: 1rem 0 1.5rem;
+  flex-wrap: wrap;
+}
+
+.tabs button.active {
+  background: #193020;
+  color: #fffef9;
+}
+
+.banner {
+  padding: 0.9rem 1rem;
+  border-radius: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.banner.error {
+  background: rgba(180, 59, 38, 0.12);
+  color: #792714;
+}
+
+.panelGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 1rem;
+}
+
+.panel {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(48, 75, 51, 0.12);
+  border-radius: 1.25rem;
+  padding: 1rem 1.1rem;
+  box-shadow: 0 18px 40px rgba(50, 65, 46, 0.08);
+}
+
+.panelHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.panel h2,
+.panel h3 {
+  margin-top: 0;
+}
+
+.buttonRow {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.contactList,
+.historyList {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.contactRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 0.85rem 1rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(48, 75, 51, 0.15);
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.contactRow.selected {
+  border-color: #193020;
+  background: #eef5ea;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  text-transform: capitalize;
+  font-size: 0.85rem;
+}
+
+.status.trusted {
+  background: rgba(69, 131, 74, 0.12);
+  color: #215928;
+}
+
+.status.unknown {
+  background: rgba(131, 116, 69, 0.12);
+  color: #6d5a10;
+}
+
+.status.abuse {
+  background: rgba(165, 53, 35, 0.12);
+  color: #8b2212;
+}
+
+.historyCard {
+  border: 1px solid rgba(48, 75, 51, 0.12);
+  border-radius: 1rem;
+  padding: 0.85rem 1rem;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.historyMeta {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.92rem;
+}
+
+.plainList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.plainList li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+}
+
+label {
+  display: grid;
+  gap: 0.45rem;
+  margin-bottom: 0.85rem;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  padding: 1rem;
+  border-radius: 1rem;
+  background: #101712;
+  color: #e3f2e1;
+  min-height: 32rem;
+  overflow: auto;
+}
+
+@media (max-width: 980px) {
+  .shell {
+    padding: 1rem;
+  }
+
+  .panelGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    flex-direction: column;
+  }
+
+  .tokenBox {
+    min-width: 0;
+    width: 100%;
+  }
+}

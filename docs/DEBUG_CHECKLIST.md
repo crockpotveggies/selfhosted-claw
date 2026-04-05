@@ -1,4 +1,4 @@
-# NanoClaw Debug Checklist
+# Self-Hosted Claw Debug Checklist
 
 ## Known Issues (2026-02-08)
 
@@ -15,7 +15,7 @@ Both timers fire at the same time, so containers always exit via hard SIGKILL (c
 
 **Symptoms**: `Container exited with code 125: pull access denied for nanoclaw-agent` — the container image disappears overnight or after a few hours, even though you just built it.
 
-**Cause**: If your container runtime has Kubernetes enabled (Rancher Desktop enables it by default), the kubelet runs image garbage collection when disk usage exceeds 85%. NanoClaw containers are ephemeral (run and exit), so `nanoclaw-agent:latest` is never protected by a running container. The kubelet sees it as unused and deletes it — often overnight when no messages are being processed. Other images (docker-compose services) survive because they have long-running containers referencing them.
+**Cause**: If your container runtime has Kubernetes enabled (Rancher Desktop enables it by default), the kubelet runs image garbage collection when disk usage exceeds 85%. Self-Hosted Claw containers are ephemeral (run and exit), so `nanoclaw-agent:latest` is never protected by a running container. The kubelet sees it as unused and deletes it — often overnight when no messages are being processed. Other images (docker-compose services) survive because they have long-running containers referencing them.
 
 **Fix**: Disable Kubernetes if you don't need it:
 ```bash
@@ -32,7 +32,7 @@ grep -i "nanoclaw" ~/Library/Logs/rancher-desktop/k3s.log
 # Look for: "Removing image to free bytes" with the nanoclaw-agent image ID
 ```
 
-Check NanoClaw logs for image status:
+Check Self-Hosted Claw logs for image status:
 ```bash
 grep -E "image found|image NOT found|image missing" logs/nanoclaw.log
 ```
