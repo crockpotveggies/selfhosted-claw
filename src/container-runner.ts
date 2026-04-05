@@ -13,6 +13,12 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  OPENAI_API_KEY,
+  OPENAI_BASE_URL,
+  OPENAI_CONTEXT_WINDOW,
+  OPENAI_MAX_TOKENS,
+  OPENAI_MODEL,
+  OPENAI_TEMPERATURE,
   ONECLI_URL,
   TIMEZONE,
 } from './config.js';
@@ -68,7 +74,7 @@ function buildVolumeMounts(
 
   if (isMain) {
     // Main gets the project root read-only. Writable paths the agent needs
-    // (store, group folder, IPC, .claude/) are mounted separately below.
+    // (store, group folder, IPC, runtime state) are mounted separately below.
     // Read-only prevents the agent from modifying host application code
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
@@ -124,53 +130,12 @@ function buildVolumeMounts(
     }
   }
 
-  // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
-  const groupSessionsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    group.folder,
-    '.claude',
-  );
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
-  const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            // Enable agent swarms (subagent orchestration)
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // Load CLAUDE.md from additional mounted directories
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Enable Claude's memory feature (persists user preferences between sessions)
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-    );
-  }
-
-  // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
-  const skillsDst = path.join(groupSessionsDir, 'skills');
-  if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
-      if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      fs.cpSync(srcDir, dstDir, { recursive: true });
-    }
-  }
+  // Per-group runtime state (history, summaries, archives, ephemeral data).
+  const groupRuntimeStateDir = path.join(DATA_DIR, 'sessions', group.folder);
+  fs.mkdirSync(groupRuntimeStateDir, { recursive: true });
   mounts.push({
-    hostPath: groupSessionsDir,
-    containerPath: '/home/node/.claude',
+    hostPath: groupRuntimeStateDir,
+    containerPath: '/workspace/state',
     readonly: false,
   });
 
@@ -241,6 +206,11 @@ async function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+  args.push('-e', `OPENAI_BASE_URL=${OPENAI_BASE_URL}`);
+  args.push('-e', `OPENAI_MODEL=${OPENAI_MODEL}`);
+  args.push('-e', `OPENAI_MAX_TOKENS=${OPENAI_MAX_TOKENS}`);
+  args.push('-e', `OPENAI_TEMPERATURE=${OPENAI_TEMPERATURE}`);
+  args.push('-e', `OPENAI_CONTEXT_WINDOW=${OPENAI_CONTEXT_WINDOW}`);
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
@@ -255,6 +225,9 @@ async function buildContainerArgs(
       { containerName },
       'OneCLI gateway not reachable — container will have no credentials',
     );
+  }
+  if (!onecliApplied && OPENAI_API_KEY) {
+    args.push('-e', `OPENAI_API_KEY=${OPENAI_API_KEY}`);
   }
 
   // Runtime-specific args for host gateway resolution

@@ -1,12 +1,13 @@
 /**
  * Step: register — Write channel registration config, create group folders.
  *
- * Accepts --channel to specify the messaging platform (whatsapp, telegram, slack, discord).
+ * Accepts --channel to specify the messaging platform (signal, whatsapp, telegram, slack, discord).
  * Uses parameterized SQL queries to prevent injection.
  */
 import fs from 'fs';
 import path from 'path';
 
+import { ensureAgentMemoryFile } from '../src/agent-memory.ts';
 import { STORE_DIR } from '../src/config.ts';
 import { initDatabase, setRegisteredGroup } from '../src/db.ts';
 import { isValidGroupFolder } from '../src/group-folder.ts';
@@ -30,7 +31,7 @@ function parseArgs(args: string[]): RegisterArgs {
     name: '',
     trigger: '',
     folder: '',
-    channel: 'whatsapp', // backward-compat: pre-refactor installs omit --channel
+    channel: 'signal', // Signal is the default channel for new installs
     requiresTrigger: true,
     isMain: false,
     assistantName: 'Andy',
@@ -116,28 +117,17 @@ export async function run(args: string[]): Promise<void> {
     recursive: true,
   });
 
-  // Create CLAUDE.md in the new group folder from template if it doesn't exist.
-  // The agent runs with CWD=/workspace/group and loads CLAUDE.md from there.
-  // Never overwrite an existing CLAUDE.md — users customize these extensively
-  // (persona, workspace structure, communication rules, family context, etc.)
-  // and a stock template replacement would destroy that work.
-  const groupClaudeMdPath = path.join(
-    projectRoot,
-    'groups',
-    parsed.folder,
-    'CLAUDE.md',
+  const groupDir = path.join(projectRoot, 'groups', parsed.folder);
+  const templateDir = parsed.isMain
+    ? path.join(projectRoot, 'groups', 'main')
+    : path.join(projectRoot, 'groups', 'global');
+  const memoryPath = ensureAgentMemoryFile(
+    groupDir,
+    templateDir,
+    parsed.assistantName,
   );
-  if (!fs.existsSync(groupClaudeMdPath)) {
-    const templatePath = parsed.isMain
-      ? path.join(projectRoot, 'groups', 'main', 'CLAUDE.md')
-      : path.join(projectRoot, 'groups', 'global', 'CLAUDE.md');
-    if (fs.existsSync(templatePath)) {
-      fs.copyFileSync(templatePath, groupClaudeMdPath);
-      logger.info(
-        { file: groupClaudeMdPath, template: templatePath },
-        'Created CLAUDE.md from template',
-      );
-    }
+  if (memoryPath) {
+    logger.info({ file: memoryPath, templateDir }, 'Created AGENT.md');
   }
 
   // Update assistant name in CLAUDE.md files if different from default
@@ -151,7 +141,10 @@ export async function run(args: string[]): Promise<void> {
     const groupsDir = path.join(projectRoot, 'groups');
     const mdFiles = fs
       .readdirSync(groupsDir)
-      .map((d) => path.join(groupsDir, d, 'CLAUDE.md'))
+      .flatMap((d) => [
+        path.join(groupsDir, d, 'AGENT.md'),
+        path.join(groupsDir, d, 'CLAUDE.md'),
+      ])
       .filter((f) => fs.existsSync(f));
 
     for (const mdFile of mdFiles) {

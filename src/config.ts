@@ -8,7 +8,16 @@ import { isValidTimezone } from './timezone.js';
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
+  'OPENAI_BASE_URL',
+  'OPENAI_API_KEY',
+  'OPENAI_MODEL',
+  'OPENAI_MAX_TOKENS',
+  'OPENAI_TEMPERATURE',
+  'OPENAI_CONTEXT_WINDOW',
   'ONECLI_URL',
+  'SIGNAL_ACCOUNT',
+  'SIGNAL_RPC_URL',
+  'SIGNAL_RECEIVE_TIMEOUT_SEC',
   'TZ',
 ]);
 
@@ -53,6 +62,33 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
 ); // 10MB default
 export const ONECLI_URL =
   process.env.ONECLI_URL || envConfig.ONECLI_URL || 'http://localhost:10254';
+export const OPENAI_BASE_URL =
+  process.env.OPENAI_BASE_URL ||
+  envConfig.OPENAI_BASE_URL ||
+  'http://127.0.0.1:8000/v1';
+export const OPENAI_API_KEY =
+  process.env.OPENAI_API_KEY || envConfig.OPENAI_API_KEY || '';
+export const OPENAI_MODEL =
+  process.env.OPENAI_MODEL || envConfig.OPENAI_MODEL || 'local-model';
+export const OPENAI_MAX_TOKENS = Math.max(
+  256,
+  parseInt(
+    process.env.OPENAI_MAX_TOKENS || envConfig.OPENAI_MAX_TOKENS || '4096',
+    10,
+  ) || 4096,
+);
+export const OPENAI_TEMPERATURE = Number.parseFloat(
+  process.env.OPENAI_TEMPERATURE || envConfig.OPENAI_TEMPERATURE || '0.2',
+);
+export const OPENAI_CONTEXT_WINDOW = Math.max(
+  OPENAI_MAX_TOKENS,
+  parseInt(
+    process.env.OPENAI_CONTEXT_WINDOW ||
+      envConfig.OPENAI_CONTEXT_WINDOW ||
+      '24000',
+    10,
+  ) || 24000,
+);
 export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,
@@ -62,6 +98,19 @@ export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10);
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
+);
+export const SIGNAL_RPC_URL =
+  process.env.SIGNAL_RPC_URL || envConfig.SIGNAL_RPC_URL || 'http://127.0.0.1:8080';
+export const SIGNAL_ACCOUNT =
+  process.env.SIGNAL_ACCOUNT || envConfig.SIGNAL_ACCOUNT || '';
+export const SIGNAL_RECEIVE_TIMEOUT_SEC = Math.max(
+  1,
+  parseInt(
+    process.env.SIGNAL_RECEIVE_TIMEOUT_SEC ||
+      envConfig.SIGNAL_RECEIVE_TIMEOUT_SEC ||
+      '5',
+    10,
+  ) || 5,
 );
 
 function escapeRegex(str: string): string {

@@ -14,6 +14,12 @@ vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/nanoclaw-test-data',
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
+  OPENAI_API_KEY: '',
+  OPENAI_BASE_URL: 'http://127.0.0.1:8000/v1',
+  OPENAI_CONTEXT_WINDOW: 24000,
+  OPENAI_MAX_TOKENS: 4096,
+  OPENAI_MODEL: 'local-model',
+  OPENAI_TEMPERATURE: 0.2,
   ONECLI_URL: 'http://localhost:10254',
   TIMEZONE: 'America/Los_Angeles',
 }));

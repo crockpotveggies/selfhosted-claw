@@ -101,13 +101,15 @@ export async function run(_args: string[]): Promise<void> {
   const envFile = path.join(projectRoot, '.env');
   if (fs.existsSync(envFile)) {
     const envContent = fs.readFileSync(envFile, 'utf-8');
-    if (/^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ONECLI_URL)=/m.test(envContent)) {
+    if (/^(OPENAI_BASE_URL|OPENAI_API_KEY|OPENAI_MODEL|ONECLI_URL)=/m.test(envContent)) {
       credentials = 'configured';
     }
   }
 
-  // 4. Check channel auth (detect configured channels by credentials)
+  // 4. Check channel auth/config
   const envVars = readEnvFile([
+    'SIGNAL_ACCOUNT',
+    'SIGNAL_RPC_URL',
     'TELEGRAM_BOT_TOKEN',
     'SLACK_BOT_TOKEN',
     'SLACK_APP_TOKEN',
@@ -115,6 +117,12 @@ export async function run(_args: string[]): Promise<void> {
   ]);
 
   const channelAuth: Record<string, string> = {};
+
+  const signalAccount = process.env.SIGNAL_ACCOUNT || envVars.SIGNAL_ACCOUNT;
+  const signalRpcUrl = process.env.SIGNAL_RPC_URL || envVars.SIGNAL_RPC_URL;
+  if (signalAccount && signalRpcUrl) {
+    channelAuth.signal = 'configured';
+  }
 
   // WhatsApp: check for auth credentials on disk
   const authDir = path.join(projectRoot, 'store', 'auth');

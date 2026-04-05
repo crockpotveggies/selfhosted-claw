@@ -32,7 +32,7 @@ No configuration sprawl. If you want different behavior, modify the code. The co
 
 ### AI-Native Development
 
-I don't need an installation wizard - Claude Code guides the setup. I don't need a monitoring dashboard - I ask Claude Code what's happening. I don't need elaborate logging UIs - I ask Claude to read the logs. I don't need debugging tools - I describe the problem and Claude fixes it.
+I don't need an installation wizard. I don't need a monitoring dashboard. I don't need elaborate logging UIs. The codebase stays small enough that the assistant and the operator can inspect it directly.
 
 The codebase assumes you have an AI collaborator. It doesn't need to be excessively self-documenting or self-debugging because Claude is always there.
 
@@ -56,19 +56,19 @@ Skills we'd like to see contributed:
 
 ## Vision
 
-A personal Claude assistant accessible via messaging, with minimal custom code.
+A personal assistant accessible via messaging, with minimal custom code.
 
 **Core components:**
-- **Claude Agent SDK** as the core agent
+- **OpenAI-compatible chat completions backend** as the core model interface
 - **Containers** for isolated agent execution (Linux VMs)
 - **Multi-channel messaging** (WhatsApp, Telegram, Discord, Slack, Gmail) — add exactly the channels you need
 - **Persistent memory** per conversation and globally
-- **Scheduled tasks** that run Claude and can message back
+- **Scheduled tasks** that run the agent and can message back
 - **Web access** for search and browsing
 - **Browser automation** via agent-browser
 
 **Implementation approach:**
-- Use existing tools (channel libraries, Claude Agent SDK, MCP servers)
+- Use existing tools (channel libraries, OpenAI-compatible APIs, minimal host-side IPC)
 - Minimal glue code
 - File-based systems where possible (CLAUDE.md for memory, folders for groups)
 

@@ -143,6 +143,9 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `UPDATE chats SET channel = 'telegram', is_group = 0 WHERE jid LIKE 'tg:%'`,
     );
+    database.exec(
+      `UPDATE chats SET channel = 'signal', is_group = CASE WHEN jid LIKE 'signal:group:%' THEN 1 ELSE 0 END WHERE jid LIKE 'signal:%'`,
+    );
   } catch {
     /* columns already exist */
   }

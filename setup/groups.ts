@@ -11,6 +11,7 @@ import path from 'path';
 import Database from 'better-sqlite3';
 
 import { STORE_DIR } from '../src/config.js';
+import { readEnvFile } from '../src/env.js';
 import { logger } from '../src/logger.js';
 import { emitStatus } from './status.js';
 
@@ -25,6 +26,10 @@ function parseArgs(args: string[]): { list: boolean; limit: number } {
     }
   }
   return { list, limit };
+}
+
+function normalizeSignalIdentifier(value: string): string {
+  return value.replace(/[^\dA-Za-z:+]/g, '').toLowerCase();
 }
 
 export async function run(args: string[]): Promise<void> {
@@ -51,7 +56,7 @@ async function listGroups(limit: number): Promise<void> {
   const rows = db
     .prepare(
       `SELECT jid, name FROM chats
-     WHERE jid LIKE '%@g.us' AND jid <> '__group_sync__' AND name <> jid
+     WHERE jid <> '__group_sync__' AND is_group = 1 AND name <> jid
      ORDER BY last_message_time DESC
      LIMIT ?`,
     )
@@ -64,19 +69,18 @@ async function listGroups(limit: number): Promise<void> {
 }
 
 async function syncGroups(projectRoot: string): Promise<void> {
-  // Only WhatsApp needs an upfront group sync; other channels resolve names at runtime.
-  // Detect WhatsApp by checking for auth credentials on disk.
-  const authDir = path.join(projectRoot, 'store', 'auth');
-  const hasWhatsAppAuth =
-    fs.existsSync(authDir) && fs.readdirSync(authDir).length > 0;
+  const envVars = readEnvFile(['SIGNAL_ACCOUNT', 'SIGNAL_RPC_URL']);
+  const signalAccount = process.env.SIGNAL_ACCOUNT || envVars.SIGNAL_ACCOUNT || '';
+  const signalRpcUrl =
+    process.env.SIGNAL_RPC_URL || envVars.SIGNAL_RPC_URL || 'http://127.0.0.1:8080';
 
-  if (!hasWhatsAppAuth) {
-    logger.info('WhatsApp auth not found — skipping group sync');
+  if (!signalAccount) {
+    logger.info('Signal account not configured — skipping group sync');
     emitStatus('SYNC_GROUPS', {
       BUILD: 'skipped',
       SYNC: 'skipped',
       GROUPS_IN_DB: 0,
-      REASON: 'whatsapp_not_configured',
+      REASON: 'signal_not_configured',
       STATUS: 'success',
       LOG: 'logs/setup.log',
     });
@@ -106,93 +110,58 @@ async function syncGroups(projectRoot: string): Promise<void> {
     process.exit(1);
   }
 
-  // Run sync script via a temp file to avoid shell escaping issues with node -e
   logger.info('Fetching group metadata');
   let syncOk = false;
   try {
-    const syncScript = `
-import makeWASocket, { useMultiFileAuthState, makeCacheableSignalKeyStore, Browsers } from '@whiskeysockets/baileys';
-import pino from 'pino';
-import path from 'path';
-import fs from 'fs';
-import Database from 'better-sqlite3';
+    const response = await fetch(signalRpcUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: `sync-${Date.now()}`,
+        method: 'listGroups',
+        params: {
+          account: signalAccount,
+        },
+      }),
+    });
+    const payload = await response.json();
+    const groups = Array.isArray(payload?.result)
+      ? payload.result
+      : Array.isArray(payload?.result?.groups)
+        ? payload.result.groups
+        : [];
 
-const logger = pino({ level: 'silent' });
-const authDir = path.join('store', 'auth');
-const dbPath = path.join('store', 'messages.db');
-
-if (!fs.existsSync(authDir)) {
-  console.error('NO_AUTH');
-  process.exit(1);
-}
-
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-db.exec('CREATE TABLE IF NOT EXISTS chats (jid TEXT PRIMARY KEY, name TEXT, last_message_time TEXT)');
-
-const upsert = db.prepare(
-  'INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?) ON CONFLICT(jid) DO UPDATE SET name = excluded.name'
-);
-
-const { state, saveCreds } = await useMultiFileAuthState(authDir);
-
-const sock = makeWASocket({
-  auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-  printQRInTerminal: false,
-  logger,
-  browser: Browsers.macOS('Chrome'),
-});
-
-const timeout = setTimeout(() => {
-  console.error('TIMEOUT');
-  process.exit(1);
-}, 30000);
-
-sock.ev.on('creds.update', saveCreds);
-
-sock.ev.on('connection.update', async (update) => {
-  if (update.connection === 'open') {
-    try {
-      const groups = await sock.groupFetchAllParticipating();
-      const now = new Date().toISOString();
-      let count = 0;
-      for (const [jid, metadata] of Object.entries(groups)) {
-        if (metadata.subject) {
-          upsert.run(jid, metadata.subject, now);
-          count++;
-        }
-      }
-      console.log('SYNCED:' + count);
-    } catch (err) {
-      console.error('FETCH_ERROR:' + err.message);
-    } finally {
-      clearTimeout(timeout);
-      sock.end(undefined);
-      db.close();
-      process.exit(0);
+    const dbPath = path.join(STORE_DIR, 'messages.db');
+    const db = new Database(dbPath);
+    db.pragma('journal_mode = WAL');
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS chats (jid TEXT PRIMARY KEY, name TEXT, last_message_time TEXT, channel TEXT, is_group INTEGER DEFAULT 0)',
+    );
+    const upsert = db.prepare(
+      `INSERT INTO chats (jid, name, last_message_time, channel, is_group)
+       VALUES (?, ?, ?, 'signal', 1)
+       ON CONFLICT(jid) DO UPDATE SET
+         name = excluded.name,
+         last_message_time = excluded.last_message_time,
+         channel = 'signal',
+         is_group = 1`,
+    );
+    const now = new Date().toISOString();
+    for (const group of groups) {
+      const groupId = String(group.id || group.groupId || '').trim();
+      if (!groupId) continue;
+      const name = String(group.name || group.title || group.groupName || groupId);
+      upsert.run(
+        `signal:group:${normalizeSignalIdentifier(groupId)}`,
+        name,
+        now,
+      );
     }
-  } else if (update.connection === 'close') {
-    clearTimeout(timeout);
-    console.error('CONNECTION_CLOSED');
-    process.exit(1);
-  }
-});
-`;
-
-    const tmpScript = path.join(projectRoot, '.tmp-group-sync.mjs');
-    fs.writeFileSync(tmpScript, syncScript, 'utf-8');
-    try {
-      const output = execSync(`node ${tmpScript}`, {
-        cwd: projectRoot,
-        encoding: 'utf-8',
-        timeout: 45000,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      syncOk = output.includes('SYNCED:');
-      logger.info({ output: output.trim() }, 'Sync output');
-    } finally {
-      try { fs.unlinkSync(tmpScript); } catch { /* ignore cleanup errors */ }
-    }
+    db.close();
+    syncOk = response.ok;
   } catch (err) {
     logger.error({ err }, 'Sync failed');
   }
@@ -205,7 +174,7 @@ sock.ev.on('connection.update', async (update) => {
       const db = new Database(dbPath, { readonly: true });
       const row = db
         .prepare(
-          "SELECT COUNT(*) as count FROM chats WHERE jid LIKE '%@g.us' AND jid <> '__group_sync__'",
+          "SELECT COUNT(*) as count FROM chats WHERE channel = 'signal' AND is_group = 1 AND jid <> '__group_sync__'",
         )
         .get() as { count: number };
       groupsInDb = row.count;

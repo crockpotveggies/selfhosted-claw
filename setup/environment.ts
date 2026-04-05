@@ -8,6 +8,7 @@ import path from 'path';
 import Database from 'better-sqlite3';
 
 import { STORE_DIR } from '../src/config.js';
+import { readEnvFile } from '../src/env.js';
 import { logger } from '../src/logger.js';
 import { commandExists, getPlatform, isHeadless, isWSL } from './platform.js';
 import { emitStatus } from './status.js';
@@ -38,6 +39,26 @@ export async function run(_args: string[]): Promise<void> {
       docker = 'installed_not_running';
     }
   }
+
+  const signalCli = commandExists('signal-cli');
+  const envVars = readEnvFile([
+    'OPENAI_BASE_URL',
+    'OPENAI_MODEL',
+    'SIGNAL_ACCOUNT',
+    'SIGNAL_RPC_URL',
+  ]);
+  const hasOpenAIConfig = !!(
+    process.env.OPENAI_BASE_URL ||
+    envVars.OPENAI_BASE_URL ||
+    process.env.OPENAI_MODEL ||
+    envVars.OPENAI_MODEL
+  );
+  const hasSignalConfig = !!(
+    process.env.SIGNAL_ACCOUNT ||
+    envVars.SIGNAL_ACCOUNT ||
+    process.env.SIGNAL_RPC_URL ||
+    envVars.SIGNAL_RPC_URL
+  );
 
   // Check existing config
   const hasEnv = fs.existsSync(path.join(projectRoot, '.env'));
@@ -72,8 +93,11 @@ export async function run(_args: string[]): Promise<void> {
       wsl,
       appleContainer,
       docker,
+      signalCli,
       hasEnv,
       hasAuth,
+      hasOpenAIConfig,
+      hasSignalConfig,
       hasRegisteredGroups,
     },
     'Environment check complete',
@@ -85,8 +109,11 @@ export async function run(_args: string[]): Promise<void> {
     IS_HEADLESS: headless,
     APPLE_CONTAINER: appleContainer,
     DOCKER: docker,
+    SIGNAL_CLI: signalCli,
     HAS_ENV: hasEnv,
     HAS_AUTH: hasAuth,
+    HAS_OPENAI_CONFIG: hasOpenAIConfig,
+    HAS_SIGNAL_CONFIG: hasSignalConfig,
     HAS_REGISTERED_GROUPS: hasRegisteredGroups,
     STATUS: 'success',
     LOG: 'logs/setup.log',
