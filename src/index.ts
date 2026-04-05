@@ -542,7 +542,10 @@ async function main(): Promise<void> {
       logger.warn({ jid }, 'No channel owns JID, cannot send message');
       return;
     }
-    if (!options?.bypassPause && controlService.isProviderPaused(channel.name)) {
+    if (
+      !options?.bypassPause &&
+      controlService.isProviderPaused(channel.name)
+    ) {
       logger.warn(
         { jid, provider: channel.name },
         'Outbound message blocked because provider is paused',
@@ -555,7 +558,8 @@ async function main(): Promise<void> {
 
   const controlCommandParser = new SignalControlCommandParser({
     service: controlService,
-    sendMessage: (jid, text) => sendHostMessage(jid, text, { bypassPause: true }),
+    sendMessage: (jid, text) =>
+      sendHostMessage(jid, text, { bypassPause: true }),
     registeredGroups: () => registeredGroups,
   });
 

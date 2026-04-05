@@ -104,6 +104,11 @@ textarea {
   color: #792714;
 }
 
+.banner.warn {
+  background: rgba(162, 123, 17, 0.12);
+  color: #7a5b07;
+}
+
 .panelGrid {
   display: grid;
   grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
@@ -127,6 +132,14 @@ textarea {
   margin-bottom: 1rem;
 }
 
+.setupBadge {
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(25, 48, 32, 0.1);
+  color: #193020;
+  font-size: 0.85rem;
+}
+
 .panel h2,
 .panel h3 {
   margin-top: 0;
@@ -138,6 +151,82 @@ textarea {
   flex-wrap: wrap;
   align-items: center;
   margin-bottom: 1rem;
+}
+
+.wizardCard {
+  display: grid;
+  gap: 1rem;
+}
+
+.wizardProgress {
+  display: inline-flex;
+  width: fit-content;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(25, 48, 32, 0.08);
+  color: #193020;
+  font-size: 0.85rem;
+}
+
+.wizardLead {
+  margin: 0;
+  max-width: 60rem;
+}
+
+.wizardBody {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.wizardActions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.wizardGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.hintBox {
+  border: 1px solid rgba(48, 75, 51, 0.12);
+  border-radius: 1rem;
+  padding: 0.85rem 1rem;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.hintBox p:last-child {
+  margin-bottom: 0;
+}
+
+.checklist {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.checklist .ok,
+.checklist .warn {
+  border-radius: 0.9rem;
+  padding: 0.7rem 0.9rem;
+}
+
+.checklist .ok {
+  background: rgba(69, 131, 74, 0.12);
+  color: #215928;
+}
+
+.checklist .warn {
+  background: rgba(162, 123, 17, 0.12);
+  color: #7a5b07;
+}
+
+.smallPre {
+  min-height: 0;
+  margin-top: 0.75rem;
+  font-size: 0.92rem;
 }
 
 .contactList,
@@ -250,5 +339,14 @@ pre {
   .tokenBox {
     min-width: 0;
     width: 100%;
+  }
+
+  .wizardGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .wizardActions {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

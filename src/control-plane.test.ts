@@ -29,7 +29,10 @@ function createHarness() {
   const groupsDir = path.join(root, 'groups');
   fs.mkdirSync(path.join(groupsDir, 'global'), { recursive: true });
   fs.mkdirSync(path.join(groupsDir, 'main'), { recursive: true });
-  fs.writeFileSync(path.join(groupsDir, 'global', 'AGENT.md'), '# Base global\n');
+  fs.writeFileSync(
+    path.join(groupsDir, 'global', 'AGENT.md'),
+    '# Base global\n',
+  );
   fs.writeFileSync(path.join(groupsDir, 'main', 'AGENT.md'), '# Base main\n');
   process.env.SELF_HOSTED_CLAW_GROUPS_DIR = groupsDir;
 
@@ -117,7 +120,10 @@ describe('control plane parity', () => {
 
     await harness.parser.handle(
       'signal:user:+15550009999',
-      makeMessage('+15550001111', '/personality set global tone calm and careful'),
+      makeMessage(
+        '+15550001111',
+        '/personality set global tone calm and careful',
+      ),
     );
 
     const pendingMessage = harness.sent.at(-1)?.text || '';

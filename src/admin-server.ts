@@ -2,11 +2,7 @@ import fs from 'fs';
 import http from 'http';
 import path from 'path';
 
-import {
-  ADMIN_BIND_HOST,
-  ADMIN_PORT,
-  ADMIN_UI_TOKEN,
-} from './config.js';
+import { ADMIN_BIND_HOST, ADMIN_PORT, ADMIN_UI_TOKEN } from './config.js';
 import { ControlActionService } from './control-actions.js';
 import { logger } from './logger.js';
 
@@ -70,10 +66,75 @@ export function startAdminServer(
         }
       }
 
-      const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+      const url = new URL(
+        req.url || '/',
+        `http://${req.headers.host || 'localhost'}`,
+      );
 
       if (req.method === 'GET' && url.pathname === '/api/admin/health') {
         sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/admin/setup-status') {
+        const env = options.service.getSetupEnvironment();
+        const signalConfigured = Boolean(env.SIGNAL_ACCOUNT && env.SIGNAL_RPC_URL);
+        let signalReachable = false;
+        if (signalConfigured) {
+          try {
+            const response = await fetch(env.SIGNAL_RPC_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                jsonrpc: '2.0',
+                id: `setup-${Date.now()}`,
+                method: 'listGroups',
+                params: {
+                  account: env.SIGNAL_ACCOUNT,
+                },
+              }),
+            });
+            signalReachable = response.ok;
+          } catch {
+            signalReachable = false;
+          }
+        }
+
+        sendJson(res, 200, {
+          env: {
+            ASSISTANT_NAME: env.ASSISTANT_NAME || '',
+            OPENAI_BASE_URL: env.OPENAI_BASE_URL || '',
+            OPENAI_MODEL: env.OPENAI_MODEL || '',
+            OPENAI_MAX_TOKENS: env.OPENAI_MAX_TOKENS || '',
+            OPENAI_TEMPERATURE: env.OPENAI_TEMPERATURE || '',
+            SIGNAL_ACCOUNT: env.SIGNAL_ACCOUNT || '',
+            SIGNAL_RPC_URL: env.SIGNAL_RPC_URL || '',
+            SIGNAL_RECEIVE_TIMEOUT_SEC: env.SIGNAL_RECEIVE_TIMEOUT_SEC || '',
+            CONTROL_SIGNAL_JID: env.CONTROL_SIGNAL_JID || '',
+            ONECLI_URL: env.ONECLI_URL || '',
+            ADMIN_BIND_HOST: env.ADMIN_BIND_HOST || '',
+            ADMIN_PORT: env.ADMIN_PORT || '',
+            INBOUND_GUARD_SCRIPT: env.INBOUND_GUARD_SCRIPT || '',
+            OPENAI_API_KEY_SET: Boolean(env.OPENAI_API_KEY),
+            ADMIN_UI_TOKEN_SET: Boolean(env.ADMIN_UI_TOKEN),
+          },
+          checks: {
+            openAIConfigured: Boolean(env.OPENAI_BASE_URL && env.OPENAI_MODEL),
+            signalConfigured,
+            signalReachable,
+            controlChatConfigured: Boolean(env.CONTROL_SIGNAL_JID),
+            verifiedIdentityCount: options.service.listVerifiedIdentities().length,
+            assistantSignalConfigured: Boolean(
+              options.service.getSettings().assistantSignalIdentity ||
+                env.SIGNAL_ACCOUNT,
+            ),
+            wizardComplete:
+              Boolean(env.OPENAI_BASE_URL && env.OPENAI_MODEL) &&
+              signalConfigured &&
+              Boolean(env.CONTROL_SIGNAL_JID) &&
+              options.service.listVerifiedIdentities().length > 0,
+          },
+        });
         return;
       }
 
@@ -103,7 +164,10 @@ export function startAdminServer(
         return;
       }
 
-      if (req.method === 'GET' && url.pathname === '/api/admin/verified-identities') {
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/verified-identities'
+      ) {
         sendJson(res, 200, {
           verifiedIdentities: options.service.listVerifiedIdentities(),
         });
@@ -176,10 +240,10 @@ export function startAdminServer(
         const relativePath =
           url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
         const candidate = path.resolve(uiDistDir, relativePath);
-        const filePath = fs.existsSync(candidate)
-          && candidate.startsWith(uiDistDir)
-          ? candidate
-          : path.join(uiDistDir, 'index.html');
+        const filePath =
+          fs.existsSync(candidate) && candidate.startsWith(uiDistDir)
+            ? candidate
+            : path.join(uiDistDir, 'index.html');
         const ext = path.extname(filePath);
         const contentType =
           ext === '.js'

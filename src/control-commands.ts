@@ -1,13 +1,7 @@
 import { ControlActionService } from './control-actions.js';
 import { canonicalizeIdentity } from './control-identities.js';
-import {
-  ContactDetailView,
-  ContactView,
-} from './control-actions.js';
-import {
-  ControlPolicy,
-  VerifiedIdentity,
-} from './control-types.js';
+import { ContactDetailView, ContactView } from './control-actions.js';
+import { ControlPolicy, VerifiedIdentity } from './control-types.js';
 import { NewMessage, RegisteredGroup } from './types.js';
 
 interface CommandHandleResult {
@@ -22,7 +16,9 @@ interface SignalControlCommandDeps {
 
 function parseScope(value: string): 'global' | 'main' | `group:${string}` {
   if (value === 'global' || value === 'main') return value;
-  return value.startsWith('group:') ? (value as `group:${string}`) : `group:${value}`;
+  return value.startsWith('group:')
+    ? (value as `group:${string}`)
+    : `group:${value}`;
 }
 
 function formatContact(contact: {
@@ -73,23 +69,23 @@ export class SignalControlCommandParser {
           const sub = parts[1];
           const identity = parts[2];
           if (!sub || !identity) {
-            await respond('Usage: /contact <show|trust|abuse|reset|reclassify> <identity>');
+            await respond(
+              'Usage: /contact <show|trust|abuse|reset|reclassify> <identity>',
+            );
             return { handled: true };
           }
           if (sub === 'show') {
             const contact = this.deps.service.getContact(identity);
-            await respond(contact ? formatContact(contact) : 'Contact not found.');
+            await respond(
+              contact ? formatContact(contact) : 'Contact not found.',
+            );
             return { handled: true };
           }
           if (sub === 'trust') {
             const contact = await this.deps.service.executeAction<
               { identity: string },
               ContactView
-            >(
-              'contact.trust',
-              { identity },
-              context,
-            );
+            >('contact.trust', { identity }, context);
             await respond(`Trusted contact.\n\n${formatContact(contact)}`);
             return { handled: true };
           }
@@ -97,11 +93,7 @@ export class SignalControlCommandParser {
             const contact = await this.deps.service.executeAction<
               { identity: string },
               ContactView
-            >(
-              'contact.abuse',
-              { identity },
-              context,
-            );
+            >('contact.abuse', { identity }, context);
             await respond(`Marked as abuse.\n\n${formatContact(contact)}`);
             return { handled: true };
           }
@@ -109,11 +101,7 @@ export class SignalControlCommandParser {
             const contact = await this.deps.service.executeAction<
               { identity: string },
               ContactView
-            >(
-              'contact.reset',
-              { identity },
-              context,
-            );
+            >('contact.reset', { identity }, context);
             await respond(`Reset contact.\n\n${formatContact(contact)}`);
             return { handled: true };
           }
@@ -121,11 +109,7 @@ export class SignalControlCommandParser {
             const contact = await this.deps.service.executeAction<
               { identity: string },
               ContactDetailView
-            >(
-              'contact.reclassify',
-              { identity },
-              context,
-            );
+            >('contact.reclassify', { identity }, context);
             await respond(`Reclassified contact.\n\n${formatContact(contact)}`);
             return { handled: true };
           }
@@ -177,23 +161,19 @@ export class SignalControlCommandParser {
               const result = await this.deps.service.executeAction<
                 { identity: string; label: string },
                 VerifiedIdentity[]
-              >(
-                'verified.add',
-                { identity, label },
-                context,
+              >('verified.add', { identity, label }, context);
+              await respond(
+                `Verified identities updated (${result.length} total).`,
               );
-              await respond(`Verified identities updated (${result.length} total).`);
               return { handled: true };
             }
             const result = await this.deps.service.executeAction<
               { identity: string },
               VerifiedIdentity[]
-            >(
-              'verified.remove',
-              { identity },
-              context,
+            >('verified.remove', { identity }, context);
+            await respond(
+              `Verified identities updated (${result.length} total).`,
             );
-            await respond(`Verified identities updated (${result.length} total).`);
             return { handled: true };
           }
           await respond('Usage: /verified <list|add|remove> ...');
@@ -260,9 +240,7 @@ export class SignalControlCommandParser {
             );
             return { handled: true };
           }
-          await respond(
-            'Usage: /personality <show|set|append|reset> ...',
-          );
+          await respond('Usage: /personality <show|set|append|reset> ...');
           return { handled: true };
         }
         case '/policy': {
@@ -276,7 +254,10 @@ export class SignalControlCommandParser {
             );
             return { handled: true };
           }
-          if ((sub === 'pause-outbound' || sub === 'resume-outbound') && parts[2]) {
+          if (
+            (sub === 'pause-outbound' || sub === 'resume-outbound') &&
+            parts[2]
+          ) {
             const provider = parts[2];
             const actionName =
               sub === 'pause-outbound'
@@ -285,11 +266,7 @@ export class SignalControlCommandParser {
             const policy = await this.deps.service.executeAction<
               { provider: string },
               ControlPolicy
-            >(
-              actionName,
-              { provider },
-              context,
-            );
+            >(actionName, { provider }, context);
             await respond(
               policy.pausedProviders.length === 0
                 ? 'No providers are paused.'
@@ -311,7 +288,27 @@ export class SignalControlCommandParser {
             );
             return { handled: true };
           }
-          if ((sub === 'set-control-chat' || sub === 'set-assistant-signal') && parts[2]) {
+          if (sub === 'env' && parts[2] && parts[3]) {
+            const key = parts[2];
+            const value = parts.slice(3).join(' ').trim();
+            if (!value) {
+              await respond('Usage: /settings env <KEY> <value>');
+              return { handled: true };
+            }
+            const pending = this.deps.service.previewAction(
+              'settings.updateEnv',
+              { values: { [key]: value } },
+              context,
+            );
+            await respond(
+              `Pending environment change created.\nID: ${pending.id}\nApprove with /approve ${pending.id}`,
+            );
+            return { handled: true };
+          }
+          if (
+            (sub === 'set-control-chat' || sub === 'set-assistant-signal') &&
+            parts[2]
+          ) {
             const pending = this.deps.service.previewAction(
               'settings.update',
               sub === 'set-control-chat'
@@ -325,7 +322,7 @@ export class SignalControlCommandParser {
             return { handled: true };
           }
           await respond(
-            'Usage: /settings <show|set-control-chat|set-assistant-signal> ...',
+            'Usage: /settings <show|env|set-control-chat|set-assistant-signal> ...',
           );
           return { handled: true };
         }
@@ -368,7 +365,10 @@ export class SignalControlCommandParser {
             await respond('Usage: /approve <pending-id>');
             return { handled: true };
           }
-          const result = await this.deps.service.approvePending(parts[1], context);
+          const result = await this.deps.service.approvePending(
+            parts[1],
+            context,
+          );
           await respond(result.message);
           return { handled: true };
         }
@@ -386,7 +386,9 @@ export class SignalControlCommandParser {
       }
     } catch (err) {
       await respond(
-        err instanceof Error ? `Control command failed: ${err.message}` : 'Control command failed.',
+        err instanceof Error
+          ? `Control command failed: ${err.message}`
+          : 'Control command failed.',
       );
       return { handled: true };
     }

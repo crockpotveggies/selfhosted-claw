@@ -1,3 +1,4 @@
+import { readEnvFile, setEnvFileValues } from './env.js';
 import { CONTROL_SIGNAL_JID, SIGNAL_ACCOUNT } from './config.js';
 import {
   ContactActivitySummary,
@@ -5,7 +6,11 @@ import {
   getMessagesBySender,
 } from './db.js';
 import { canonicalizeIdentity, displayIdentity } from './control-identities.js';
-import { previewPersonalityProfile, resolveProfile, writePersonalityProfile } from './control-personality.js';
+import {
+  previewPersonalityProfile,
+  resolveProfile,
+  writePersonalityProfile,
+} from './control-personality.js';
 import { ControlStore } from './control-store.js';
 import {
   ContactClassificationEntry,
@@ -66,6 +71,10 @@ interface PolicyProviderInput {
 interface SettingsInput {
   controlSignalJid?: string;
   assistantSignalIdentity?: string;
+}
+
+interface EnvUpdateInput {
+  values: Record<string, string>;
 }
 
 interface ActionResultEnvelope<TResult> {
@@ -135,7 +144,10 @@ function buildClassificationEntry(
   };
 }
 
-function defaultContact(identity: string, displayName?: string): ControlContact {
+function defaultContact(
+  identity: string,
+  displayName?: string,
+): ControlContact {
   const now = nowIso();
   return {
     id: identity,
@@ -158,9 +170,10 @@ function normalizeScope(scope: string): PersonalityScope {
   return `group:${scope}`;
 }
 
-function classifyMessages(
-  messages: Array<{ content: string }>,
-): { label: ContactStatus; reasons: string[] } {
+function classifyMessages(messages: Array<{ content: string }>): {
+  label: ContactStatus;
+  reasons: string[];
+} {
   if (messages.length === 0) {
     return { label: 'unknown', reasons: ['No message history available'] };
   }
@@ -186,8 +199,9 @@ function classifyMessages(
   const linkMatches = combined.match(/https?:\/\//g) || [];
   if (linkMatches.length >= 2) reasons.push('Contains multiple links');
 
-  const repeated = new Set(messages.map((message) => message.content.trim()))
-    .size <= Math.max(1, Math.floor(messages.length / 2));
+  const repeated =
+    new Set(messages.map((message) => message.content.trim())).size <=
+    Math.max(1, Math.floor(messages.length / 2));
   if (messages.length >= 3 && repeated) {
     reasons.push('Repeated message content');
   }
@@ -294,7 +308,9 @@ export class ControlActionService {
           ...contact,
           status: classification.label,
           trustSource:
-            classification.label === 'abuse' ? 'classification' : contact.trustSource,
+            classification.label === 'abuse'
+              ? 'classification'
+              : contact.trustSource,
           classificationSummary: summarizeStatus(
             classification.label,
             classification.reasons,
@@ -550,6 +566,49 @@ export class ControlActionService {
         };
       },
     });
+
+    this.register<EnvUpdateInput, { updatedKeys: string[] }>({
+      name: 'settings.updateEnv',
+      requiredTrust: 'owner_verified',
+      commandableAction: true,
+      previewable: true,
+      summarizeInput: (input) =>
+        `Update environment keys ${Object.keys(input.values).join(', ')}`,
+      execute: async (input) => {
+        const allowedKeys = new Set([
+          'ASSISTANT_NAME',
+          'OPENAI_BASE_URL',
+          'OPENAI_API_KEY',
+          'OPENAI_MODEL',
+          'OPENAI_MAX_TOKENS',
+          'OPENAI_TEMPERATURE',
+          'OPENAI_CONTEXT_WINDOW',
+          'SIGNAL_ACCOUNT',
+          'SIGNAL_RPC_URL',
+          'SIGNAL_RECEIVE_TIMEOUT_SEC',
+          'CONTROL_SIGNAL_JID',
+          'ONECLI_URL',
+          'ADMIN_BIND_HOST',
+          'ADMIN_PORT',
+          'ADMIN_UI_TOKEN',
+          'INBOUND_GUARD_SCRIPT',
+        ]);
+        const filtered = Object.fromEntries(
+          Object.entries(input.values).filter(([key]) => allowedKeys.has(key)),
+        );
+        if (Object.keys(filtered).length === 0) {
+          throw new Error('No allowed environment keys provided');
+        }
+        const before = this.getSetupEnvironment();
+        setEnvFileValues(filtered);
+        const after = this.getSetupEnvironment();
+        return {
+          result: { updatedKeys: Object.keys(filtered) },
+          beforeState: stableStringify(this.redactEnvSnapshot(before)),
+          afterState: stableStringify(this.redactEnvSnapshot(after)),
+        };
+      },
+    });
   }
 
   private register<TInput, TResult>(
@@ -570,6 +629,27 @@ export class ControlActionService {
         stored.assistantSignalIdentity || SIGNAL_ACCOUNT || '',
       updatedAt: stored.updatedAt,
     };
+  }
+
+  getSetupEnvironment(): Record<string, string> {
+    return readEnvFile([
+      'ASSISTANT_NAME',
+      'OPENAI_BASE_URL',
+      'OPENAI_API_KEY',
+      'OPENAI_MODEL',
+      'OPENAI_MAX_TOKENS',
+      'OPENAI_TEMPERATURE',
+      'OPENAI_CONTEXT_WINDOW',
+      'SIGNAL_ACCOUNT',
+      'SIGNAL_RPC_URL',
+      'SIGNAL_RECEIVE_TIMEOUT_SEC',
+      'CONTROL_SIGNAL_JID',
+      'ONECLI_URL',
+      'ADMIN_BIND_HOST',
+      'ADMIN_PORT',
+      'ADMIN_UI_TOKEN',
+      'INBOUND_GUARD_SCRIPT',
+    ]);
   }
 
   getPolicy(): ControlPolicy {
@@ -604,8 +684,17 @@ export class ControlActionService {
     const definition = this.definitions.get(name);
     if (!definition) throw new Error(`Unknown action: ${name}`);
     this.requireOwnerVerified(context);
-    const outcome = (await definition.execute(input, context)) as ActionResultEnvelope<TResult>;
-    this.audit(name, definition.summarizeInput(input), outcome, context, 'success');
+    const outcome = (await definition.execute(
+      input,
+      context,
+    )) as ActionResultEnvelope<TResult>;
+    this.audit(
+      name,
+      definition.summarizeInput(input),
+      outcome,
+      context,
+      'success',
+    );
     return outcome.result;
   }
 
@@ -650,11 +739,10 @@ export class ControlActionService {
       .getPendingActions()
       .find((item) => item.id === id && item.status === 'pending');
     if (!pending) throw new Error(`Pending action not found: ${id}`);
-    await this.executeAction(
-      pending.actionName,
-      pending.input,
-      { actorIdentity: context.actorIdentity, source: context.source },
-    );
+    await this.executeAction(pending.actionName, pending.input, {
+      actorIdentity: context.actorIdentity,
+      source: context.source,
+    });
     this.store.updatePendingAction(id, 'approved');
     return { message: `Approved ${pending.summary}` };
   }
@@ -736,7 +824,10 @@ export class ControlActionService {
   }
 
   getResolvedPersonality(scope: PersonalityScope): PersonalityProfile {
-    return resolveProfile(normalizeScope(scope), this.store.getPersonalityProfiles());
+    return resolveProfile(
+      normalizeScope(scope),
+      this.store.getPersonalityProfiles(),
+    );
   }
 
   previewPersonality(scope: PersonalityScope): string {
@@ -746,7 +837,10 @@ export class ControlActionService {
     );
   }
 
-  getAuditRecords(limit: number = 100, identity?: string): ControlAuditRecord[] {
+  getAuditRecords(
+    limit: number = 100,
+    identity?: string,
+  ): ControlAuditRecord[] {
     const normalized = identity ? canonicalizeIdentity(identity) : '';
     return this.store
       .getAuditRecords(limit)
@@ -778,6 +872,14 @@ export class ControlActionService {
     });
   }
 
+  private redactEnvSnapshot(values: Record<string, string>): Record<string, string> {
+    const redacted = { ...values };
+    for (const key of ['OPENAI_API_KEY', 'ADMIN_UI_TOKEN']) {
+      if (redacted[key]) redacted[key] = '<redacted>';
+    }
+    return redacted;
+  }
+
   private mergeContactSummary(
     identity: string,
     stored: ControlContact | undefined,
@@ -802,7 +904,9 @@ export class ControlActionService {
     const matchingRawSenders = getIncomingContactSummaries()
       .filter((summary) => canonicalizeIdentity(summary.sender) === identity)
       .map((summary) => summary.sender);
-    return matchingRawSenders.flatMap((sender) => getMessagesBySender(sender, 50));
+    return matchingRawSenders.flatMap((sender) =>
+      getMessagesBySender(sender, 50),
+    );
   }
 
   private upsertContactStatus(
@@ -824,7 +928,12 @@ export class ControlActionService {
       manualOverride,
       classificationSummary: summarizeStatus(status, reasons),
       classificationHistory: [
-        buildClassificationEntry(status, context.actorIdentity, context.source, reasons),
+        buildClassificationEntry(
+          status,
+          context.actorIdentity,
+          context.source,
+          reasons,
+        ),
         ...current.classificationHistory,
       ],
       updatedAt: nowIso(),

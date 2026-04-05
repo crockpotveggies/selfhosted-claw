@@ -1,7 +1,10 @@
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useEffect, useMemo, useState } from 'react';
+import { Wizard, useWizard } from 'react-use-wizard';
 
 type ContactStatus = 'trusted' | 'unknown' | 'abuse';
 type PersonalityScope = 'global' | 'main' | `group:${string}`;
+type Tab = 'setup' | 'contacts' | 'personality' | 'policy' | 'audit';
 
 interface ContactView {
   identity: string;
@@ -56,10 +59,70 @@ interface AuditRecord {
   payloadSummary: string;
 }
 
-async function apiFetch<T>(
-  url: string,
-  options?: RequestInit,
-): Promise<T> {
+interface SetupStatusResponse {
+  env: {
+    ASSISTANT_NAME: string;
+    OPENAI_BASE_URL: string;
+    OPENAI_MODEL: string;
+    OPENAI_MAX_TOKENS: string;
+    OPENAI_TEMPERATURE: string;
+    SIGNAL_ACCOUNT: string;
+    SIGNAL_RPC_URL: string;
+    SIGNAL_RECEIVE_TIMEOUT_SEC: string;
+    CONTROL_SIGNAL_JID: string;
+    ONECLI_URL: string;
+    ADMIN_BIND_HOST: string;
+    ADMIN_PORT: string;
+    INBOUND_GUARD_SCRIPT: string;
+    OPENAI_API_KEY_SET: boolean;
+    ADMIN_UI_TOKEN_SET: boolean;
+  };
+  checks: {
+    openAIConfigured: boolean;
+    signalConfigured: boolean;
+    signalReachable: boolean;
+    controlChatConfigured: boolean;
+    verifiedIdentityCount: number;
+    assistantSignalConfigured: boolean;
+    wizardComplete: boolean;
+  };
+}
+
+interface SetupDraft {
+  ASSISTANT_NAME: string;
+  OPENAI_BASE_URL: string;
+  OPENAI_MODEL: string;
+  OPENAI_API_KEY: string;
+  OPENAI_MAX_TOKENS: string;
+  OPENAI_TEMPERATURE: string;
+  SIGNAL_ACCOUNT: string;
+  SIGNAL_RPC_URL: string;
+  SIGNAL_RECEIVE_TIMEOUT_SEC: string;
+  CONTROL_SIGNAL_JID: string;
+  ONECLI_URL: string;
+  ADMIN_BIND_HOST: string;
+  ADMIN_PORT: string;
+  ADMIN_UI_TOKEN: string;
+  INBOUND_GUARD_SCRIPT: string;
+  assistantSignalIdentity: string;
+}
+
+interface WizardSharedProps {
+  setupDraft: SetupDraft;
+  setSetupDraft: Dispatch<SetStateAction<SetupDraft>>;
+  verifiedIdentityInput: string;
+  setVerifiedIdentityInput: Dispatch<SetStateAction<string>>;
+  verifiedLabelInput: string;
+  setVerifiedLabelInput: Dispatch<SetStateAction<string>>;
+  verifiedIdentities: VerifiedIdentity[];
+  checks: SetupStatusResponse['checks'];
+  setupStatus: SetupStatusResponse | null;
+  saveEnvironment: (values: Record<string, string>) => Promise<void>;
+  saveSettings: (values: Partial<ControlSettings>) => Promise<void>;
+  addVerifiedIdentity: () => Promise<void>;
+}
+
+async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
   const token = window.localStorage.getItem('admin-ui-token') || '';
   const response = await fetch(url, {
     ...options,
@@ -70,7 +133,9 @@ async function apiFetch<T>(
     },
   });
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: response.statusText }));
+    const error = await response
+      .json()
+      .catch(() => ({ error: response.statusText }));
     throw new Error(error.error || response.statusText);
   }
   return (await response.json()) as T;
@@ -100,8 +165,483 @@ function useJson<T>(key: string, loader: () => Promise<T>) {
   return { data, error, loading, refresh };
 }
 
+function WizardFrame(props: {
+  title: string;
+  lead: string;
+  children: ReactNode;
+  primaryLabel?: string;
+  onPrimary?: () => void | Promise<void>;
+  secondaryLabel?: string;
+  onSecondary?: () => void;
+  tertiary?: React.ReactNode;
+}) {
+  const { nextStep, previousStep, activeStep, stepCount, isLastStep } =
+    useWizard();
+
+  const handlePrimary = async () => {
+    if (props.onPrimary) await props.onPrimary();
+    if (!isLastStep) nextStep();
+  };
+
+  return (
+    <div className="wizardCard">
+      <div className="wizardProgress">
+        Step {activeStep + 1} of {stepCount}
+      </div>
+      <h2>{props.title}</h2>
+      <p className="wizardLead">{props.lead}</p>
+      <div className="wizardBody">{props.children}</div>
+      <div className="wizardActions">
+        {activeStep > 0 ? (
+          <button type="button" onClick={props.onSecondary || previousStep}>
+            {props.secondaryLabel || 'Back'}
+          </button>
+        ) : (
+          <span />
+        )}
+        <div className="buttonRow">
+          {props.tertiary}
+          <button type="button" onClick={() => void handlePrimary()}>
+            {props.primaryLabel || (isLastStep ? 'Finish' : 'Save and continue')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SecurityStep(props: WizardSharedProps) {
+  const save = async () => {
+    const envUpdate: Record<string, string> = {
+      ADMIN_BIND_HOST: props.setupDraft.ADMIN_BIND_HOST,
+      ADMIN_PORT: props.setupDraft.ADMIN_PORT,
+      INBOUND_GUARD_SCRIPT: props.setupDraft.INBOUND_GUARD_SCRIPT,
+    };
+    if (props.setupDraft.ADMIN_UI_TOKEN.trim()) {
+      window.localStorage.setItem('admin-ui-token', props.setupDraft.ADMIN_UI_TOKEN);
+      envUpdate.ADMIN_UI_TOKEN = props.setupDraft.ADMIN_UI_TOKEN.trim();
+    }
+    await props.saveEnvironment(envUpdate);
+  };
+
+  return (
+    <WizardFrame
+      title="Secure local admin access"
+      lead="The admin UI should stay on localhost and use an admin token if you want browser-level protection on top of local-only binding."
+      onPrimary={save}
+      tertiary={
+        <button
+          type="button"
+          onClick={() => {
+            props.setSetupDraft((current) => ({
+              ...current,
+              ADMIN_BIND_HOST: '127.0.0.1',
+              ADMIN_PORT: '3030',
+            }));
+          }}
+        >
+          Use safe defaults
+        </button>
+      }
+    >
+      <label>
+        Admin bind host
+        <input
+          value={props.setupDraft.ADMIN_BIND_HOST}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              ADMIN_BIND_HOST: event.target.value,
+            }))
+          }
+        />
+      </label>
+      <label>
+        Admin port
+        <input
+          value={props.setupDraft.ADMIN_PORT}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              ADMIN_PORT: event.target.value,
+            }))
+          }
+        />
+      </label>
+      <label>
+        Admin UI token
+        <input
+          type="password"
+          value={props.setupDraft.ADMIN_UI_TOKEN}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              ADMIN_UI_TOKEN: event.target.value,
+            }))
+          }
+          placeholder={
+            props.setupStatus?.env.ADMIN_UI_TOKEN_SET
+              ? 'Already set; enter a new token to rotate it'
+              : 'Optional but recommended'
+          }
+        />
+      </label>
+      <label>
+        Inbound guard script
+        <input
+          value={props.setupDraft.INBOUND_GUARD_SCRIPT}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              INBOUND_GUARD_SCRIPT: event.target.value,
+            }))
+          }
+        />
+      </label>
+      <div className="hintBox">
+        <strong>Security notes</strong>
+        <p>
+          Secrets are written locally on the host and are not returned by the API
+          afterward. Keep the admin server on `127.0.0.1` unless you are putting it
+          behind your own secure access layer.
+        </p>
+      </div>
+    </WizardFrame>
+  );
+}
+
+function ModelStep(props: WizardSharedProps) {
+  return (
+    <WizardFrame
+      title="Model backend"
+      lead="Point Self-Hosted Claw at an OpenAI-compatible backend. For local models this is typically vLLM or another chat-completions-compatible endpoint."
+      onPrimary={() =>
+        props.saveEnvironment({
+          ASSISTANT_NAME: props.setupDraft.ASSISTANT_NAME,
+          OPENAI_BASE_URL: props.setupDraft.OPENAI_BASE_URL,
+          OPENAI_MODEL: props.setupDraft.OPENAI_MODEL,
+          OPENAI_MAX_TOKENS: props.setupDraft.OPENAI_MAX_TOKENS,
+          OPENAI_TEMPERATURE: props.setupDraft.OPENAI_TEMPERATURE,
+          ONECLI_URL: props.setupDraft.ONECLI_URL,
+          ...(props.setupDraft.OPENAI_API_KEY.trim()
+            ? { OPENAI_API_KEY: props.setupDraft.OPENAI_API_KEY.trim() }
+            : {}),
+        })
+      }
+    >
+      <label>
+        Assistant name
+        <input
+          value={props.setupDraft.ASSISTANT_NAME}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              ASSISTANT_NAME: event.target.value,
+            }))
+          }
+        />
+      </label>
+      <label>
+        OpenAI-compatible base URL
+        <input
+          value={props.setupDraft.OPENAI_BASE_URL}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              OPENAI_BASE_URL: event.target.value,
+            }))
+          }
+        />
+      </label>
+      <label>
+        Model name
+        <input
+          value={props.setupDraft.OPENAI_MODEL}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              OPENAI_MODEL: event.target.value,
+            }))
+          }
+        />
+      </label>
+      <label>
+        API key
+        <input
+          type="password"
+          value={props.setupDraft.OPENAI_API_KEY}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              OPENAI_API_KEY: event.target.value,
+            }))
+          }
+          placeholder={
+            props.setupStatus?.env.OPENAI_API_KEY_SET
+              ? 'Already set; enter a new key to rotate it'
+              : 'Optional for local unauthenticated backends'
+          }
+        />
+      </label>
+      <div className="wizardGrid">
+        <label>
+          Max tokens
+          <input
+            value={props.setupDraft.OPENAI_MAX_TOKENS}
+            onChange={(event) =>
+              props.setSetupDraft((current) => ({
+                ...current,
+                OPENAI_MAX_TOKENS: event.target.value,
+              }))
+            }
+          />
+        </label>
+        <label>
+          Temperature
+          <input
+            value={props.setupDraft.OPENAI_TEMPERATURE}
+            onChange={(event) =>
+              props.setSetupDraft((current) => ({
+                ...current,
+                OPENAI_TEMPERATURE: event.target.value,
+              }))
+            }
+          />
+        </label>
+      </div>
+      <label>
+        OneCLI URL
+        <input
+          value={props.setupDraft.ONECLI_URL}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              ONECLI_URL: event.target.value,
+            }))
+          }
+        />
+      </label>
+      <div className="hintBox">
+        <strong>Status</strong>
+        <p>
+          OpenAI backend configured:{' '}
+          {props.checks.openAIConfigured ? 'yes' : 'not yet'}
+        </p>
+      </div>
+    </WizardFrame>
+  );
+}
+
+function SignalStep(props: WizardSharedProps) {
+  return (
+    <WizardFrame
+      title="Signal bridge and control chat"
+      lead="Connect the assistant’s own Signal account through `signal-cli`, then tell Self-Hosted Claw which Signal conversation is your verified control surface."
+      onPrimary={async () => {
+        await props.saveEnvironment({
+          SIGNAL_ACCOUNT: props.setupDraft.SIGNAL_ACCOUNT,
+          SIGNAL_RPC_URL: props.setupDraft.SIGNAL_RPC_URL,
+          SIGNAL_RECEIVE_TIMEOUT_SEC: props.setupDraft.SIGNAL_RECEIVE_TIMEOUT_SEC,
+          CONTROL_SIGNAL_JID: props.setupDraft.CONTROL_SIGNAL_JID,
+        });
+        await props.saveSettings({
+          controlSignalJid: props.setupDraft.CONTROL_SIGNAL_JID,
+          assistantSignalIdentity: props.setupDraft.assistantSignalIdentity,
+        });
+      }}
+    >
+      <label>
+        Assistant Signal account
+        <input
+          value={props.setupDraft.SIGNAL_ACCOUNT}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              SIGNAL_ACCOUNT: event.target.value,
+              assistantSignalIdentity:
+                current.assistantSignalIdentity || event.target.value,
+            }))
+          }
+          placeholder="+15555550123"
+        />
+      </label>
+      <label>
+        Signal RPC URL
+        <input
+          value={props.setupDraft.SIGNAL_RPC_URL}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              SIGNAL_RPC_URL: event.target.value,
+            }))
+          }
+        />
+      </label>
+      <label>
+        Receive timeout (seconds)
+        <input
+          value={props.setupDraft.SIGNAL_RECEIVE_TIMEOUT_SEC}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              SIGNAL_RECEIVE_TIMEOUT_SEC: event.target.value,
+            }))
+          }
+        />
+      </label>
+      <label>
+        Control Signal JID
+        <input
+          value={props.setupDraft.CONTROL_SIGNAL_JID}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              CONTROL_SIGNAL_JID: event.target.value,
+            }))
+          }
+          placeholder="signal:user:+15555550123"
+        />
+      </label>
+      <label>
+        Assistant Signal identity override
+        <input
+          value={props.setupDraft.assistantSignalIdentity}
+          onChange={(event) =>
+            props.setSetupDraft((current) => ({
+              ...current,
+              assistantSignalIdentity: event.target.value,
+            }))
+          }
+        />
+      </label>
+      <div className="hintBox">
+        <strong>Status</strong>
+        <p>
+          Signal configured: {props.checks.signalConfigured ? 'yes' : 'not yet'}
+          <br />
+          Signal reachable: {props.checks.signalReachable ? 'yes' : 'not yet'}
+          <br />
+          Control chat configured:{' '}
+          {props.checks.controlChatConfigured ? 'yes' : 'not yet'}
+        </p>
+      </div>
+    </WizardFrame>
+  );
+}
+
+function OwnershipStep(props: WizardSharedProps) {
+  return (
+    <WizardFrame
+      title="Verified owner identities"
+      lead="Only owner-verified identities can use the full Signal control plane. Add at least your primary Signal identity before completing setup."
+      primaryLabel="Save and continue"
+      onPrimary={props.addVerifiedIdentity}
+      tertiary={
+        <button type="button" onClick={() => void props.addVerifiedIdentity()}>
+          Add identity
+        </button>
+      }
+    >
+      <label>
+        Verified identity
+        <input
+          value={props.verifiedIdentityInput}
+          onChange={(event) => props.setVerifiedIdentityInput(event.target.value)}
+          placeholder="signal:user:+15555550123 or +15555550123"
+        />
+      </label>
+      <label>
+        Label
+        <input
+          value={props.verifiedLabelInput}
+          onChange={(event) => props.setVerifiedLabelInput(event.target.value)}
+          placeholder="Justin"
+        />
+      </label>
+      <ul className="plainList">
+        {props.verifiedIdentities.map((item) => (
+          <li key={item.identity}>
+            <span>
+              {item.label}: {item.identity}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <div className="hintBox">
+        <strong>Status</strong>
+        <p>
+          Verified identities configured: {props.checks.verifiedIdentityCount}
+        </p>
+      </div>
+    </WizardFrame>
+  );
+}
+
+function ReviewStep(props: WizardSharedProps) {
+  const checks = props.checks;
+  const setupCommands = `npm run setup -- --step environment
+npm run setup -- --step signal
+npm run setup -- --step service
+npm run setup -- --step verify`;
+
+  return (
+    <WizardFrame
+      title="Review and finish"
+      lead="The wizard writes local host configuration safely, but the service still needs to be restarted so the Node process picks up any new `.env` values."
+      primaryLabel="Setup reviewed"
+    >
+      <div className="checklist">
+        <div className={checks.openAIConfigured ? 'ok' : 'warn'}>
+          OpenAI backend configured
+        </div>
+        <div className={checks.signalConfigured ? 'ok' : 'warn'}>
+          Signal bridge configured
+        </div>
+        <div className={checks.signalReachable ? 'ok' : 'warn'}>
+          Signal bridge reachable
+        </div>
+        <div className={checks.controlChatConfigured ? 'ok' : 'warn'}>
+          Control Signal chat configured
+        </div>
+        <div className={checks.verifiedIdentityCount > 0 ? 'ok' : 'warn'}>
+          Verified control identity added
+        </div>
+      </div>
+      <div className="hintBox">
+        <strong>Next steps</strong>
+        <p>
+          Restart the service after changing `.env`, then run the setup checks:
+        </p>
+        <pre className="smallPre">{setupCommands}</pre>
+        <p>
+          Once the service is back up, use the Signal control chat for commands
+          like `/contacts list`, `/policy show`, `/settings show`, or `/audit recent`.
+        </p>
+      </div>
+    </WizardFrame>
+  );
+}
+
+function SetupWizard(props: WizardSharedProps) {
+  return (
+    <div className="panel">
+      <div className="panelHeader">
+        <h2>First-run setup wizard</h2>
+        <span className="setupBadge">react-use-wizard</span>
+      </div>
+      <Wizard>
+        <SecurityStep {...props} />
+        <ModelStep {...props} />
+        <SignalStep {...props} />
+        <OwnershipStep {...props} />
+        <ReviewStep {...props} />
+      </Wizard>
+    </div>
+  );
+}
+
 export function App() {
-  const [tab, setTab] = useState<'contacts' | 'personality' | 'policy' | 'audit'>('contacts');
+  const [tab, setTab] = useState<Tab>('contacts');
   const [contactStatusFilter, setContactStatusFilter] = useState<string>('');
   const [selectedContactId, setSelectedContactId] = useState('');
   const [scope, setScope] = useState<PersonalityScope>('global');
@@ -124,11 +664,32 @@ export function App() {
   const [tokenDraft, setTokenDraft] = useState(
     window.localStorage.getItem('admin-ui-token') || '',
   );
+  const [setupDraft, setSetupDraft] = useState<SetupDraft>({
+    ASSISTANT_NAME: 'Andy',
+    OPENAI_BASE_URL: 'http://127.0.0.1:8000/v1',
+    OPENAI_MODEL: 'local-model',
+    OPENAI_API_KEY: '',
+    OPENAI_MAX_TOKENS: '4096',
+    OPENAI_TEMPERATURE: '0.2',
+    SIGNAL_ACCOUNT: '',
+    SIGNAL_RPC_URL: 'http://127.0.0.1:8080',
+    SIGNAL_RECEIVE_TIMEOUT_SEC: '5',
+    CONTROL_SIGNAL_JID: '',
+    ONECLI_URL: 'http://localhost:10254',
+    ADMIN_BIND_HOST: '127.0.0.1',
+    ADMIN_PORT: '3030',
+    ADMIN_UI_TOKEN: '',
+    INBOUND_GUARD_SCRIPT: 'scripts/inbound-message-guard.mjs',
+    assistantSignalIdentity: '',
+  });
   const contactsKey = `contacts:${contactStatusFilter}`;
   const contactsState = useJson(contactsKey, async () => {
     const query = contactStatusFilter ? `?status=${contactStatusFilter}` : '';
     return apiFetch<{ contacts: ContactView[] }>(`/api/admin/contacts${query}`);
   });
+  const setupState = useJson('setup-status', () =>
+    apiFetch<SetupStatusResponse>('/api/admin/setup-status'),
+  );
   const contactDetailState = useJson(
     `contact:${selectedContactId}`,
     async () =>
@@ -143,10 +704,12 @@ export function App() {
       `/api/admin/personality?scope=${encodeURIComponent(scope)}`,
     ),
   );
-  const previewState = useJson(`preview:${scope}:${JSON.stringify(personalityForm)}`, () =>
-    apiFetch<{ preview: string }>(
-      `/api/admin/personality/preview?scope=${encodeURIComponent(scope)}`,
-    ),
+  const previewState = useJson(
+    `preview:${scope}:${JSON.stringify(personalityForm)}`,
+    () =>
+      apiFetch<{ preview: string }>(
+        `/api/admin/personality/preview?scope=${encodeURIComponent(scope)}`,
+      ),
   );
   const policyState = useJson('policy', () =>
     apiFetch<{ policy: ControlPolicy }>('/api/admin/policy'),
@@ -178,8 +741,49 @@ export function App() {
   useEffect(() => {
     if (settingsState.data?.settings) {
       setSettingsDraft(settingsState.data.settings);
+      setSetupDraft((current) => ({
+        ...current,
+        assistantSignalIdentity:
+          settingsState.data?.settings.assistantSignalIdentity ||
+          current.assistantSignalIdentity,
+      }));
     }
   }, [settingsState.data?.settings]);
+
+  useEffect(() => {
+    if (setupState.data) {
+      setSetupDraft((current) => ({
+        ...current,
+        ASSISTANT_NAME: setupState.data?.env.ASSISTANT_NAME || current.ASSISTANT_NAME,
+        OPENAI_BASE_URL:
+          setupState.data?.env.OPENAI_BASE_URL || current.OPENAI_BASE_URL,
+        OPENAI_MODEL: setupState.data?.env.OPENAI_MODEL || current.OPENAI_MODEL,
+        OPENAI_MAX_TOKENS:
+          setupState.data?.env.OPENAI_MAX_TOKENS || current.OPENAI_MAX_TOKENS,
+        OPENAI_TEMPERATURE:
+          setupState.data?.env.OPENAI_TEMPERATURE ||
+          current.OPENAI_TEMPERATURE,
+        SIGNAL_ACCOUNT: setupState.data?.env.SIGNAL_ACCOUNT || current.SIGNAL_ACCOUNT,
+        SIGNAL_RPC_URL:
+          setupState.data?.env.SIGNAL_RPC_URL || current.SIGNAL_RPC_URL,
+        SIGNAL_RECEIVE_TIMEOUT_SEC:
+          setupState.data?.env.SIGNAL_RECEIVE_TIMEOUT_SEC ||
+          current.SIGNAL_RECEIVE_TIMEOUT_SEC,
+        CONTROL_SIGNAL_JID:
+          setupState.data?.env.CONTROL_SIGNAL_JID || current.CONTROL_SIGNAL_JID,
+        ONECLI_URL: setupState.data?.env.ONECLI_URL || current.ONECLI_URL,
+        ADMIN_BIND_HOST:
+          setupState.data?.env.ADMIN_BIND_HOST || current.ADMIN_BIND_HOST,
+        ADMIN_PORT: setupState.data?.env.ADMIN_PORT || current.ADMIN_PORT,
+        INBOUND_GUARD_SCRIPT:
+          setupState.data?.env.INBOUND_GUARD_SCRIPT ||
+          current.INBOUND_GUARD_SCRIPT,
+      }));
+      if (!setupState.data.checks.wizardComplete) {
+        setTab('setup');
+      }
+    }
+  }, [setupState.data]);
 
   const contacts = contactsState.data?.contacts || [];
   const selectedContact = contactDetailState.data?.contact || null;
@@ -187,8 +791,18 @@ export function App() {
   const policy = policyState.data?.policy || { pausedProviders: [] };
   const verifiedIdentities = verifiedState.data?.verifiedIdentities || [];
   const auditRecords = auditState.data?.audit || [];
+  const setupChecks = setupState.data?.checks || {
+    openAIConfigured: false,
+    signalConfigured: false,
+    signalReachable: false,
+    controlChatConfigured: false,
+    verifiedIdentityCount: 0,
+    assistantSignalConfigured: false,
+    wizardComplete: false,
+  };
 
   const errorBanner = [
+    setupState.error,
     contactsState.error,
     contactDetailState.error,
     personalityState.error,
@@ -201,12 +815,9 @@ export function App() {
     .filter(Boolean)
     .join(' | ');
 
-  const mutate = async (action: string, input: unknown) => {
-    await apiFetch('/api/admin/actions', {
-      method: 'POST',
-      body: JSON.stringify({ action, input }),
-    });
+  const refreshAll = async () => {
     await Promise.all([
+      setupState.refresh(),
       contactsState.refresh(),
       contactDetailState.refresh(),
       personalityState.refresh(),
@@ -218,13 +829,52 @@ export function App() {
     ]);
   };
 
+  const mutate = async (action: string, input: unknown) => {
+    await apiFetch('/api/admin/actions', {
+      method: 'POST',
+      body: JSON.stringify({ action, input }),
+    });
+    await refreshAll();
+  };
+
+  const saveEnvironment = async (values: Record<string, string>) => {
+    const cleaned = Object.fromEntries(
+      Object.entries(values).filter(([, value]) => value !== undefined),
+    );
+    if (cleaned.ADMIN_UI_TOKEN) {
+      window.localStorage.setItem('admin-ui-token', cleaned.ADMIN_UI_TOKEN);
+      setTokenDraft(cleaned.ADMIN_UI_TOKEN);
+      setSetupDraft((current) => ({ ...current, ADMIN_UI_TOKEN: '' }));
+    }
+    if (cleaned.OPENAI_API_KEY) {
+      setSetupDraft((current) => ({ ...current, OPENAI_API_KEY: '' }));
+    }
+    await mutate('settings.updateEnv', { values: cleaned });
+  };
+
+  const saveSettings = async (values: Partial<ControlSettings>) => {
+    await mutate('settings.update', values);
+  };
+
+  const addVerifiedIdentity = async () => {
+    if (!verifiedIdentityInput.trim()) return;
+    await mutate('verified.add', {
+      identity: verifiedIdentityInput,
+      label: verifiedLabelInput.trim(),
+    });
+    setVerifiedIdentityInput('');
+    setVerifiedLabelInput('');
+  };
+
   const tabs = useMemo(
-    () => [
-      ['contacts', 'Contacts'],
-      ['personality', 'Personality'],
-      ['policy', 'Policy'],
-      ['audit', 'Audit'],
-    ] as const,
+    () =>
+      [
+        ['setup', 'Setup'],
+        ['contacts', 'Contacts'],
+        ['personality', 'Personality'],
+        ['policy', 'Policy'],
+        ['audit', 'Audit'],
+      ] as const,
     [],
   );
 
@@ -233,20 +883,31 @@ export function App() {
       <header className="topbar">
         <div>
           <h1>Self-Hosted Claw Control Plane</h1>
-          <p>UI and Signal control chat share the same host-side actions.</p>
+          <p>
+            The admin UI and Signal control chat use the same host-side actions.
+            The first-run wizard keeps setup local and security-sensitive.
+          </p>
         </div>
         <label className="tokenBox">
           Admin token
           <input
+            type="password"
             value={tokenDraft}
             onChange={(event) => setTokenDraft(event.target.value)}
             onBlur={() =>
               window.localStorage.setItem('admin-ui-token', tokenDraft)
             }
-            placeholder="Optional X-Admin-Token"
+            placeholder="Local X-Admin-Token"
           />
         </label>
       </header>
+
+      {!setupChecks.wizardComplete ? (
+        <div className="banner warn">
+          First-run setup is not complete. The UI is staying on the Setup tab
+          until the core checks are configured.
+        </div>
+      ) : null}
 
       <nav className="tabs">
         {tabs.map(([value, label]) => (
@@ -261,6 +922,23 @@ export function App() {
       </nav>
 
       {errorBanner ? <div className="banner error">{errorBanner}</div> : null}
+
+      {tab === 'setup' ? (
+        <SetupWizard
+          setupDraft={setupDraft}
+          setSetupDraft={setSetupDraft}
+          verifiedIdentityInput={verifiedIdentityInput}
+          setVerifiedIdentityInput={setVerifiedIdentityInput}
+          verifiedLabelInput={verifiedLabelInput}
+          setVerifiedLabelInput={setVerifiedLabelInput}
+          verifiedIdentities={verifiedIdentities}
+          checks={setupChecks}
+          setupStatus={setupState.data}
+          saveEnvironment={saveEnvironment}
+          saveSettings={saveSettings}
+          addVerifiedIdentity={addVerifiedIdentity}
+        />
+      ) : null}
 
       {tab === 'contacts' ? (
         <section className="panelGrid">
@@ -343,8 +1021,16 @@ export function App() {
                 <p>
                   <strong>{selectedContact.displayName}</strong> ({selectedContact.identity})
                 </p>
-                <p>Status: <span className={`status ${selectedContact.status}`}>{selectedContact.status}</span></p>
-                <p>{selectedContact.classificationSummary || 'No classification summary yet.'}</p>
+                <p>
+                  Status:{' '}
+                  <span className={`status ${selectedContact.status}`}>
+                    {selectedContact.status}
+                  </span>
+                </p>
+                <p>
+                  {selectedContact.classificationSummary ||
+                    'No classification summary yet.'}
+                </p>
                 <h3>History</h3>
                 <div className="historyList">
                   {selectedContact.history.map((entry) => (
@@ -381,7 +1067,11 @@ export function App() {
               <input
                 value={personalityForm.displayName}
                 onChange={(event) =>
-                  setPersonalityForm({ ...personalityForm, displayName: event.target.value, scope })
+                  setPersonalityForm({
+                    ...personalityForm,
+                    displayName: event.target.value,
+                    scope,
+                  })
                 }
               />
             </label>
@@ -390,7 +1080,11 @@ export function App() {
               <input
                 value={personalityForm.role}
                 onChange={(event) =>
-                  setPersonalityForm({ ...personalityForm, role: event.target.value, scope })
+                  setPersonalityForm({
+                    ...personalityForm,
+                    role: event.target.value,
+                    scope,
+                  })
                 }
               />
             </label>
@@ -399,7 +1093,11 @@ export function App() {
               <input
                 value={personalityForm.tone}
                 onChange={(event) =>
-                  setPersonalityForm({ ...personalityForm, tone: event.target.value, scope })
+                  setPersonalityForm({
+                    ...personalityForm,
+                    tone: event.target.value,
+                    scope,
+                  })
                 }
               />
             </label>
@@ -421,7 +1119,11 @@ export function App() {
               <input
                 value={personalityForm.initiative}
                 onChange={(event) =>
-                  setPersonalityForm({ ...personalityForm, initiative: event.target.value, scope })
+                  setPersonalityForm({
+                    ...personalityForm,
+                    initiative: event.target.value,
+                    scope,
+                  })
                 }
               />
             </label>
@@ -512,21 +1214,14 @@ export function App() {
                 onChange={(event) => setVerifiedLabelInput(event.target.value)}
                 placeholder="Label"
               />
-              <button
-                onClick={() =>
-                  void mutate('verified.add', {
-                    identity: verifiedIdentityInput,
-                    label: verifiedLabelInput,
-                  })
-                }
-              >
-                Add
-              </button>
+              <button onClick={() => void addVerifiedIdentity()}>Add</button>
             </div>
             <ul className="plainList">
               {verifiedIdentities.map((item) => (
                 <li key={item.identity}>
-                  <span>{item.label}: {item.identity}</span>
+                  <span>
+                    {item.label}: {item.identity}
+                  </span>
                   <button
                     onClick={() =>
                       void mutate('verified.remove', { identity: item.identity })
@@ -565,7 +1260,7 @@ export function App() {
                 }
               />
             </label>
-            <button onClick={() => void mutate('settings.update', settingsDraft)}>
+            <button onClick={() => void saveSettings(settingsDraft)}>
               Save settings
             </button>
           </div>

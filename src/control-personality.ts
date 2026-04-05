@@ -12,7 +12,8 @@ const DEFAULT_GLOBAL_PROFILE: PersonalityProfile = {
   displayName: ASSISTANT_NAME,
   role: 'Personal assistant',
   tone: 'Warm, concise, and practical.',
-  communicationStyle: 'Use clear short paragraphs and only use lists when helpful.',
+  communicationStyle:
+    'Use clear short paragraphs and only use lists when helpful.',
   initiative: 'Be proactive when useful, but confirm sensitive actions.',
   customInstructions: '',
   updatedAt: new Date(0).toISOString(),

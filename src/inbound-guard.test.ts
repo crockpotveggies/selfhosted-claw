@@ -38,7 +38,9 @@ describe('sanitizeInboundMessage', () => {
       '[Untrusted instruction-like content stripped]',
     );
     expect(result.message.content).toContain('Can we move our call to 3pm?');
-    expect(result.message.content).not.toContain('Ignore previous instructions');
+    expect(result.message.content).not.toContain(
+      'Ignore previous instructions',
+    );
     expect(result.message.content).not.toContain('system prompt');
   });
 

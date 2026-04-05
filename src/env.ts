@@ -41,3 +41,45 @@ export function readEnvFile(keys: string[]): Record<string, string> {
 
   return result;
 }
+
+function parseEnvLines(content: string): string[] {
+  return content.split('\n');
+}
+
+function formatEnvValue(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+export function setEnvFileValues(
+  updates: Record<string, string>,
+  envPath: string = path.join(process.cwd(), '.env'),
+): void {
+  let content = '';
+  try {
+    content = fs.readFileSync(envPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+
+  const lines = parseEnvLines(content);
+  const pending = new Map(Object.entries(updates));
+  const nextLines = lines.map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) return line;
+    const eqIdx = line.indexOf('=');
+    if (eqIdx === -1) return line;
+    const key = line.slice(0, eqIdx).trim();
+    if (!pending.has(key)) return line;
+    const value = pending.get(key) || '';
+    pending.delete(key);
+    return `${key}=${formatEnvValue(value)}`;
+  });
+
+  for (const [key, value] of pending.entries()) {
+    nextLines.push(`${key}=${formatEnvValue(value)}`);
+  }
+
+  const tempPath = `${envPath}.tmp`;
+  fs.writeFileSync(tempPath, `${nextLines.join('\n').replace(/\n*$/, '\n')}`);
+  fs.renameSync(tempPath, envPath);
+}

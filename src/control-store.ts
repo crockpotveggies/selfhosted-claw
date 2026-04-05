@@ -82,9 +82,7 @@ export class ControlStore {
     );
   }
 
-  savePersonalityProfiles(
-    profiles: Record<string, PersonalityProfile>,
-  ): void {
+  savePersonalityProfiles(profiles: Record<string, PersonalityProfile>): void {
     writeJsonFile(this.personalityFile, profiles);
   }
 
@@ -127,13 +125,18 @@ export class ControlStore {
   }
 
   createPendingAction(
-    partial: Omit<PendingControlAction, 'id' | 'createdAt' | 'expiresAt' | 'status'>,
+    partial: Omit<
+      PendingControlAction,
+      'id' | 'createdAt' | 'expiresAt' | 'status'
+    >,
   ): PendingControlAction {
     const now = new Date();
     const pending: PendingControlAction = {
       id: `pending-${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
       createdAt: now.toISOString(),
-      expiresAt: new Date(now.getTime() + ADMIN_PENDING_ACTION_TTL_MS).toISOString(),
+      expiresAt: new Date(
+        now.getTime() + ADMIN_PENDING_ACTION_TTL_MS,
+      ).toISOString(),
       status: 'pending',
       ...partial,
     };
@@ -143,7 +146,10 @@ export class ControlStore {
     return pending;
   }
 
-  updatePendingAction(id: string, status: 'approved' | 'rejected'): PendingControlAction | undefined {
+  updatePendingAction(
+    id: string,
+    status: 'approved' | 'rejected',
+  ): PendingControlAction | undefined {
     const actions = this.getPendingActions();
     const action = actions.find((item) => item.id === id);
     if (!action) return undefined;

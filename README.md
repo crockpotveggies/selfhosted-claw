@@ -28,7 +28,131 @@ cp .env.example .env
 
 </details>
 
-Then configure your OpenAI-compatible backend and Signal bridge in `.env`, run the setup checks (`npm run setup -- --step environment`, `npm run setup -- --step signal`, `npm run setup -- --step service`), and start the service.
+## First-Run Setup
+
+Self-Hosted Claw now has a local-first admin UI wizard for secure onboarding, but the environment still needs a few host-level prerequisites before the wizard can finish.
+
+### 1. Install the prerequisites
+
+- Node.js 20+
+- Docker or Apple Container
+- `signal-cli`
+- An OpenAI-compatible backend such as vLLM
+
+### 2. Start your OpenAI-compatible backend
+
+Make sure your model backend is reachable from the host, for example:
+
+```bash
+OPENAI_BASE_URL=http://127.0.0.1:8000/v1
+OPENAI_MODEL=local-model
+```
+
+If your backend requires an API key, keep it ready for the setup wizard or put it in `.env`.
+
+### 3. Register the assistant's Signal account
+
+- Create or choose a dedicated Signal account for the assistant
+- Register that number with `signal-cli`
+- Start the `signal-cli` JSON-RPC bridge so it is reachable at `SIGNAL_RPC_URL`
+- Decide which Signal conversation will be your control chat
+
+### 4. Populate the baseline `.env`
+
+At minimum, make sure `.env` has the core values below:
+
+```bash
+OPENAI_BASE_URL="http://127.0.0.1:8000/v1"
+OPENAI_MODEL="local-model"
+SIGNAL_ACCOUNT="+15555550123"
+SIGNAL_RPC_URL="http://127.0.0.1:8080"
+CONTROL_SIGNAL_JID="signal:user:+15555550123"
+ADMIN_BIND_HOST="127.0.0.1"
+ADMIN_PORT="3030"
+INBOUND_GUARD_SCRIPT="scripts/inbound-message-guard.mjs"
+```
+
+Optional but recommended:
+
+```bash
+OPENAI_API_KEY=""
+ADMIN_UI_TOKEN="choose-a-local-admin-token"
+ONECLI_URL="http://localhost:10254"
+```
+
+### 5. Build and start Self-Hosted Claw
+
+Production-style run:
+
+```bash
+npm run build
+npm start
+```
+
+Development run:
+
+```bash
+# terminal 1
+npm run dev
+
+# terminal 2
+npm run dev:ui
+```
+
+### 6. Open the admin UI wizard
+
+- Production build: open `http://127.0.0.1:3030`
+- Vite dev UI: open `http://127.0.0.1:4173`
+
+The setup wizard walks through:
+
+1. Secure local admin settings
+2. OpenAI-compatible model backend
+3. Signal bridge and control chat
+4. Verified owner identities
+5. Final review and restart checklist
+
+Security behavior:
+
+- The admin API only binds to `127.0.0.1` by default
+- `ADMIN_UI_TOKEN` is optional but recommended
+- sensitive values such as `OPENAI_API_KEY` and `ADMIN_UI_TOKEN` are write-only in the UI and are not returned by the API afterward
+
+### 7. Restart after wizard changes
+
+If the wizard updated `.env`, restart the main service so the Node process picks up the new values.
+
+### 8. Run the setup checks
+
+Run the built-in setup verification steps:
+
+```bash
+npm run setup -- --step environment
+npm run setup -- --step signal
+npm run setup -- --step service
+npm run setup -- --step verify
+```
+
+### 9. Verify the Signal control plane
+
+From your verified control Signal chat, try:
+
+```text
+/settings show
+/policy show
+/contacts list
+/audit recent
+```
+
+### 10. Review the inbound guard
+
+Inbound messages are sanitized by the host before they are stored or forwarded. The default script is:
+
+```bash
+scripts/inbound-message-guard.mjs
+```
+
+Point `INBOUND_GUARD_SCRIPT` at your own script if you want to customize the injection-defense heuristics.
 
 ## Philosophy
 
@@ -41,8 +165,8 @@ Then configure your OpenAI-compatible backend and Signal bridge in `.env`, run t
 **Customization = code changes.** No configuration sprawl. Want different behavior? Modify the code. The codebase is small enough that it's safe to make changes.
 
 **AI-native.**
-- No installation wizard; the setup scripts verify the environment directly.
-- No monitoring dashboard; inspect logs and ask your assistant what happened.
+- The admin UI handles secure first-run onboarding, but the setup steps remain simple and local.
+- No heavyweight monitoring dashboard; inspect logs and ask your assistant what happened.
 - No debugging tools; the codebase is small enough to trace directly.
 
 **Skills over features.** Instead of adding every possible integration to the codebase, contributors can still keep their forks specialized and minimal.
@@ -52,6 +176,7 @@ Then configure your OpenAI-compatible backend and Signal bridge in `.env`, run t
 ## What It Supports
 
 - **Signal-first messaging** - Signal is the built-in default channel, with support for other channels still available through the channel registry model.
+- **Unified control plane** - The admin UI and the verified Signal control chat use the same host-side control actions and audit log.
 - **Isolated group context** - Each group has its own `AGENT.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted to it.
 - **Main channel** - Your private channel (self-chat) for admin control; every group is completely isolated
 - **Scheduled tasks** - Recurring jobs that run the Self-Hosted Claw agent and can message you back
@@ -59,6 +184,7 @@ Then configure your OpenAI-compatible backend and Signal bridge in `.env`, run t
 - **Container isolation** - Agents are sandboxed in Docker (macOS/Linux), [Docker Sandboxes](docs/docker-sandboxes.md) (micro VM isolation), or Apple Container (macOS)
 - **Credential security** - Agents can use [OneCLI's Agent Vault](https://github.com/onecli/onecli) for proxied credential injection, or connect directly to a local backend when you do not need proxying.
 - **Native tool loop** - Shell, files, web fetch/search, task controls, and nested delegation are handled by Self-Hosted Claw itself instead of a provider SDK
+- **Inbound guard hook** - A host-side script sanitizes inbound messages before storage to reduce prompt-injection risk
 
 ## Usage
 
@@ -75,6 +201,17 @@ From the main channel (your self-chat), you can manage groups and tasks:
 @Andy list all scheduled tasks across groups
 @Andy pause the Monday briefing task
 @Andy join the Family Chat group
+```
+
+From the verified Signal control chat, you can also use deterministic host commands:
+
+```text
+/contacts list status=abuse
+/contact trust +15555550123
+/personality show global
+/policy pause-outbound sms
+/settings show
+/audit recent
 ```
 
 ## Customizing
@@ -168,7 +305,7 @@ Note: the backend must support OpenAI-style tool calling for best compatibility.
 
 **How do I debug issues?**
 
-Inspect the logs, use the setup verification steps, or ask your assistant in the main Signal chat to inspect recent state.
+Inspect the logs, use the setup verification steps, or ask your assistant in the main Signal chat to inspect recent state. For onboarding problems, open the local setup wizard and compare it with `npm run setup -- --step verify`.
 
 **Why isn't the setup working for me?**
 
