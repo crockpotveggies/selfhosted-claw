@@ -1,27 +1,12 @@
 <p align="center">
-  <img src="assets/nanoclaw-logo.png" alt="Self-Hosted Claw" width="400">
-</p>
-
-<p align="center">
   An AI assistant that runs agents securely in their own containers. Lightweight, built to be easily understood and completely customized for your needs.
-</p>
-
-<p align="center">
-  <a href="https://nanoclaw.dev">nanoclaw.dev</a>&nbsp; • &nbsp;
-  <a href="https://docs.nanoclaw.dev">docs</a>&nbsp; • &nbsp;
-  <a href="README_zh.md">中文</a>&nbsp; • &nbsp;
-  <a href="README_ja.md">日本語</a>&nbsp; • &nbsp;
-  <a href="https://discord.gg/VDdww8qS42"><img src="https://img.shields.io/discord/1470188214710046894?label=Discord&logo=discord&v=2" alt="Discord" valign="middle"></a>&nbsp; • &nbsp;
-  <a href="repo-tokens"><img src="repo-tokens/badge.svg" alt="34.9k tokens, 17% of context window" valign="middle"></a>
 </p>
 
 ---
 
 ## Why I Built Self-Hosted Claw
 
-[OpenClaw](https://github.com/openclaw/openclaw) is an impressive project, but I wouldn't have been able to sleep if I had given complex software I didn't understand full access to my life. OpenClaw has nearly half a million lines of code, 53 config files, and 70+ dependencies. Its security is at the application level (allowlists, pairing codes) rather than true OS-level isolation. Everything runs in one Node process with shared memory.
-
-Self-Hosted Claw provides that same core functionality, but in a codebase small enough to understand: one process and a handful of files. Agents run in their own Linux containers with filesystem isolation, not merely behind permission checks.
+Nanoclaw is cool, but I want to self-host as much as possible.
 
 ## Quick Start
 
