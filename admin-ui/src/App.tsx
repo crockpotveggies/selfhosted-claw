@@ -5,6 +5,7 @@ import { Wizard, useWizard } from 'react-use-wizard';
 type ContactStatus = 'trusted' | 'unknown' | 'abuse';
 type PersonalityScope = 'global' | 'main' | `group:${string}`;
 type Tab = 'setup' | 'contacts' | 'personality' | 'policy' | 'audit';
+type SignalProvisionMode = 'link' | 'register';
 
 interface ContactView {
   identity: string;
@@ -81,10 +82,22 @@ interface SetupStatusResponse {
     openAIConfigured: boolean;
     signalConfigured: boolean;
     signalReachable: boolean;
+    signalComposeConfigured: boolean;
+    signalComposeRunning: boolean;
     controlChatConfigured: boolean;
     verifiedIdentityCount: number;
     assistantSignalConfigured: boolean;
     wizardComplete: boolean;
+  };
+  signalCompose: {
+    account: string;
+    localRpcUrl: string;
+    composeFile: string;
+    envFile: string;
+    dataDir: string;
+    configured: boolean;
+    running: boolean;
+    lastError: string;
   };
 }
 
@@ -119,6 +132,23 @@ interface WizardSharedProps {
   setupStatus: SetupStatusResponse | null;
   saveEnvironment: (values: Record<string, string>) => Promise<void>;
   saveSettings: (values: Partial<ControlSettings>) => Promise<void>;
+  startSignalCompose: () => Promise<void>;
+  refreshSetupStatus: () => Promise<void>;
+  requestSignalLinkQr: (deviceName: string) => Promise<string>;
+  startSignalRegistration: (useVoice: boolean) => Promise<string>;
+  verifySignalRegistration: (code: string) => Promise<string>;
+  signalProvisionMode: SignalProvisionMode;
+  setSignalProvisionMode: Dispatch<SetStateAction<SignalProvisionMode>>;
+  signalDeviceName: string;
+  setSignalDeviceName: Dispatch<SetStateAction<string>>;
+  signalQrDataUrl: string;
+  setSignalQrDataUrl: Dispatch<SetStateAction<string>>;
+  signalProvisionMessage: string;
+  setSignalProvisionMessage: Dispatch<SetStateAction<string>>;
+  signalVerificationCode: string;
+  setSignalVerificationCode: Dispatch<SetStateAction<string>>;
+  signalUseVoice: boolean;
+  setSignalUseVoice: Dispatch<SetStateAction<boolean>>;
   addVerifiedIdentity: () => Promise<void>;
 }
 
@@ -436,7 +466,7 @@ function SignalStep(props: WizardSharedProps) {
   return (
     <WizardFrame
       title="Signal bridge and control chat"
-      lead="Connect the assistant’s own Signal account through `signal-cli`, then tell Self-Hosted Claw which Signal conversation is your verified control surface."
+      lead="Capture the assistant Signal identity, then let the wizard launch the managed localhost-only Signal bridge from `scripts/signal-cli/docker-compose.yml`."
       onPrimary={async () => {
         await props.saveEnvironment({
           SIGNAL_ACCOUNT: props.setupDraft.SIGNAL_ACCOUNT,
@@ -448,7 +478,9 @@ function SignalStep(props: WizardSharedProps) {
           controlSignalJid: props.setupDraft.CONTROL_SIGNAL_JID,
           assistantSignalIdentity: props.setupDraft.assistantSignalIdentity,
         });
+        await props.startSignalCompose();
       }}
+      primaryLabel="Save and start Signal bridge"
     >
       <label>
         Assistant Signal account
@@ -515,15 +547,177 @@ function SignalStep(props: WizardSharedProps) {
         />
       </label>
       <div className="hintBox">
-        <strong>Status</strong>
+        <strong>Managed bridge status</strong>
         <p>
           Signal configured: {props.checks.signalConfigured ? 'yes' : 'not yet'}
           <br />
           Signal reachable: {props.checks.signalReachable ? 'yes' : 'not yet'}
           <br />
+          Managed compose configured:{' '}
+          {props.checks.signalComposeConfigured ? 'yes' : 'not yet'}
+          <br />
+          Managed compose running:{' '}
+          {props.checks.signalComposeRunning ? 'yes' : 'not yet'}
+          <br />
           Control chat configured:{' '}
           {props.checks.controlChatConfigured ? 'yes' : 'not yet'}
         </p>
+        <p>
+          Compose file: {props.setupStatus?.signalCompose.composeFile || 'n/a'}
+          <br />
+          Managed env: {props.setupStatus?.signalCompose.envFile || 'n/a'}
+          <br />
+          Managed data dir: {props.setupStatus?.signalCompose.dataDir || 'n/a'}
+        </p>
+        {props.setupStatus?.signalCompose.lastError ? (
+          <p>Last docker compose error: {props.setupStatus.signalCompose.lastError}</p>
+        ) : null}
+      </div>
+    </WizardFrame>
+  );
+}
+
+function SignalProvisionStep(props: WizardSharedProps) {
+  return (
+    <WizardFrame
+      title="Link or register the assistant account"
+      lead="Use QR linking if this Signal account already exists on a phone. Use SMS or voice verification only if you are registering a brand-new Signal account for the assistant."
+      onPrimary={props.refreshSetupStatus}
+      primaryLabel="Refresh Signal status"
+      tertiary={
+        <div className="buttonRow noMargin">
+          <button
+            type="button"
+            onClick={() =>
+              void props.refreshSetupStatus().then(() => {
+                props.setSignalProvisionMessage(
+                  'Signal status refreshed. The readiness result is shown above.',
+                );
+              }).catch(() => undefined)
+            }
+          >
+            Re-check readiness
+          </button>
+        </div>
+      }
+    >
+      <div className="segmented">
+        <button
+          type="button"
+          className={props.signalProvisionMode === 'link' ? 'active' : ''}
+          onClick={() => props.setSignalProvisionMode('link')}
+        >
+          Link existing account
+        </button>
+        <button
+          type="button"
+          className={props.signalProvisionMode === 'register' ? 'active' : ''}
+          onClick={() => props.setSignalProvisionMode('register')}
+        >
+          Register by code
+        </button>
+      </div>
+
+      {props.signalProvisionMode === 'link' ? (
+        <div className="provisionCard">
+          <label>
+            Linked device name
+            <input
+              value={props.signalDeviceName}
+              onChange={(event) => props.setSignalDeviceName(event.target.value)}
+              placeholder="Self-Hosted Claw"
+            />
+          </label>
+          <div className="buttonRow noMargin">
+            <button
+              type="button"
+              onClick={() =>
+                void props
+                  .requestSignalLinkQr(props.signalDeviceName)
+                  .then((dataUrl) => {
+                    props.setSignalQrDataUrl(dataUrl);
+                    props.setSignalProvisionMessage(
+                      'QR code generated. In Signal on your phone, open Settings > Linked Devices and scan it.',
+                    );
+                  })
+                  .catch(() => undefined)
+              }
+            >
+              Generate QR code
+            </button>
+          </div>
+          {props.signalQrDataUrl ? (
+            <div className="qrPanel">
+              <img
+                src={props.signalQrDataUrl}
+                alt="Signal device link QR code"
+                className="qrImage"
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="provisionCard">
+          <label className="checkboxRow">
+            <input
+              type="checkbox"
+              checked={props.signalUseVoice}
+              onChange={(event) => props.setSignalUseVoice(event.target.checked)}
+            />
+            Use voice verification instead of SMS
+          </label>
+          <div className="buttonRow noMargin">
+            <button
+              type="button"
+              onClick={() =>
+                void props
+                  .startSignalRegistration(props.signalUseVoice)
+                  .then((message) => props.setSignalProvisionMessage(message))
+                  .catch(() => undefined)
+              }
+            >
+              Start registration
+            </button>
+          </div>
+          <label>
+            Verification code
+            <input
+              value={props.signalVerificationCode}
+              onChange={(event) =>
+                props.setSignalVerificationCode(event.target.value)
+              }
+              placeholder="123-456"
+            />
+          </label>
+          <div className="buttonRow noMargin">
+            <button
+              type="button"
+              onClick={() =>
+                void props
+                  .verifySignalRegistration(props.signalVerificationCode)
+                  .then((message) => props.setSignalProvisionMessage(message))
+                  .catch(() => undefined)
+              }
+            >
+              Verify code
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="hintBox">
+        <strong>Status</strong>
+        <p>
+          Signal reachable: {props.checks.signalReachable ? 'yes' : 'not yet'}
+        </p>
+        {props.signalProvisionMessage ? (
+          <p>{props.signalProvisionMessage}</p>
+        ) : (
+          <p>
+            The wizard can orchestrate linking and registration, but Signal still
+            requires you to scan the QR code or enter the verification code yourself.
+          </p>
+        )}
       </div>
     </WizardFrame>
   );
@@ -600,6 +794,9 @@ npm run setup -- --step verify`;
         <div className={checks.signalReachable ? 'ok' : 'warn'}>
           Signal bridge reachable
         </div>
+        <div className={checks.signalComposeRunning ? 'ok' : 'warn'}>
+          Managed Signal compose running
+        </div>
         <div className={checks.controlChatConfigured ? 'ok' : 'warn'}>
           Control Signal chat configured
         </div>
@@ -610,7 +807,9 @@ npm run setup -- --step verify`;
       <div className="hintBox">
         <strong>Next steps</strong>
         <p>
-          Restart the service after changing `.env`, then run the setup checks:
+          The wizard writes `.env`, starts the managed Signal bridge, and keeps
+          Signal state in a host-only data folder. Restart the main service after
+          changing `.env`, then run the setup checks:
         </p>
         <pre className="smallPre">{setupCommands}</pre>
         <p>
@@ -633,6 +832,7 @@ function SetupWizard(props: WizardSharedProps) {
         <SecurityStep {...props} />
         <ModelStep {...props} />
         <SignalStep {...props} />
+        <SignalProvisionStep {...props} />
         <OwnershipStep {...props} />
         <ReviewStep {...props} />
       </Wizard>
@@ -641,6 +841,7 @@ function SetupWizard(props: WizardSharedProps) {
 }
 
 export function App() {
+  const [actionError, setActionError] = useState('');
   const [tab, setTab] = useState<Tab>('contacts');
   const [contactStatusFilter, setContactStatusFilter] = useState<string>('');
   const [selectedContactId, setSelectedContactId] = useState('');
@@ -661,6 +862,13 @@ export function App() {
     controlSignalJid: '',
     assistantSignalIdentity: '',
   });
+  const [signalProvisionMode, setSignalProvisionMode] =
+    useState<SignalProvisionMode>('link');
+  const [signalDeviceName, setSignalDeviceName] = useState('Self-Hosted Claw');
+  const [signalQrDataUrl, setSignalQrDataUrl] = useState('');
+  const [signalProvisionMessage, setSignalProvisionMessage] = useState('');
+  const [signalVerificationCode, setSignalVerificationCode] = useState('');
+  const [signalUseVoice, setSignalUseVoice] = useState(false);
   const [tokenDraft, setTokenDraft] = useState(
     window.localStorage.getItem('admin-ui-token') || '',
   );
@@ -795,6 +1003,8 @@ export function App() {
     openAIConfigured: false,
     signalConfigured: false,
     signalReachable: false,
+    signalComposeConfigured: false,
+    signalComposeRunning: false,
     controlChatConfigured: false,
     verifiedIdentityCount: 0,
     assistantSignalConfigured: false,
@@ -802,6 +1012,7 @@ export function App() {
   };
 
   const errorBanner = [
+    actionError,
     setupState.error,
     contactsState.error,
     contactDetailState.error,
@@ -830,11 +1041,17 @@ export function App() {
   };
 
   const mutate = async (action: string, input: unknown) => {
-    await apiFetch('/api/admin/actions', {
-      method: 'POST',
-      body: JSON.stringify({ action, input }),
-    });
-    await refreshAll();
+    setActionError('');
+    try {
+      await apiFetch('/api/admin/actions', {
+        method: 'POST',
+        body: JSON.stringify({ action, input }),
+      });
+      await refreshAll();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Action failed');
+      throw err;
+    }
   };
 
   const saveEnvironment = async (values: Record<string, string>) => {
@@ -854,6 +1071,72 @@ export function App() {
 
   const saveSettings = async (values: Partial<ControlSettings>) => {
     await mutate('settings.update', values);
+  };
+
+  const startSignalCompose = async () => {
+    await mutate('signal.composeUp', {
+      account: setupDraft.SIGNAL_ACCOUNT,
+      rpcUrl: setupDraft.SIGNAL_RPC_URL,
+    });
+  };
+
+  const requestSignalLinkQr = async (deviceName: string) => {
+    setActionError('');
+    try {
+      const result = await apiFetch<{ dataUrl: string }>('/api/admin/signal/link', {
+        method: 'POST',
+        body: JSON.stringify({ deviceName }),
+      });
+      return result.dataUrl;
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Signal link failed');
+      throw err;
+    }
+  };
+
+  const startSignalRegistration = async (useVoice: boolean) => {
+    setActionError('');
+    try {
+      const result = await apiFetch<{ message: string }>(
+        '/api/admin/signal/register/start',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            account: setupDraft.SIGNAL_ACCOUNT,
+            useVoice,
+          }),
+        },
+      );
+      return result.message;
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'Signal registration failed',
+      );
+      throw err;
+    }
+  };
+
+  const verifySignalRegistration = async (code: string) => {
+    setActionError('');
+    try {
+      const result = await apiFetch<{ message: string }>(
+        '/api/admin/signal/register/verify',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            account: setupDraft.SIGNAL_ACCOUNT,
+            code,
+          }),
+        },
+      );
+      await refreshAll();
+      return result.message;
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'Signal verification failed',
+      );
+      throw err;
+    }
   };
 
   const addVerifiedIdentity = async () => {
@@ -936,6 +1219,23 @@ export function App() {
           setupStatus={setupState.data}
           saveEnvironment={saveEnvironment}
           saveSettings={saveSettings}
+          startSignalCompose={startSignalCompose}
+          refreshSetupStatus={setupState.refresh}
+          requestSignalLinkQr={requestSignalLinkQr}
+          startSignalRegistration={startSignalRegistration}
+          verifySignalRegistration={verifySignalRegistration}
+          signalProvisionMode={signalProvisionMode}
+          setSignalProvisionMode={setSignalProvisionMode}
+          signalDeviceName={signalDeviceName}
+          setSignalDeviceName={setSignalDeviceName}
+          signalQrDataUrl={signalQrDataUrl}
+          setSignalQrDataUrl={setSignalQrDataUrl}
+          signalProvisionMessage={signalProvisionMessage}
+          setSignalProvisionMessage={setSignalProvisionMessage}
+          signalVerificationCode={signalVerificationCode}
+          setSignalVerificationCode={setSignalVerificationCode}
+          signalUseVoice={signalUseVoice}
+          setSignalUseVoice={setSignalUseVoice}
           addVerifiedIdentity={addVerifiedIdentity}
         />
       ) : null}

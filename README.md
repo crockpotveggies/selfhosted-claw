@@ -36,7 +36,6 @@ Self-Hosted Claw now has a local-first admin UI wizard for secure onboarding, bu
 
 - Node.js 20+
 - Docker or Apple Container
-- `signal-cli`
 - An OpenAI-compatible backend such as vLLM
 
 ### 2. Start your OpenAI-compatible backend
@@ -50,16 +49,15 @@ OPENAI_MODEL=local-model
 
 If your backend requires an API key, keep it ready for the setup wizard or put it in `.env`.
 
-### 3. Register the assistant's Signal account
+### 3. Prepare the assistant's Signal identity
 
 - Create or choose a dedicated Signal account for the assistant
-- Register that number with `signal-cli`
-- Start the `signal-cli` JSON-RPC bridge so it is reachable at `SIGNAL_RPC_URL`
 - Decide which Signal conversation will be your control chat
+- Keep the assistant number ready for Signal registration or device linking
 
 ### 4. Populate the baseline `.env`
 
-At minimum, make sure `.env` has the core values below:
+You can pre-fill these values in `.env` or enter them in the wizard. At minimum, make sure the core values below exist by the time you finish setup:
 
 ```bash
 OPENAI_BASE_URL="http://127.0.0.1:8000/v1"
@@ -109,14 +107,36 @@ The setup wizard walks through:
 1. Secure local admin settings
 2. OpenAI-compatible model backend
 3. Signal bridge and control chat
-4. Verified owner identities
-5. Final review and restart checklist
+4. Signal account linking or registration
+5. Verified owner identities
+6. Final review and restart checklist
 
 Security behavior:
 
 - The admin API only binds to `127.0.0.1` by default
 - `ADMIN_UI_TOKEN` is optional but recommended
 - sensitive values such as `OPENAI_API_KEY` and `ADMIN_UI_TOKEN` are write-only in the UI and are not returned by the API afterward
+
+During the Signal step, the wizard now writes `scripts/signal-cli/.env` and starts the managed Signal bridge with:
+
+```bash
+docker compose -f scripts/signal-cli/docker-compose.yml --env-file scripts/signal-cli/.env up -d
+```
+
+The managed bridge:
+
+- binds only to `127.0.0.1`
+- stores Signal state under the host admin data directory, not in the repo
+- uses the compose file in [scripts/signal-cli/docker-compose.yml](/Users/justin/Projects/selfhosted-claw/scripts/signal-cli/docker-compose.yml)
+
+If the assistant Signal account has not been registered or linked yet, complete that Signal-side step after the container starts. The compose stack gets the bridge online for you, but it does not bypass Signal's own account registration/link flow.
+
+The wizard can now drive both supported Signal onboarding paths:
+
+- Device linking: it requests a QR code from the managed bridge and shows it in the browser so you can scan it from Signal on your phone
+- Direct registration: it can start SMS or voice verification and then submit the verification code you receive
+
+Signal still requires a human to complete the trust ceremony by scanning the QR code or entering the verification code.
 
 ### 7. Restart after wizard changes
 
@@ -142,6 +162,7 @@ From your verified control Signal chat, try:
 /policy show
 /contacts list
 /audit recent
+/signal-compose status
 ```
 
 ### 10. Review the inbound guard

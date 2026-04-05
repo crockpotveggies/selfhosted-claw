@@ -9,6 +9,7 @@ import { SignalControlCommandParser } from './control-commands.js';
 import { canonicalizeIdentity } from './control-identities.js';
 import { ControlStore } from './control-store.js';
 import { _closeDatabase, _initTestDatabase } from './db.js';
+import { SignalComposeManager } from './signal-compose.js';
 import { NewMessage, RegisteredGroup } from './types.js';
 
 function makeMessage(sender: string, content: string): NewMessage {
@@ -38,7 +39,30 @@ function createHarness() {
 
   _initTestDatabase();
   const store = new ControlStore(configDir, dataDir);
-  const service = new ControlActionService(store);
+  const composeManager = new SignalComposeManager({
+    composeDir: path.join(root, 'signal-compose'),
+    dataDir: path.join(dataDir, 'signal-compose'),
+    runner: (args) => {
+      if (args.includes('ps')) {
+        return {
+          stdout: 'signal-cli\n',
+          stderr: '',
+          status: 0,
+        };
+      }
+      return {
+        stdout: 'started\n',
+        stderr: '',
+        status: 0,
+      };
+    },
+  });
+  fs.mkdirSync(composeManager.composeDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(composeManager.composeDir, 'docker-compose.yml'),
+    'services:\n  signal-cli:\n    image: example\n',
+  );
+  const service = new ControlActionService(store, composeManager);
   const sent: Array<{ jid: string; text: string }> = [];
   const parser = new SignalControlCommandParser({
     service,
@@ -161,6 +185,27 @@ describe('control plane parity', () => {
     const audit = harness.service.getAuditRecords(10);
     expect(audit.some((record) => record.source === 'ui')).toBe(true);
     expect(audit.some((record) => record.source === 'signal_control')).toBe(
+      true,
+    );
+  });
+
+  it('starts managed Signal compose through the shared control action surface', async () => {
+    const harness = createHarness();
+
+    const result = await harness.service.executeAction<
+      { account: string; rpcUrl: string },
+      { running: boolean }
+    >(
+      'signal.composeUp',
+      {
+        account: '+15551112222',
+        rpcUrl: 'http://127.0.0.1:8080',
+      },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    expect(result.running).toBe(true);
+    expect(fs.existsSync(path.join(harness.root, 'signal-compose', '.env'))).toBe(
       true,
     );
   });

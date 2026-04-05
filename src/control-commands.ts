@@ -283,8 +283,9 @@ export class SignalControlCommandParser {
           const sub = parts[1];
           if (sub === 'show') {
             const settings = this.deps.service.getSettings();
+            const signalCompose = this.deps.service.getSignalComposeStatus();
             await respond(
-              `Control chat: ${settings.controlSignalJid || '(unset)'}\nAssistant Signal identity: ${settings.assistantSignalIdentity || '(unset)'}`,
+              `Control chat: ${settings.controlSignalJid || '(unset)'}\nAssistant Signal identity: ${settings.assistantSignalIdentity || '(unset)'}\nManaged Signal compose: ${signalCompose.running ? 'running' : 'stopped'}`,
             );
             return { handled: true };
           }
@@ -324,6 +325,35 @@ export class SignalControlCommandParser {
           await respond(
             'Usage: /settings <show|env|set-control-chat|set-assistant-signal> ...',
           );
+          return { handled: true };
+        }
+        case '/signal-compose': {
+          const sub = parts[1];
+          if (sub === 'status' || !sub) {
+            const status = this.deps.service.getSignalComposeStatus();
+            await respond(
+              `Managed Signal compose\nRunning: ${status.running ? 'yes' : 'no'}\nRPC URL: ${status.localRpcUrl}\nAccount: ${status.account || '(unset)'}\nCompose file: ${status.composeFile}${status.lastError ? `\nLast error: ${status.lastError}` : ''}`,
+            );
+            return { handled: true };
+          }
+          if (sub === 'up') {
+            const status = await this.deps.service.executeAction<
+              { account?: string; rpcUrl?: string },
+              { running: boolean; localRpcUrl: string; account: string }
+            >(
+              'signal.composeUp',
+              {
+                account: parts[2],
+                rpcUrl: parts[3],
+              },
+              context,
+            );
+            await respond(
+              `Managed Signal compose started.\nRunning: ${status.running ? 'yes' : 'no'}\nRPC URL: ${status.localRpcUrl}\nAccount: ${status.account}`,
+            );
+            return { handled: true };
+          }
+          await respond('Usage: /signal-compose <status|up> [account] [rpcUrl]');
           return { handled: true };
         }
         case '/audit': {

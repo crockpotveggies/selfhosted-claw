@@ -1,6 +1,6 @@
 import { readEnvFile } from '../src/env.js';
 import { logger } from '../src/logger.js';
-import { commandExists } from './platform.js';
+import { SignalComposeManager } from '../src/signal-compose.js';
 import { emitStatus } from './status.js';
 
 export async function run(_args: string[]): Promise<void> {
@@ -9,7 +9,10 @@ export async function run(_args: string[]): Promise<void> {
   const rpcUrl =
     process.env.SIGNAL_RPC_URL || envVars.SIGNAL_RPC_URL || 'http://127.0.0.1:8080';
 
-  const signalCliInstalled = commandExists('signal-cli');
+  const composeStatus = new SignalComposeManager().getStatus({
+    account,
+    rpcUrl,
+  });
   let rpcReachable = false;
   let selfChatReady = false;
 
@@ -37,17 +40,21 @@ export async function run(_args: string[]): Promise<void> {
   }
 
   emitStatus('SIGNAL', {
-    SIGNAL_CLI: signalCliInstalled,
+    SIGNAL_COMPOSE_FILE: composeStatus.composeFile,
+    SIGNAL_COMPOSE_RUNNING: composeStatus.running,
     SIGNAL_ACCOUNT: account || 'missing',
     SIGNAL_RPC_URL: rpcUrl,
     RPC_REACHABLE: rpcReachable,
     SELF_CHAT_READY: selfChatReady,
+    SIGNAL_COMPOSE_ERROR: composeStatus.lastError || 'none',
     STATUS:
-      signalCliInstalled && account && rpcReachable ? 'success' : 'failed',
+      composeStatus.configured && account && rpcReachable
+        ? 'success'
+        : 'failed',
     LOG: 'logs/setup.log',
   });
 
-  if (!(signalCliInstalled && account && rpcReachable)) {
+  if (!(composeStatus.configured && account && rpcReachable)) {
     process.exit(1);
   }
 }

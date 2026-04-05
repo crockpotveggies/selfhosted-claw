@@ -1,5 +1,5 @@
 import { readEnvFile, setEnvFileValues } from './env.js';
-import { CONTROL_SIGNAL_JID, SIGNAL_ACCOUNT } from './config.js';
+import { CONTROL_SIGNAL_JID, SIGNAL_ACCOUNT, SIGNAL_RPC_URL } from './config.js';
 import {
   ContactActivitySummary,
   getIncomingContactSummaries,
@@ -26,6 +26,7 @@ import {
   PersonalityScope,
   VerifiedIdentity,
 } from './control-types.js';
+import { SignalComposeManager, SignalComposeStatus } from './signal-compose.js';
 
 interface ContactMutationInput {
   identity: string;
@@ -75,6 +76,11 @@ interface SettingsInput {
 
 interface EnvUpdateInput {
   values: Record<string, string>;
+}
+
+interface SignalComposeUpInput {
+  account?: string;
+  rpcUrl?: string;
 }
 
 interface ActionResultEnvelope<TResult> {
@@ -218,7 +224,10 @@ export class ControlActionService {
     ControlActionDefinition<any, any>
   >();
 
-  constructor(private readonly store: ControlStore = new ControlStore()) {
+  constructor(
+    private readonly store: ControlStore = new ControlStore(),
+    private readonly signalCompose: SignalComposeManager = new SignalComposeManager(),
+  ) {
     this.registerDefinitions();
   }
 
@@ -609,6 +618,25 @@ export class ControlActionService {
         };
       },
     });
+
+    this.register<SignalComposeUpInput, SignalComposeStatus>({
+      name: 'signal.composeUp',
+      requiredTrust: 'owner_verified',
+      commandableAction: true,
+      summarizeInput: () => 'Start managed Signal bridge container',
+      execute: async (input) => {
+        const before = this.getSignalComposeStatus();
+        const env = this.getSetupEnvironment();
+        const account = input.account || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT;
+        const rpcUrl = input.rpcUrl || env.SIGNAL_RPC_URL || SIGNAL_RPC_URL;
+        const next = this.signalCompose.start({ account, rpcUrl });
+        return {
+          result: next,
+          beforeState: stableStringify(before),
+          afterState: stableStringify(next),
+        };
+      },
+    });
   }
 
   private register<TInput, TResult>(
@@ -650,6 +678,46 @@ export class ControlActionService {
       'ADMIN_UI_TOKEN',
       'INBOUND_GUARD_SCRIPT',
     ]);
+  }
+
+  getSignalComposeStatus(): SignalComposeStatus {
+    const env = this.getSetupEnvironment();
+    return this.signalCompose.getStatus({
+      account: env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT,
+      rpcUrl: env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
+    });
+  }
+
+  async getSignalLinkQrDataUrl(deviceName: string): Promise<string> {
+    const env = this.getSetupEnvironment();
+    return this.signalCompose.fetchLinkQrDataUrl({
+      deviceName,
+      rpcUrl: env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
+    });
+  }
+
+  async startSignalRegistration(
+    account: string,
+    useVoice: boolean,
+  ): Promise<{ message: string }> {
+    const env = this.getSetupEnvironment();
+    return this.signalCompose.startRegistration({
+      account: account || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT,
+      rpcUrl: env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
+      useVoice,
+    });
+  }
+
+  async verifySignalRegistration(
+    account: string,
+    code: string,
+  ): Promise<{ message: string }> {
+    const env = this.getSetupEnvironment();
+    return this.signalCompose.verifyRegistration({
+      account: account || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT,
+      rpcUrl: env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
+      code,
+    });
   }
 
   getPolicy(): ControlPolicy {
@@ -872,7 +940,9 @@ export class ControlActionService {
     });
   }
 
-  private redactEnvSnapshot(values: Record<string, string>): Record<string, string> {
+  private redactEnvSnapshot(
+    values: Record<string, string>,
+  ): Record<string, string> {
     const redacted = { ...values };
     for (const key of ['OPENAI_API_KEY', 'ADMIN_UI_TOKEN']) {
       if (redacted[key]) redacted[key] = '<redacted>';

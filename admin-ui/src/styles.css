@@ -153,6 +153,10 @@ textarea {
   margin-bottom: 1rem;
 }
 
+.buttonRow.noMargin {
+  margin-bottom: 0;
+}
+
 .wizardCard {
   display: grid;
   gap: 1rem;
@@ -200,6 +204,54 @@ textarea {
 
 .hintBox p:last-child {
   margin-bottom: 0;
+}
+
+.segmented {
+  display: inline-flex;
+  gap: 0.35rem;
+  padding: 0.3rem;
+  border-radius: 999px;
+  background: rgba(25, 48, 32, 0.08);
+  width: fit-content;
+}
+
+.segmented button.active {
+  background: #193020;
+  color: #fffef9;
+}
+
+.provisionCard {
+  display: grid;
+  gap: 0.85rem;
+  border: 1px solid rgba(48, 75, 51, 0.12);
+  border-radius: 1rem;
+  padding: 0.9rem 1rem;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.checkboxRow {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.checkboxRow input {
+  width: auto;
+}
+
+.qrPanel {
+  display: flex;
+  justify-content: center;
+  padding: 0.75rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.qrImage {
+  width: min(100%, 320px);
+  height: auto;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(48, 75, 51, 0.12);
 }
 
 .checklist {

@@ -10,6 +10,7 @@ import Database from 'better-sqlite3';
 import { STORE_DIR } from '../src/config.js';
 import { readEnvFile } from '../src/env.js';
 import { logger } from '../src/logger.js';
+import { SignalComposeManager } from '../src/signal-compose.js';
 import { commandExists, getPlatform, isHeadless, isWSL } from './platform.js';
 import { emitStatus } from './status.js';
 
@@ -40,7 +41,7 @@ export async function run(_args: string[]): Promise<void> {
     }
   }
 
-  const signalCli = commandExists('signal-cli');
+  const signalCompose = new SignalComposeManager().getStatus();
   const envVars = readEnvFile([
     'OPENAI_BASE_URL',
     'OPENAI_MODEL',
@@ -93,7 +94,8 @@ export async function run(_args: string[]): Promise<void> {
       wsl,
       appleContainer,
       docker,
-      signalCli,
+      signalComposeConfigured: signalCompose.configured,
+      signalComposeRunning: signalCompose.running,
       hasEnv,
       hasAuth,
       hasOpenAIConfig,
@@ -109,7 +111,8 @@ export async function run(_args: string[]): Promise<void> {
     IS_HEADLESS: headless,
     APPLE_CONTAINER: appleContainer,
     DOCKER: docker,
-    SIGNAL_CLI: signalCli,
+    SIGNAL_COMPOSE_CONFIGURED: signalCompose.configured,
+    SIGNAL_COMPOSE_RUNNING: signalCompose.running,
     HAS_ENV: hasEnv,
     HAS_AUTH: hasAuth,
     HAS_OPENAI_CONFIG: hasOpenAIConfig,

@@ -78,7 +78,10 @@ export function startAdminServer(
 
       if (req.method === 'GET' && url.pathname === '/api/admin/setup-status') {
         const env = options.service.getSetupEnvironment();
-        const signalConfigured = Boolean(env.SIGNAL_ACCOUNT && env.SIGNAL_RPC_URL);
+        const signalCompose = options.service.getSignalComposeStatus();
+        const signalConfigured = Boolean(
+          env.SIGNAL_ACCOUNT && env.SIGNAL_RPC_URL,
+        );
         let signalReachable = false;
         if (signalConfigured) {
           try {
@@ -122,19 +125,71 @@ export function startAdminServer(
             openAIConfigured: Boolean(env.OPENAI_BASE_URL && env.OPENAI_MODEL),
             signalConfigured,
             signalReachable,
+            signalComposeConfigured: signalCompose.configured,
+            signalComposeRunning: signalCompose.running,
             controlChatConfigured: Boolean(env.CONTROL_SIGNAL_JID),
-            verifiedIdentityCount: options.service.listVerifiedIdentities().length,
+            verifiedIdentityCount:
+              options.service.listVerifiedIdentities().length,
             assistantSignalConfigured: Boolean(
               options.service.getSettings().assistantSignalIdentity ||
-                env.SIGNAL_ACCOUNT,
+              env.SIGNAL_ACCOUNT,
             ),
             wizardComplete:
               Boolean(env.OPENAI_BASE_URL && env.OPENAI_MODEL) &&
               signalConfigured &&
+              signalCompose.running &&
               Boolean(env.CONTROL_SIGNAL_JID) &&
               options.service.listVerifiedIdentities().length > 0,
           },
+          signalCompose,
         });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/admin/signal/link') {
+        const body = JSON.parse((await readBody(req)) || '{}') as {
+          deviceName?: string;
+        };
+        if (!body.deviceName?.trim()) {
+          sendJson(res, 400, { error: 'missing_device_name' });
+          return;
+        }
+        const dataUrl = await options.service.getSignalLinkQrDataUrl(
+          body.deviceName,
+        );
+        sendJson(res, 200, { dataUrl });
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname === '/api/admin/signal/register/start'
+      ) {
+        const body = JSON.parse((await readBody(req)) || '{}') as {
+          account?: string;
+          useVoice?: boolean;
+        };
+        const result = await options.service.startSignalRegistration(
+          body.account || '',
+          body.useVoice === true,
+        );
+        sendJson(res, 200, result);
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname === '/api/admin/signal/register/verify'
+      ) {
+        const body = JSON.parse((await readBody(req)) || '{}') as {
+          account?: string;
+          code?: string;
+        };
+        const result = await options.service.verifySignalRegistration(
+          body.account || '',
+          body.code || '',
+        );
+        sendJson(res, 200, result);
         return;
       }
 
