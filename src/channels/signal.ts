@@ -204,6 +204,92 @@ export class SignalChannel implements Channel {
     return { jid, title };
   }
 
+  async addMembers(groupId: string, members: string[]): Promise<void> {
+    const normalized = members.map((m) => {
+      const raw = m.startsWith('signal:user:') ? m.slice('signal:user:'.length) : m;
+      return formatUuidLike(raw);
+    });
+    const url = new URL(
+      `/v1/groups/${encodeURIComponent(this.account)}/${encodeURIComponent(groupId)}/members`,
+      this.rpcUrl,
+    );
+    const response = await this.fetchWithContext(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ members: normalized }),
+      },
+      'addMembers',
+    );
+    if (!response.ok) {
+      throw new Error(`Signal RPC addMembers failed with ${response.status}`);
+    }
+  }
+
+  async removeMembers(groupId: string, members: string[]): Promise<void> {
+    const normalized = members.map((m) => {
+      const raw = m.startsWith('signal:user:') ? m.slice('signal:user:'.length) : m;
+      return formatUuidLike(raw);
+    });
+    const url = new URL(
+      `/v1/groups/${encodeURIComponent(this.account)}/${encodeURIComponent(groupId)}/members`,
+      this.rpcUrl,
+    );
+    const response = await this.fetchWithContext(
+      url,
+      {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ members: normalized }),
+      },
+      'removeMembers',
+    );
+    if (!response.ok) {
+      throw new Error(`Signal RPC removeMembers failed with ${response.status}`);
+    }
+  }
+
+  async updateGroupName(groupId: string, name: string): Promise<void> {
+    const url = new URL(
+      `/v1/groups/${encodeURIComponent(this.account)}/${encodeURIComponent(groupId)}`,
+      this.rpcUrl,
+    );
+    const response = await this.fetchWithContext(
+      url,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      },
+      'updateGroupName',
+    );
+    if (!response.ok) {
+      throw new Error(`Signal RPC updateGroupName failed with ${response.status}`);
+    }
+  }
+
+  async getGroups(): Promise<any[]> {
+    return this.listGroups();
+  }
+
+  async findGroupByName(
+    name: string,
+  ): Promise<{ id: string; name: string; members: string[] } | null> {
+    const groups = await this.listGroups();
+    const normalized = name.toLowerCase().trim();
+    const match = groups.find((g: any) => {
+      const groupName = String(g.name || g.title || g.groupName || '').toLowerCase();
+      return groupName === normalized || groupName.includes(normalized);
+    });
+    if (!match) return null;
+    return {
+      id: String(match.id || match.groupId || ''),
+      name: String(match.name || match.title || match.groupName || ''),
+      members: Array.isArray(match.members) ? (match.members as string[]) : [],
+    };
+  }
+
   async syncGroups(_force: boolean): Promise<void> {
     const groups = await this.listGroups();
     const now = new Date().toISOString();

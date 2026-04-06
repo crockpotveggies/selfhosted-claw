@@ -22,10 +22,27 @@ export interface DeleteResourceDirective {
   reason: string;
 }
 
+export interface UpdateGroupDirective {
+  kind: 'update_group';
+  channel: 'signal';
+  groupName: string;
+  action: 'add_member' | 'remove_member' | 'rename';
+  members: string[];
+  newName: string;
+}
+
+export interface InspectGroupDirective {
+  kind: 'inspect_group';
+  channel: 'signal';
+  groupName?: string;
+}
+
 export type OutboundDirective =
   | SendMessageDirective
   | CreateGroupDirective
-  | DeleteResourceDirective;
+  | DeleteResourceDirective
+  | UpdateGroupDirective
+  | InspectGroupDirective;
 
 export interface ParsedAgentOutput {
   visibleText: string;
@@ -36,6 +53,10 @@ const SEND_MESSAGE_PATTERN =
   /<send_message\s+channel="(signal|sms|email)"\s+to="([^"]+)">([\s\S]*?)<\/send_message>/gi;
 const CREATE_GROUP_PATTERN =
   /<create_group\s+channel="(signal)"\s+members="([^"]+)"(?:\s+title="([^"]*)")?>((?:[\s\S](?!<\/create_group>))*[\s\S]*?)<\/create_group>/gi;
+const UPDATE_GROUP_PATTERN =
+  /<update_group\s+channel="(signal)"\s+group_name="([^"]+)"\s+action="(add_member|remove_member|rename)"(?:\s+members="([^"]*)")?(?:\s+new_name="([^"]*)")?>([\s\S]*?)<\/update_group>/gi;
+const INSPECT_GROUP_PATTERN =
+  /<inspect_group\s+channel="(signal)"(?:\s+group_name="([^"]*)")?>([\s\S]*?)<\/inspect_group>/gi;
 const DELETE_RESOURCE_PATTERN =
   /<delete_resource\s+channel="(signal|sms|email|calendar)"\s+target="([^"]+)">([\s\S]*?)<\/delete_resource>/gi;
 
@@ -72,7 +93,13 @@ export function parseAgentOutput(rawText: string): ParsedAgentOutput {
   );
   const withoutGroups = withoutSend.replace(
     CREATE_GROUP_PATTERN,
-    (_match, channel: string, members: string, title: string, message: string) => {
+    (
+      _match,
+      channel: string,
+      members: string,
+      title: string,
+      message: string,
+    ) => {
       directives.push({
         kind: 'create_group',
         channel: channel as CreateGroupDirective['channel'],
@@ -86,7 +113,44 @@ export function parseAgentOutput(rawText: string): ParsedAgentOutput {
       return '';
     },
   );
-  const visibleText = withoutGroups.replace(
+  const withoutUpdateGroups = withoutGroups.replace(
+    UPDATE_GROUP_PATTERN,
+    (
+      _match,
+      channel: string,
+      groupName: string,
+      action: string,
+      members: string,
+      newName: string,
+    ) => {
+      directives.push({
+        kind: 'update_group',
+        channel: channel as UpdateGroupDirective['channel'],
+        groupName: collapseWhitespace(groupName),
+        action: action as UpdateGroupDirective['action'],
+        members: members
+          ? members
+              .split(',')
+              .map((m) => collapseWhitespace(m))
+              .filter(Boolean)
+          : [],
+        newName: collapseWhitespace(newName || ''),
+      });
+      return '';
+    },
+  );
+  const withoutInspect = withoutUpdateGroups.replace(
+    INSPECT_GROUP_PATTERN,
+    (_match, channel: string, groupName: string) => {
+      directives.push({
+        kind: 'inspect_group',
+        channel: channel as InspectGroupDirective['channel'],
+        groupName: groupName ? collapseWhitespace(groupName) : undefined,
+      });
+      return '';
+    },
+  );
+  const visibleText = withoutInspect.replace(
     DELETE_RESOURCE_PATTERN,
     (_match, channel: string, target: string, reason: string) => {
       directives.push({

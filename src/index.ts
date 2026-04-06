@@ -55,6 +55,7 @@ import type {
   OutboundCreateGroupInput,
   OutboundDeleteInput,
   OutboundSendInput,
+  OutboundUpdateGroupInput,
 } from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -728,6 +729,26 @@ async function main(): Promise<void> {
       }
       return signalChannel.createGroup({ title, members, message });
     },
+    updateSignalGroup: async (input) => {
+      const signalChannel = channels.find((c) => c.name === 'signal') as
+        | (Channel & {
+            addMembers?: (groupId: string, members: string[]) => Promise<void>;
+            removeMembers?: (groupId: string, members: string[]) => Promise<void>;
+            updateGroupName?: (groupId: string, name: string) => Promise<void>;
+          })
+        | undefined;
+      if (!signalChannel) throw new Error('Signal channel is not available.');
+      if (input.action === 'add_member') {
+        if (!signalChannel.addMembers) throw new Error('addMembers not available.');
+        await signalChannel.addMembers(input.groupId, input.resolvedMemberTargets);
+      } else if (input.action === 'remove_member') {
+        if (!signalChannel.removeMembers) throw new Error('removeMembers not available.');
+        await signalChannel.removeMembers(input.groupId, input.resolvedMemberTargets);
+      } else if (input.action === 'rename') {
+        if (!signalChannel.updateGroupName) throw new Error('updateGroupName not available.');
+        await signalChannel.updateGroupName(input.groupId, input.newName || '');
+      }
+    },
   });
   executeAgentDirective = async (
     directive: ReturnType<typeof parseAgentOutput>['directives'][number],
@@ -854,6 +875,97 @@ async function main(): Promise<void> {
         .join(
           ', ',
         )}.\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
+    }
+    if (directive.kind === 'update_group') {
+      const signalChannel = channels.find((c) => c.name === 'signal') as
+        | (Channel & {
+            findGroupByName?: (
+              name: string,
+            ) => Promise<{ id: string; name: string; members: string[] } | null>;
+          })
+        | undefined;
+      if (!signalChannel?.findGroupByName) {
+        return 'Signal is not configured.';
+      }
+      const group = await signalChannel.findGroupByName(directive.groupName);
+      if (!group) {
+        return `No Signal group found matching "${directive.groupName}".`;
+      }
+      if (directive.action === 'rename') {
+        if (!directive.newName) {
+          return 'A new name is required for the rename action.';
+        }
+        const pending = controlService.previewAction(
+          'outbound.updateGroup',
+          {
+            channel: 'signal',
+            groupName: group.name,
+            groupId: group.id,
+            action: 'rename',
+            resolvedMemberTargets: [],
+            resolvedMemberDisplayNames: [],
+            newName: directive.newName,
+          } satisfies OutboundUpdateGroupInput,
+          agentContext,
+          { chatJid: sourceChatJid },
+        );
+        return `Confirmation required before renaming group "${group.name}" to "${directive.newName}".\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
+      }
+      const members = await controlService.resolveOutboundTargets(
+        'signal',
+        directive.members,
+      );
+      const verb = directive.action === 'add_member' ? 'adding' : 'removing';
+      const prep = directive.action === 'add_member' ? 'to' : 'from';
+      const pending = controlService.previewAction(
+        'outbound.updateGroup',
+        {
+          channel: 'signal',
+          groupName: group.name,
+          groupId: group.id,
+          action: directive.action,
+          resolvedMemberTargets: members.map((m) => m.resolvedTarget),
+          resolvedMemberDisplayNames: members.map((m) => m.displayName),
+        } satisfies OutboundUpdateGroupInput,
+        agentContext,
+        { chatJid: sourceChatJid },
+      );
+      const memberList = members
+        .map((m) => `${m.displayName} (${m.resolvedTarget})`)
+        .join(', ');
+      return `Confirmation required before ${verb} ${memberList} ${prep} "${group.name}".\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
+    }
+    if (directive.kind === 'inspect_group') {
+      const signalChannel = channels.find((c) => c.name === 'signal') as
+        | (Channel & { getGroups?: () => Promise<any[]> })
+        | undefined;
+      if (!signalChannel?.getGroups) {
+        return 'Signal is not configured.';
+      }
+      const groups = await signalChannel.getGroups();
+      if (!directive.groupName) {
+        if (groups.length === 0) return 'You are not in any Signal groups.';
+        const list = groups
+          .map((g: any) => {
+            const name = String(g.name || g.title || g.groupName || 'Unnamed');
+            const count = Array.isArray(g.members) ? g.members.length : 0;
+            return `• ${name} (${count} members)`;
+          })
+          .join('\n');
+        return `Signal groups (${groups.length}):\n${list}`;
+      }
+      const normalized = directive.groupName.toLowerCase().trim();
+      const group = groups.find((g: any) => {
+        const name = String(g.name || g.title || g.groupName || '').toLowerCase();
+        return name === normalized || name.includes(normalized);
+      });
+      if (!group) {
+        return `No Signal group found matching "${directive.groupName}".`;
+      }
+      const groupMembers = Array.isArray(group.members) ? (group.members as string[]) : [];
+      const admins = Array.isArray(group.admins) ? (group.admins as string[]) : [];
+      const groupName = String(group.name || group.title || group.groupName || 'Unnamed');
+      return `Group: ${groupName}\nMembers (${groupMembers.length}): ${groupMembers.join(', ')}\nAdmins: ${admins.join(', ')}`;
     }
     const pending = controlService.previewAction(
       'outbound.delete',

@@ -134,6 +134,16 @@ export interface OutboundDeleteInput {
   reason: string;
 }
 
+export interface OutboundUpdateGroupInput {
+  channel: 'signal';
+  groupName: string;
+  groupId: string;
+  action: 'add_member' | 'remove_member' | 'rename';
+  resolvedMemberTargets: string[];
+  resolvedMemberDisplayNames: string[];
+  newName?: string;
+}
+
 interface OutboundHandlers {
   sendSignalMessage?: (jid: string, text: string) => Promise<void>;
   createSignalGroup?: (input: {
@@ -141,14 +151,11 @@ interface OutboundHandlers {
     members: string[];
     message?: string;
   }) => Promise<{ jid: string; title: string }>;
+  updateSignalGroup?: (input: OutboundUpdateGroupInput) => Promise<void>;
   deleteResource?: (input: OutboundDeleteInput) => Promise<string>;
 }
 
-export type ApprovalReplyDecision =
-  | 'approve'
-  | 'reject'
-  | 'revise'
-  | 'unclear';
+export type ApprovalReplyDecision = 'approve' | 'reject' | 'revise' | 'unclear';
 
 interface ApprovalReplyClassification {
   decision: ApprovalReplyDecision;
@@ -818,7 +825,9 @@ export class ControlActionService {
         const rpcUrl = env.SIGNAL_RPC_URL || SIGNAL_RPC_URL;
 
         if (!account) {
-          throw new Error('SIGNAL_ACCOUNT is required before updating the profile');
+          throw new Error(
+            'SIGNAL_ACCOUNT is required before updating the profile',
+          );
         }
 
         const response = await this.fetchSignal(
@@ -838,7 +847,9 @@ export class ControlActionService {
                   }
                 : before.avatarDataUrl
                   ? {
-                      base64_avatar: normalizeSignalAvatar(before.avatarDataUrl),
+                      base64_avatar: normalizeSignalAvatar(
+                        before.avatarDataUrl,
+                      ),
                     }
                   : {}),
             }),
@@ -846,7 +857,9 @@ export class ControlActionService {
           'update profile',
         );
         if (response.status !== 204) {
-          throw new Error(`Signal profile update failed with ${response.status}`);
+          throw new Error(
+            `Signal profile update failed with ${response.status}`,
+          );
         }
 
         const next: SignalProfileSettings = {
@@ -924,9 +937,7 @@ export class ControlActionService {
         `Delete ${input.channel} item "${input.target}"`,
       execute: async (input) => {
         if (!this.outboundHandlers.deleteResource) {
-          throw new Error(
-            `Deletion is not configured for ${input.channel}.`,
-          );
+          throw new Error(`Deletion is not configured for ${input.channel}.`);
         }
         const result = await this.outboundHandlers.deleteResource(input);
         return {
@@ -954,7 +965,9 @@ export class ControlActionService {
         `Create a new ${input.channel} group with ${input.resolvedMemberDisplayNames.join(', ')}`,
       execute: async (input) => {
         if (input.channel !== 'signal') {
-          throw new Error('Only Signal group creation is implemented right now.');
+          throw new Error(
+            'Only Signal group creation is implemented right now.',
+          );
         }
         if (!this.outboundHandlers.createSignalGroup) {
           throw new Error('Signal group creation is not configured.');
@@ -978,6 +991,39 @@ export class ControlActionService {
             channel: input.channel,
             jid: created.jid,
             title: created.title,
+          }),
+        };
+      },
+    });
+
+    this.register<OutboundUpdateGroupInput, { status: string }>({
+      name: 'outbound.updateGroup',
+      requiredTrust: 'owner_verified',
+      commandableAction: false,
+      previewable: true,
+      summarizeInput: (input) => {
+        if (input.action === 'rename') {
+          return `Rename Signal group "${input.groupName}" to "${input.newName}"`;
+        }
+        const verb = input.action === 'add_member' ? 'Add' : 'Remove';
+        const prep = input.action === 'add_member' ? 'to' : 'from';
+        return `${verb} ${input.resolvedMemberDisplayNames.join(', ')} ${prep} Signal group "${input.groupName}"`;
+      },
+      execute: async (input) => {
+        if (!this.outboundHandlers.updateSignalGroup) {
+          throw new Error('Signal group management is not configured.');
+        }
+        await this.outboundHandlers.updateSignalGroup(input);
+        return {
+          result: { status: 'updated' },
+          beforeState: stableStringify({
+            groupName: input.groupName,
+            action: input.action,
+          }),
+          afterState: stableStringify({
+            groupName: input.action === 'rename' ? input.newName : input.groupName,
+            action: input.action,
+            members: input.resolvedMemberTargets,
           }),
         };
       },
@@ -1097,7 +1143,9 @@ export class ControlActionService {
 
     const stored = this.store.getGoogleContactsOAuth();
     if (!stored.oauthState || stored.oauthState !== input.state) {
-      throw new Error('Google OAuth state did not match the active login request.');
+      throw new Error(
+        'Google OAuth state did not match the active login request.',
+      );
     }
 
     const callbackUri = `${input.origin.replace(/\/$/, '')}/api/admin/google/oauth/callback`;
@@ -1166,15 +1214,15 @@ export class ControlActionService {
         ? 'env'
         : storedOAuth.accessToken || storedOAuth.refreshToken
           ? 'oauth'
-        : providerEnv.GOOGLE_CONTACTS_ACCESS_TOKEN ||
-            providerEnv.GOOGLE_PEOPLE_ACCESS_TOKEN ||
-            providerEnv.GOOGLE_OAUTH_ACCESS_TOKEN ||
-            providerEnv.GMAIL_ACCESS_TOKEN
-          ? 'onecli'
-          : 'none',
+          : providerEnv.GOOGLE_CONTACTS_ACCESS_TOKEN ||
+              providerEnv.GOOGLE_PEOPLE_ACCESS_TOKEN ||
+              providerEnv.GOOGLE_OAUTH_ACCESS_TOKEN ||
+              providerEnv.GMAIL_ACCESS_TOKEN
+            ? 'onecli'
+            : 'none',
       signalOutboundAvailable: Boolean(
         (env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT) &&
-          (env.SIGNAL_RPC_URL || SIGNAL_RPC_URL),
+        (env.SIGNAL_RPC_URL || SIGNAL_RPC_URL),
       ),
       smsOutboundAvailable: false,
       emailOutboundAvailable: false,
@@ -1212,7 +1260,9 @@ export class ControlActionService {
 
     const googleMatch = await searchGoogleContacts(googleToken, channel, query);
     if (!googleMatch) {
-      throw new Error(`No ${channel} contact matched "${query}" in Google Contacts.`);
+      throw new Error(
+        `No ${channel} contact matched "${query}" in Google Contacts.`,
+      );
     }
     return googleMatch;
   }
@@ -1395,19 +1445,17 @@ export class ControlActionService {
     if (decision === 'revise') {
       return {
         handled: true,
-        message:
-          reason?.trim()
-            ? `I kept that pending. It sounds like you want changes first: ${reason.trim()}`
-            : 'I kept that pending. Tell me what you want changed, or reply naturally to approve or reject it.',
+        message: reason?.trim()
+          ? `I kept that pending. It sounds like you want changes first: ${reason.trim()}`
+          : 'I kept that pending. Tell me what you want changed, or reply naturally to approve or reject it.',
       };
     }
 
     return {
       handled: true,
-      message:
-        reason?.trim()
-          ? `I couldn't confidently tell whether that means approve or reject: ${reason.trim()}`
-          : 'I could not confidently tell whether that means approve or reject.',
+      message: reason?.trim()
+        ? `I couldn't confidently tell whether that means approve or reject: ${reason.trim()}`
+        : 'I could not confidently tell whether that means approve or reject.',
     };
   }
 
@@ -1556,9 +1604,7 @@ export class ControlActionService {
     return merged;
   }
 
-  private getGoogleContactsAccessToken(
-    env: Record<string, string>,
-  ): string {
+  private getGoogleContactsAccessToken(env: Record<string, string>): string {
     for (const key of GOOGLE_CONTACT_TOKEN_KEYS) {
       const value = env[key];
       if (value?.trim()) return value.trim();
@@ -1581,7 +1627,11 @@ export class ControlActionService {
       return stored.accessToken;
     }
 
-    if (!stored.refreshToken || !env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    if (
+      !stored.refreshToken ||
+      !env.GOOGLE_CLIENT_ID ||
+      !env.GOOGLE_CLIENT_SECRET
+    ) {
       return stored.accessToken || '';
     }
 
