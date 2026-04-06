@@ -840,7 +840,10 @@ function SignalProvisionStep(props: WizardSharedProps) {
               type="button"
               onClick={() =>
                 void props
-                  .startSignalRegistration(props.signalUseVoice)
+                  .startSignalRegistration(
+                    props.signalUseVoice,
+                    props.signalCaptchaToken || undefined,
+                  )
                   .then((message) => props.setSignalProvisionMessage(message))
                   .catch(() => undefined)
               }
@@ -848,54 +851,36 @@ function SignalProvisionStep(props: WizardSharedProps) {
               Start registration
             </button>
           </div>
-          {props.signalCaptchaRequired ? (
-            <>
-              <div className="hintBox">
-                <strong>Captcha required</strong>
-                <p>
-                  Signal requires a captcha before sending the verification
-                  code. Open{' '}
-                  <a
-                    href="https://signalcaptchas.org/registration/generate.html"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    signalcaptchas.org
-                  </a>{' '}
-                  in your browser, complete the captcha, then right-click the
-                  &ldquo;Open Signal&rdquo; button and copy the link. Paste the
-                  full <code>signalcaptcha://…</code> URL below.
-                </p>
-              </div>
-              <label>
-                Captcha token
-                <input
-                  value={props.signalCaptchaToken}
-                  onChange={(event) =>
-                    props.setSignalCaptchaToken(event.target.value)
-                  }
-                  placeholder="signalcaptcha://03AFY_..."
-                />
-              </label>
-              <div className="buttonRow noMargin">
-                <button
-                  type="button"
-                  onClick={() =>
-                    void props
-                      .startSignalRegistration(
-                        props.signalUseVoice,
-                        props.signalCaptchaToken,
-                      )
-                      .then((message) =>
-                        props.setSignalProvisionMessage(message),
-                      )
-                      .catch(() => undefined)
-                  }
+          <label>
+            Captcha token{' '}
+            <span style={{ fontWeight: 'normal', opacity: 0.7 }}>
+              (optional — only needed if Signal asks for one)
+            </span>
+            <input
+              value={props.signalCaptchaToken}
+              onChange={(event) =>
+                props.setSignalCaptchaToken(event.target.value)
+              }
+              placeholder="signalcaptcha://03AFY_..."
+            />
+          </label>
+          {props.signalCaptchaToken ? (
+            <div className="hintBox">
+              <p>
+                To get this token: open{' '}
+                <a
+                  href="https://signalcaptchas.org/registration/generate.html"
+                  target="_blank"
+                  rel="noreferrer"
                 >
-                  Retry with captcha
-                </button>
-              </div>
-            </>
+                  signalcaptchas.org
+                </a>{' '}
+                in your browser, complete the captcha, then right-click the
+                &ldquo;Open Signal&rdquo; button and copy the link. Paste the
+                full <code>signalcaptcha://…</code> URL above, then click
+                &ldquo;Start registration&rdquo;.
+              </p>
+            </div>
           ) : null}
           <label>
             Verification code
