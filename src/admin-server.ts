@@ -194,6 +194,7 @@ export function startAdminServer(
               Boolean(env.OPENAI_BASE_URL && env.OPENAI_MODEL) &&
               signalConfigured &&
               signalCompose.running &&
+              signalReachable &&
               Boolean(env.CONTROL_SIGNAL_JID) &&
               options.service.listVerifiedIdentities().length > 0,
           },
@@ -307,7 +308,10 @@ export function startAdminServer(
         return;
       }
 
-      if (req.method === 'GET' && url.pathname === '/api/admin/signal/accounts') {
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/signal/accounts'
+      ) {
         const rpcUrl = url.searchParams.get('rpcUrl') || undefined;
         const accounts = await options.service.listSignalAccounts(rpcUrl);
         sendJson(res, 200, { accounts });

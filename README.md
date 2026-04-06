@@ -80,14 +80,33 @@ ONECLI_URL="http://localhost:10254"
 
 ### 5. Build and start Self-Hosted Claw
 
-Production-style run:
+Build and start via PM2 (recommended — auto-restarts on crash, survives reboots):
 
 ```bash
 npm run build
-npm start
+npm run service:start
 ```
 
-Development run:
+To persist the process across reboots, run once after first start:
+
+```bash
+npm run service:save     # save current process list
+npm run service:startup  # install OS-level auto-start hook
+```
+
+**Service management commands:**
+
+| Command | Action |
+|---------|--------|
+| `npm run service:start` | Start (safe to re-run) |
+| `npm run service:stop` | Graceful stop |
+| `npm run service:restart` | Restart (e.g. after `npm run build`) |
+| `npm run service:logs` | Tail live logs |
+| `npm run service:status` | Process table with PID, uptime, restart count |
+
+Logs are written to `logs/nanoclaw.log` and `logs/nanoclaw-error.log`.
+
+Development run (no PM2):
 
 ```bash
 # terminal 1
@@ -140,7 +159,11 @@ Signal still requires a human to complete the trust ceremony by scanning the QR 
 
 ### 7. Restart after wizard changes
 
-If the wizard updated `.env`, restart the main service so the Node process picks up the new values.
+If the wizard updated `.env`, restart the main service so the Node process picks up the new values:
+
+```bash
+npm run service:restart
+```
 
 ### 8. Run the setup checks
 
@@ -326,7 +349,7 @@ Note: the backend must support OpenAI-style tool calling for best compatibility.
 
 **How do I debug issues?**
 
-Inspect the logs, use the setup verification steps, or ask your assistant in the main Signal chat to inspect recent state. For onboarding problems, open the local setup wizard and compare it with `npm run setup -- --step verify`.
+Inspect the logs with `npm run service:logs`, use the setup verification steps, or ask your assistant in the main Signal chat to inspect recent state. For onboarding problems, open the local setup wizard and compare it with `npm run setup -- --step verify`.
 
 **Why isn't the setup working for me?**
 
