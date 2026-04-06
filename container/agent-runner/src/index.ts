@@ -18,6 +18,7 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  controlSignalJid?: string;
 }
 
 interface ContainerOutput {
@@ -178,9 +179,14 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
     `Only emit send directives for explicit outbound requests. If recipient, channel, or message content is ambiguous, ask a short clarifying question instead of guessing.`,
     `Starting a new conversation thread, creating a new group conversation, or deleting something requires user confirmation; the host will enforce that approval gate.`,
     `Do not mention OneCLI or secrets unless directly relevant; host-side credentials may be managed outside the container.`,
+    containerInput.controlSignalJid
+      ? `The user you are talking to is the owner. When they say "me", "myself", or "I" in the context of messaging or group membership, they are referring to themselves — use their Signal JID: ${containerInput.controlSignalJid}.`
+      : '',
     `Your current working directory is ${GROUP_DIR}.`,
     `Current time: ${new Date().toISOString()}.`,
-  ].join(' ');
+  ]
+    .filter(Boolean)
+    .join(' ');
   sections.push(baseline);
 
   const groupMemory = readCompatibleMemoryFile(GROUP_DIR);

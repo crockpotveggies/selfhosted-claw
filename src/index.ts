@@ -5,6 +5,7 @@ import { OneCLI } from '@onecli-sh/sdk';
 
 import {
   ASSISTANT_NAME,
+  CONTROL_SIGNAL_JID,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
@@ -430,6 +431,7 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        controlSignalJid: CONTROL_SIGNAL_JID || undefined,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -838,9 +840,13 @@ async function main(): Promise<void> {
       return `Confirmation required before starting a new SMS conversation with ${target.displayName} (${target.resolvedTarget}).\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
     }
     if (directive.kind === 'create_group') {
+      const SELF_REFS = new Set(['me', 'myself', 'i']);
+      const rawMembers = directive.members.map((m) =>
+        SELF_REFS.has(m.toLowerCase().trim()) ? sourceChatJid : m,
+      );
       const members = await controlService.resolveOutboundTargets(
         'signal',
-        directive.members,
+        rawMembers,
       );
       if (
         sourceChatJid.startsWith('signal:user:') &&
@@ -911,9 +917,13 @@ async function main(): Promise<void> {
         );
         return `Confirmation required before renaming group "${group.name}" to "${directive.newName}".\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
       }
+      const SELF_REFS = new Set(['me', 'myself', 'i']);
+      const rawMembers = directive.members.map((m) =>
+        SELF_REFS.has(m.toLowerCase().trim()) ? sourceChatJid : m,
+      );
       const members = await controlService.resolveOutboundTargets(
         'signal',
-        directive.members,
+        rawMembers,
       );
       const verb = directive.action === 'add_member' ? 'adding' : 'removing';
       const prep = directive.action === 'add_member' ? 'to' : 'from';
