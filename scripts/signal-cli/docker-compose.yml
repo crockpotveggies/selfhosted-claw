@@ -5,7 +5,6 @@ services:
     environment:
       MODE: json-rpc
       JSON_RPC_TRUST_NEW_IDENTITIES: on-first-use
-      AUTO_RECEIVE_SCHEDULE: ""
     ports:
       - "127.0.0.1:${SIGNAL_CLI_PORT:-8080}:8080"
     volumes:

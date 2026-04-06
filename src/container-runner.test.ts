@@ -111,7 +111,11 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import {
+  runContainerAgent,
+  ContainerOutput,
+  resolveContainerOpenAIBaseUrl,
+} from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -135,6 +139,26 @@ function emitOutputMarker(
   const json = JSON.stringify(output);
   proc.stdout.push(`${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`);
 }
+
+describe('resolveContainerOpenAIBaseUrl', () => {
+  it('rewrites localhost to host.docker.internal for containers', () => {
+    expect(resolveContainerOpenAIBaseUrl('http://127.0.0.1:8000/v1')).toBe(
+      'http://host.docker.internal:8000/v1',
+    );
+    expect(resolveContainerOpenAIBaseUrl('http://localhost:8000/v1/')).toBe(
+      'http://host.docker.internal:8000/v1',
+    );
+    expect(resolveContainerOpenAIBaseUrl('http://[::1]:8000/v1')).toBe(
+      'http://host.docker.internal:8000/v1',
+    );
+  });
+
+  it('leaves non-local model endpoints unchanged', () => {
+    expect(
+      resolveContainerOpenAIBaseUrl('https://api.example.com/v1'),
+    ).toBe('https://api.example.com/v1');
+  });
+});
 
 describe('container-runner timeout behavior', () => {
   beforeEach(() => {

@@ -177,6 +177,37 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   );
 }
 
+function buildConfiguredMainGroup(
+  controlSignalJid: string,
+  groups: Record<string, RegisteredGroup>,
+): { jid: string; group: RegisteredGroup } | null {
+  const normalizedJid = controlSignalJid.trim();
+  if (!normalizedJid.startsWith('signal:user:')) return null;
+
+  const existingMain = Object.entries(groups).find(([, group]) => group.isMain);
+  if (existingMain) return null;
+
+  return {
+    jid: normalizedJid,
+    group: {
+      name: 'Main',
+      folder: 'main',
+      trigger: DEFAULT_TRIGGER,
+      added_at: new Date().toISOString(),
+      requiresTrigger: false,
+      isMain: true,
+    },
+  };
+}
+
+/** @internal - exported for testing */
+export function _buildConfiguredMainGroup(
+  controlSignalJid: string,
+  groups: Record<string, RegisteredGroup>,
+): { jid: string; group: RegisteredGroup } | null {
+  return buildConfiguredMainGroup(controlSignalJid, groups);
+}
+
 /**
  * Get available groups list for the agent.
  * Returns groups ordered by most recent activity.
@@ -531,6 +562,13 @@ async function main(): Promise<void> {
 
   restoreRemoteControl();
   const controlService = new ControlActionService();
+  const configuredMain = buildConfiguredMainGroup(
+    controlService.getSettings().controlSignalJid,
+    registeredGroups,
+  );
+  if (configuredMain) {
+    registerGroup(configuredMain.jid, configuredMain.group);
+  }
 
   const sendHostMessage = async (
     jid: string,
@@ -706,8 +744,15 @@ async function main(): Promise<void> {
       );
       continue;
     }
-    channels.push(channel);
-    await channel.connect();
+    try {
+      await channel.connect();
+      channels.push(channel);
+    } catch (err) {
+      logger.error(
+        { channel: channelName, err },
+        'Channel failed to connect at startup',
+      );
+    }
   }
   if (channels.length === 0) {
     logger.fatal('No channels connected');

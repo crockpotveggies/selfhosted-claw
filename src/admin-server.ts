@@ -2,7 +2,12 @@ import fs from 'fs';
 import http from 'http';
 import path from 'path';
 
-import { ADMIN_BIND_HOST, ADMIN_PORT, ADMIN_UI_TOKEN } from './config.js';
+import {
+  ADMIN_BIND_HOST,
+  ADMIN_PORT,
+  ADMIN_UI_TOKEN,
+  ADMIN_UI_USERNAME,
+} from './config.js';
 import { ControlActionService } from './control-actions.js';
 import { logger } from './logger.js';
 
@@ -28,10 +33,44 @@ function sendJson(
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Token',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Token, Authorization',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   });
   res.end(JSON.stringify(payload));
+}
+
+function isBasicAuthAuthorized(
+  req: http.IncomingMessage,
+  expectedUsername: string,
+  expectedPassword: string,
+): boolean {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Basic ')) return false;
+
+  try {
+    const decoded = Buffer.from(header.slice('Basic '.length), 'base64').toString(
+      'utf-8',
+    );
+    const separator = decoded.indexOf(':');
+    if (separator === -1) return false;
+    const username = decoded.slice(0, separator);
+    const password = decoded.slice(separator + 1);
+    return username === expectedUsername && password === expectedPassword;
+  } catch {
+    return false;
+  }
+}
+
+function sendUnauthorized(res: http.ServerResponse): void {
+  res.writeHead(401, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Token, Authorization',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'WWW-Authenticate': 'Basic realm="NanoClaw Admin", charset="UTF-8"',
+  });
+  res.end(JSON.stringify({ error: 'admin_ui_auth_required' }));
 }
 
 async function readBody(req: http.IncomingMessage): Promise<string> {
@@ -60,8 +99,14 @@ export function startAdminServer(
       }
       if (ADMIN_UI_TOKEN) {
         const provided = req.headers['x-admin-token'];
-        if (provided !== ADMIN_UI_TOKEN) {
-          sendJson(res, 401, { error: 'admin_ui_auth_required' });
+        const tokenAuthorized = provided === ADMIN_UI_TOKEN;
+        const basicAuthorized = isBasicAuthAuthorized(
+          req,
+          ADMIN_UI_USERNAME,
+          ADMIN_UI_TOKEN,
+        );
+        if (!tokenAuthorized && !basicAuthorized) {
+          sendUnauthorized(res);
           return;
         }
       }
@@ -85,18 +130,11 @@ export function startAdminServer(
         let signalReachable = false;
         if (signalConfigured) {
           try {
-            const response = await fetch(env.SIGNAL_RPC_URL, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                jsonrpc: '2.0',
-                id: `setup-${Date.now()}`,
-                method: 'listGroups',
-                params: {
-                  account: env.SIGNAL_ACCOUNT,
-                },
-              }),
-            });
+            const signalUrl = new URL(
+              `/v1/groups/${encodeURIComponent(env.SIGNAL_ACCOUNT)}`,
+              env.SIGNAL_RPC_URL,
+            );
+            const response = await fetch(signalUrl, { method: 'GET' });
             signalReachable = response.ok;
           } catch {
             signalReachable = false;

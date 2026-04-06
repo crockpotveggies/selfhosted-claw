@@ -44,19 +44,20 @@ interface SignalEnvelope {
   };
 }
 
-interface SignalRpcResponse {
-  result?: any;
-  error?: {
-    message?: string;
-  };
+function normalizeIdentifier(value: string): string {
+  return value.replace(/[^\dA-Za-z:+-]/g, '').toLowerCase();
 }
 
-function normalizeIdentifier(value: string): string {
-  return value.replace(/[^\dA-Za-z:+]/g, '').toLowerCase();
+function formatUuidLike(value: string): string {
+  const normalized = normalizeIdentifier(value);
+  if (/^[0-9a-f]{32}$/.test(normalized)) {
+    return `${normalized.slice(0, 8)}-${normalized.slice(8, 12)}-${normalized.slice(12, 16)}-${normalized.slice(16, 20)}-${normalized.slice(20)}`;
+  }
+  return normalized;
 }
 
 function makeSignalUserJid(identifier: string): string {
-  return `signal:user:${normalizeIdentifier(identifier)}`;
+  return `signal:user:${formatUuidLike(identifier)}`;
 }
 
 function makeSignalGroupJid(identifier: string): string {
@@ -80,6 +81,7 @@ export class SignalChannel implements Channel {
 
   private connected = false;
   private stopped = false;
+  private receiveSocket: WebSocket | null = null;
   private readonly seenMessageIds = new Set<string>();
 
   constructor(
@@ -90,7 +92,7 @@ export class SignalChannel implements Channel {
 
   async connect(): Promise<void> {
     this.stopped = false;
-    await this.request('listGroups', {});
+    await this.listGroups();
     this.connected = true;
     const now = new Date().toISOString();
     this.opts.onChatMetadata(
@@ -107,6 +109,8 @@ export class SignalChannel implements Channel {
   async disconnect(): Promise<void> {
     this.stopped = true;
     this.connected = false;
+    this.receiveSocket?.close();
+    this.receiveSocket = null;
   }
 
   isConnected(): boolean {
@@ -119,30 +123,36 @@ export class SignalChannel implements Channel {
 
   async sendMessage(jid: string, text: string): Promise<void> {
     if (!text.trim()) return;
-    if (jid.startsWith('signal:group:')) {
-      await this.request('send', {
-        message: text,
-        groupId: jid.slice('signal:group:'.length),
-      });
-      return;
+    const recipients = jid.startsWith('signal:group:')
+      ? [jid.slice('signal:group:'.length)]
+      : jid.startsWith('signal:user:')
+        ? [formatUuidLike(jid.slice('signal:user:'.length))]
+        : null;
+    if (!recipients) throw new Error(`Unsupported Signal JID: ${jid}`);
+
+    const url = new URL('/v2/send', this.rpcUrl);
+    const response = await this.fetchWithContext(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: text,
+          number: this.account,
+          recipients,
+        }),
+      },
+      'send',
+    );
+    if (response.status !== 201) {
+      throw new Error(`Signal RPC send failed with ${response.status}`);
     }
-    if (jid.startsWith('signal:user:')) {
-      await this.request('send', {
-        message: text,
-        recipient: jid.slice('signal:user:'.length),
-      });
-      return;
-    }
-    throw new Error(`Unsupported Signal JID: ${jid}`);
   }
 
   async syncGroups(_force: boolean): Promise<void> {
-    const result = await this.request('listGroups', {});
-    const groups = Array.isArray(result)
-      ? result
-      : Array.isArray(result?.groups)
-        ? result.groups
-        : [];
+    const groups = await this.listGroups();
     const now = new Date().toISOString();
     for (const group of groups) {
       const groupId = String(group.id || group.groupId || '').trim();
@@ -163,28 +173,7 @@ export class SignalChannel implements Channel {
   private async pollLoop(): Promise<void> {
     while (!this.stopped) {
       try {
-        const result = await this.request('receive', {
-          timeout: SIGNAL_RECEIVE_TIMEOUT_SEC,
-        });
-        const envelopes = Array.isArray(result)
-          ? result
-          : Array.isArray(result?.envelopes)
-            ? result.envelopes
-            : [];
-        for (const rawEnvelope of envelopes) {
-          const parsed = this.parseEnvelope(rawEnvelope as SignalEnvelope);
-          if (!parsed) continue;
-          if (this.seenMessageIds.has(parsed.message.id)) continue;
-          this.seenMessageIds.add(parsed.message.id);
-          this.opts.onChatMetadata(
-            parsed.chatJid,
-            parsed.message.timestamp,
-            parsed.chatName,
-            'signal',
-            parsed.isGroup,
-          );
-          this.opts.onMessage(parsed.chatJid, parsed.message);
-        }
+        await this.receiveOnce();
       } catch (err) {
         this.connected = false;
         logger.warn(
@@ -261,35 +250,109 @@ export class SignalChannel implements Channel {
     };
   }
 
-  private async request(
-    method: string,
-    params: Record<string, unknown>,
-  ): Promise<any> {
-    const response = await fetch(this.rpcUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        method,
-        params: {
-          account: this.account,
-          ...params,
-        },
-      }),
-    });
+  private async listGroups(): Promise<any[]> {
+    const url = new URL(
+      `/v1/groups/${encodeURIComponent(this.account)}`,
+      this.rpcUrl,
+    );
+    const response = await this.fetchWithContext(
+      url,
+      { method: 'GET' },
+      'listGroups',
+    );
     if (!response.ok) {
-      throw new Error(`Signal RPC ${method} failed with ${response.status}`);
+      throw new Error(`Signal RPC listGroups failed with ${response.status}`);
     }
-    const payload = (await response.json()) as SignalRpcResponse;
-    if (payload.error) {
+    const payload = (await response.json()) as unknown;
+    return Array.isArray(payload) ? payload : [];
+  }
+
+  private async fetchWithContext(
+    url: URL,
+    init: RequestInit,
+    action: string,
+  ): Promise<Response> {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
       throw new Error(
-        payload.error.message || `Signal RPC ${method} returned an error`,
+        `Signal RPC ${action} failed to reach ${url.toString()}: ${reason}`,
       );
     }
-    return payload.result;
+  }
+
+  private async receiveOnce(): Promise<void> {
+    const wsUrl = new URL(
+      `/v1/receive/${encodeURIComponent(this.account)}`,
+      this.rpcUrl,
+    );
+    wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+
+    await new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket(wsUrl);
+      this.receiveSocket = socket;
+
+      socket.onopen = () => {
+        this.connected = true;
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          this.handleReceivePayload(event.data);
+        } catch (err) {
+          logger.warn(
+            { channel: this.name, err: String(err) },
+            'Signal receive payload error',
+          );
+        }
+      };
+
+      socket.onerror = () => {
+        reject(
+          new Error(`Signal RPC receive websocket failed for ${wsUrl.toString()}`),
+        );
+      };
+
+      socket.onclose = () => {
+        if (this.receiveSocket === socket) {
+          this.receiveSocket = null;
+        }
+        resolve();
+      };
+    });
+  }
+
+  private handleReceivePayload(raw: unknown): void {
+    const text =
+      typeof raw === 'string'
+        ? raw
+        : raw instanceof ArrayBuffer
+          ? Buffer.from(raw).toString('utf-8')
+          : Buffer.from(raw as ArrayBufferLike).toString('utf-8');
+    if (!text.trim()) return;
+
+    const payload = JSON.parse(text) as unknown;
+    const envelopes = Array.isArray(payload)
+      ? payload
+      : Array.isArray((payload as { envelopes?: unknown[] })?.envelopes)
+        ? ((payload as { envelopes: unknown[] }).envelopes ?? [])
+        : [payload];
+
+    for (const rawEnvelope of envelopes) {
+      const parsed = this.parseEnvelope(rawEnvelope as SignalEnvelope);
+      if (!parsed) continue;
+      if (this.seenMessageIds.has(parsed.message.id)) continue;
+      this.seenMessageIds.add(parsed.message.id);
+      this.opts.onChatMetadata(
+        parsed.chatJid,
+        parsed.message.timestamp,
+        parsed.chatName,
+        'signal',
+        parsed.isGroup,
+      );
+      this.opts.onMessage(parsed.chatJid, parsed.message);
+    }
   }
 }
 

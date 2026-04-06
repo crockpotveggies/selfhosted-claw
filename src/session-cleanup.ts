@@ -1,12 +1,26 @@
 import { execFile } from 'child_process';
+import os from 'os';
 import path from 'path';
+import fs from 'fs';
 
 import { logger } from './logger.js';
 
 const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 const SCRIPT_PATH = path.resolve(process.cwd(), 'scripts/cleanup-sessions.sh');
 
+function canRunCleanupScript(): boolean {
+  if (!fs.existsSync(SCRIPT_PATH)) return false;
+  return os.platform() !== 'win32';
+}
+
 function runCleanup(): void {
+  if (!canRunCleanupScript()) {
+    logger.debug(
+      { script: SCRIPT_PATH, platform: os.platform() },
+      'Session cleanup skipped on this platform',
+    );
+    return;
+  }
   execFile('/bin/bash', [SCRIPT_PATH], { timeout: 60_000 }, (err, stdout) => {
     if (err) {
       logger.error({ err }, 'Session cleanup failed');

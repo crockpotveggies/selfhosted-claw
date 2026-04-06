@@ -110,6 +110,8 @@ const SCRIPT_TIMEOUT_MS = 30_000;
 const MAX_TOOL_ROUNDS = 8;
 const MAX_TOOL_OUTPUT_CHARS = 16_000;
 const MAX_HISTORY_KEEP_MESSAGES = 16;
+const MAX_GROUP_MEMORY_CHARS = 2_000;
+const MAX_SHARED_MEMORY_CHARS = 1_200;
 const WEB_SEARCH_ENDPOINT = 'https://duckduckgo.com/html/';
 
 function writeOutput(output: ContainerOutput): void {
@@ -125,6 +127,11 @@ function log(message: string): void {
 function truncate(text: string, maxChars: number = MAX_TOOL_OUTPUT_CHARS): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} chars]`;
+}
+
+function truncateMemory(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n...[memory truncated: ${text.length - maxChars} more chars]`;
 }
 
 async function readStdin(): Promise<string> {
@@ -169,14 +176,20 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
   sections.push(baseline);
 
   const groupMemory = readCompatibleMemoryFile(GROUP_DIR);
-  if (groupMemory) sections.push(`Group memory:\n${groupMemory}`);
+  if (groupMemory) {
+    sections.push(
+      `Group memory:\n${truncateMemory(groupMemory, MAX_GROUP_MEMORY_CHARS)}`,
+    );
+  }
 
   const globalDirs = ['/workspace/global', '/workspace/project/groups/global'];
   for (const dirPath of globalDirs) {
     if (!fs.existsSync(dirPath)) continue;
     const globalMemory = readCompatibleMemoryFile(dirPath);
     if (globalMemory) {
-      sections.push(`Shared memory:\n${globalMemory}`);
+      sections.push(
+        `Shared memory:\n${truncateMemory(globalMemory, MAX_SHARED_MEMORY_CHARS)}`,
+      );
       break;
     }
   }
@@ -226,6 +239,15 @@ function saveHistory(history: OpenAIMessage[]): void {
 
 function estimateTokens(messages: OpenAIMessage[], summary: string | null): number {
   return Math.ceil((JSON.stringify(messages).length + (summary?.length || 0)) / 4);
+}
+
+function estimateConversationRequestTokens(
+  systemPrompt: string,
+  history: OpenAIMessage[],
+): number {
+  return Math.ceil(
+    JSON.stringify(buildConversationMessages(systemPrompt, history)).length / 4,
+  );
 }
 
 function slugify(text: string): string {
@@ -449,22 +471,46 @@ async function parseEventStream(response: Response): Promise<ChatCompletionResul
 async function createChatCompletion(
   messages: OpenAIMessage[],
   tools?: Array<Record<string, unknown>>,
+  maxTokensOverride: number = OPENAI_MAX_TOKENS,
 ): Promise<ChatCompletionResult> {
+  const requestPayload = {
+    model: OPENAI_MODEL,
+    temperature: OPENAI_TEMPERATURE,
+    max_tokens: maxTokensOverride,
+    stream: true,
+    messages,
+    ...(tools && tools.length > 0 ? { tools } : {}),
+  };
   const response = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: openAIHeaders(),
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      temperature: OPENAI_TEMPERATURE,
-      max_tokens: OPENAI_MAX_TOKENS,
-      stream: true,
-      messages,
-      tools,
-    }),
+    body: JSON.stringify(requestPayload),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
+    if (
+      tools &&
+      tools.length > 0 &&
+      response.status === 400 &&
+      errorText.includes('tool choice requires --enable-auto-tool-choice')
+    ) {
+      log(
+        'Backend rejected automatic tool choice; retrying this turn without tools',
+      );
+      return createChatCompletion(messages);
+    }
+    const reducedMaxTokens = deriveRetryMaxTokens(errorText, maxTokensOverride);
+    if (
+      response.status === 400 &&
+      reducedMaxTokens != null &&
+      reducedMaxTokens < maxTokensOverride
+    ) {
+      log(
+        `Backend rejected max_tokens=${maxTokensOverride}; retrying with ${reducedMaxTokens}`,
+      );
+      return createChatCompletion(messages, tools, reducedMaxTokens);
+    }
     throw new Error(`OpenAI request failed (${response.status}): ${truncate(errorText, 1000)}`);
   }
 
@@ -488,20 +534,95 @@ async function createChatCompletion(
   };
 }
 
-async function createPlainCompletion(messages: OpenAIMessage[]): Promise<string> {
+function deriveRetryMaxTokens(
+  errorText: string,
+  currentMaxTokens: number,
+): number | null {
+  const match = errorText.match(
+    /maximum context length is (\d+) tokens and your request has (\d+) input tokens/i,
+  );
+  if (!match) return null;
+
+  const modelContext = parseInt(match[1], 10);
+  const inputTokens = parseInt(match[2], 10);
+  if (!Number.isFinite(modelContext) || !Number.isFinite(inputTokens)) {
+    return null;
+  }
+
+  const available = modelContext - inputTokens - 64;
+  if (available <= 0) {
+    return Math.min(currentMaxTokens, 256);
+  }
+
+  return Math.max(256, Math.min(currentMaxTokens - 1, available));
+}
+
+function parseContextLimitError(
+  errorText: string,
+): { maxContextTokens: number; inputTokens: number } | null {
+  const match = errorText.match(
+    /maximum context length is (\d+) tokens(?: and your request has|\. However, your request has) (\d+) input tokens/i,
+  );
+  if (!match) return null;
+
+  const maxContextTokens = parseInt(match[1], 10);
+  const inputTokens = parseInt(match[2], 10);
+  if (!Number.isFinite(maxContextTokens) || !Number.isFinite(inputTokens)) {
+    return null;
+  }
+  return { maxContextTokens, inputTokens };
+}
+
+function trimHistoryToFitContext(
+  systemPrompt: string,
+  history: OpenAIMessage[],
+  maxContextTokens: number,
+): OpenAIMessage[] | null {
+  if (history.length <= 1) return null;
+
+  const targetTokens = Math.max(512, maxContextTokens - 256);
+  const trimmed = [...history];
+
+  while (trimmed.length > 1) {
+    if (estimateConversationRequestTokens(systemPrompt, trimmed) <= targetTokens) {
+      return trimmed;
+    }
+    trimmed.shift();
+  }
+
+  return estimateConversationRequestTokens(systemPrompt, trimmed) <= targetTokens
+    ? trimmed
+    : null;
+}
+
+async function createPlainCompletion(
+  messages: OpenAIMessage[],
+  maxTokensOverride: number = Math.min(OPENAI_MAX_TOKENS, 1024),
+): Promise<string> {
   const response = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: openAIHeaders(),
     body: JSON.stringify({
       model: OPENAI_MODEL,
       temperature: 0.1,
-      max_tokens: Math.min(OPENAI_MAX_TOKENS, 1024),
+      max_tokens: maxTokensOverride,
       stream: false,
       messages,
     }),
   });
   if (!response.ok) {
     const errorText = await response.text();
+    const reducedMaxTokens = deriveRetryMaxTokens(errorText, maxTokensOverride);
+    if (
+      response.status === 400 &&
+      reducedMaxTokens != null &&
+      reducedMaxTokens < maxTokensOverride
+    ) {
+      log(
+        `Backend rejected max_tokens=${maxTokensOverride}; retrying plain completion with ${reducedMaxTokens}`,
+      );
+      return createPlainCompletion(messages, reducedMaxTokens);
+    }
     throw new Error(`OpenAI request failed (${response.status}): ${truncate(errorText, 1000)}`);
   }
   const payload = (await response.json()) as {
@@ -1242,8 +1363,31 @@ async function runConversationTurn(
   const tools = buildOpenAITools();
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const messages = buildConversationMessages(systemPrompt, workingHistory);
-    const response = await createChatCompletion(messages, tools);
+    let response: ChatCompletionResult;
+    while (true) {
+      const messages = buildConversationMessages(systemPrompt, workingHistory);
+      try {
+        response = await createChatCompletion(messages, tools);
+        break;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const limit = parseContextLimitError(message);
+        if (!limit) throw err;
+
+        const trimmedHistory = trimHistoryToFitContext(
+          systemPrompt,
+          workingHistory,
+          limit.maxContextTokens,
+        );
+        if (!trimmedHistory) throw err;
+
+        log(
+          `Context too large (${limit.inputTokens}/${limit.maxContextTokens}); trimming history from ${workingHistory.length} to ${trimmedHistory.length} messages and retrying`,
+        );
+        workingHistory.splice(0, workingHistory.length, ...trimmedHistory);
+      }
+    }
+
     const assistantMessage: OpenAIMessage = {
       role: 'assistant',
       content: response.content,

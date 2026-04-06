@@ -736,7 +736,7 @@ export class ControlActionService {
     const canonical = canonicalizeIdentity(identity);
     return this.store
       .getVerifiedIdentities()
-      .some((item) => item.identity === canonical);
+      .some((item) => canonicalizeIdentity(item.identity) === canonical);
   }
 
   requireOwnerVerified(context: ControlActionContext): void {

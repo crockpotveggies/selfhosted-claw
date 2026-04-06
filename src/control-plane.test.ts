@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ContactView, ControlActionService } from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
-import { canonicalizeIdentity } from './control-identities.js';
+import {
+  canonicalizeIdentity,
+  identitiesMatch,
+} from './control-identities.js';
 import { ControlStore } from './control-store.js';
 import { _closeDatabase, _initTestDatabase } from './db.js';
 import { SignalComposeManager } from './signal-compose.js';
@@ -208,5 +211,97 @@ describe('control plane parity', () => {
     expect(
       fs.existsSync(path.join(harness.root, 'signal-compose', '.env')),
     ).toBe(true);
+  });
+
+  it('treats Signal UUID identities consistently across raw and signal:user forms', () => {
+    const uuid = '5396f050-7ac2-4610-8c5f-c8f1be353fec';
+
+    expect(canonicalizeIdentity(uuid)).toBe(`signal-user:${uuid}`);
+    expect(canonicalizeIdentity(`signal:user:${uuid}`)).toBe(
+      `signal-user:${uuid}`,
+    );
+    expect(identitiesMatch(uuid, `signal:user:${uuid}`)).toBe(true);
+  });
+
+  it('accepts control commands when the configured control chat uses a Signal UUID jid', async () => {
+    const harness = createHarness();
+    await harness.service.executeAction(
+      'verified.add',
+      {
+        identity: '5396f050-7ac2-4610-8c5f-c8f1be353fec',
+        label: 'Owner UUID',
+      },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+    await harness.service.executeAction(
+      'settings.update',
+      {
+        controlSignalJid:
+          'signal:user:5396f050-7ac2-4610-8c5f-c8f1be353fec',
+      },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    const result = await harness.parser.handle(
+      'signal:user:5396f050-7ac2-4610-8c5f-c8f1be353fec',
+      makeMessage('5396f050-7ac2-4610-8c5f-c8f1be353fec', '/policy show'),
+    );
+
+    expect(result.handled).toBe(true);
+    expect(harness.sent.at(-1)?.text).toContain('No providers are paused.');
+  });
+
+  it('accepts legacy stored verified identities that use compact signal uuids', async () => {
+    const harness = createHarness();
+    harness.store.saveVerifiedIdentities([
+      {
+        identity: 'signal-user:5396f0507ac246108c5fc8f1be353fec',
+        label: 'Owner UUID',
+        addedAt: new Date().toISOString(),
+      },
+    ]);
+    await harness.service.executeAction(
+      'settings.update',
+      {
+        controlSignalJid:
+          'signal:user:5396f0507ac246108c5fc8f1be353fec',
+      },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    const result = await harness.parser.handle(
+      'signal:user:5396f050-7ac2-4610-8c5f-c8f1be353fec',
+      makeMessage('5396f050-7ac2-4610-8c5f-c8f1be353fec', '/policy show'),
+    );
+
+    expect(result.handled).toBe(true);
+    expect(harness.sent.at(-1)?.text).toContain('No providers are paused.');
+  });
+
+  it('accepts verified owner commands from direct Signal chats even when the chat jid form changes', async () => {
+    const harness = createHarness();
+    harness.store.saveVerifiedIdentities([
+      {
+        identity: 'phone:+15550001111',
+        label: 'Owner phone',
+        addedAt: new Date().toISOString(),
+      },
+    ]);
+    await harness.service.executeAction(
+      'settings.update',
+      {
+        controlSignalJid:
+          'signal:user:5396f0507ac246108c5fc8f1be353fec',
+      },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    const result = await harness.parser.handle(
+      'signal:user:+15550001111',
+      makeMessage('+15550001111', '/policy show'),
+    );
+
+    expect(result.handled).toBe(true);
+    expect(harness.sent.at(-1)?.text).toContain('No providers are paused.');
   });
 });

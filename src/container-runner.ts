@@ -64,6 +64,24 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+export function resolveContainerOpenAIBaseUrl(baseUrl: string): string {
+  try {
+    const parsed = new URL(baseUrl);
+    if (
+      parsed.hostname === '127.0.0.1' ||
+      parsed.hostname === 'localhost' ||
+      parsed.hostname === '::1' ||
+      parsed.hostname === '[::1]'
+    ) {
+      parsed.hostname = 'host.docker.internal';
+      return parsed.toString().replace(/\/$/, '');
+    }
+  } catch {
+    // If the URL is invalid, pass it through unchanged and let the agent surface the real error.
+  }
+  return baseUrl;
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
@@ -203,10 +221,11 @@ async function buildContainerArgs(
   agentIdentifier?: string,
 ): Promise<string[]> {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+  const containerOpenAIBaseUrl = resolveContainerOpenAIBaseUrl(OPENAI_BASE_URL);
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
-  args.push('-e', `OPENAI_BASE_URL=${OPENAI_BASE_URL}`);
+  args.push('-e', `OPENAI_BASE_URL=${containerOpenAIBaseUrl}`);
   args.push('-e', `OPENAI_MODEL=${OPENAI_MODEL}`);
   args.push('-e', `OPENAI_MAX_TOKENS=${OPENAI_MAX_TOKENS}`);
   args.push('-e', `OPENAI_TEMPERATURE=${OPENAI_TEMPERATURE}`);

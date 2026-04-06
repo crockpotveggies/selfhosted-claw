@@ -22,6 +22,7 @@ const envConfig = readEnvFile([
   'ADMIN_BIND_HOST',
   'ADMIN_PORT',
   'ADMIN_UI_TOKEN',
+  'ADMIN_UI_USERNAME',
   'SELF_HOSTED_CLAW_ADMIN_CONFIG_DIR',
   'SELF_HOSTED_CLAW_ADMIN_DATA_DIR',
   'INBOUND_GUARD_SCRIPT',
@@ -142,6 +143,8 @@ export const ADMIN_PORT = Math.max(
 );
 export const ADMIN_UI_TOKEN =
   process.env.ADMIN_UI_TOKEN || envConfig.ADMIN_UI_TOKEN || '';
+export const ADMIN_UI_USERNAME =
+  process.env.ADMIN_UI_USERNAME || envConfig.ADMIN_UI_USERNAME || 'admin';
 export const ADMIN_PENDING_ACTION_TTL_MS = 15 * 60 * 1000;
 export const INBOUND_GUARD_SCRIPT =
   process.env.INBOUND_GUARD_SCRIPT ||

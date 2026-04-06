@@ -1,5 +1,8 @@
 import { ControlActionService } from './control-actions.js';
-import { canonicalizeIdentity } from './control-identities.js';
+import {
+  canonicalizeIdentity,
+  identitiesMatch,
+} from './control-identities.js';
 import { ContactDetailView, ContactView } from './control-actions.js';
 import { ControlPolicy, VerifiedIdentity } from './control-types.js';
 import { NewMessage, RegisteredGroup } from './types.js';
@@ -42,16 +45,22 @@ export class SignalControlCommandParser {
     const content = msg.content.trim();
     if (!content.startsWith('/')) return { handled: false };
 
+    const actorIdentity = canonicalizeIdentity(msg.sender);
     const settings = this.deps.service.getSettings();
     const group = this.deps.registeredGroups()[chatJid];
+    const isVerifiedOwnerDirectSignalChat =
+      chatJid.startsWith('signal:user:') &&
+      settings.controlSignalJid.startsWith('signal:user:') &&
+      this.deps.service.isVerifiedIdentity(actorIdentity);
     const inControlChat =
-      (settings.controlSignalJid && chatJid === settings.controlSignalJid) ||
+      (settings.controlSignalJid &&
+        identitiesMatch(chatJid, settings.controlSignalJid)) ||
+      isVerifiedOwnerDirectSignalChat ||
       (chatJid.startsWith('signal:') && group?.isMain === true);
     if (!inControlChat) return { handled: false };
 
     const parts = content.split(/\s+/);
     const command = parts[0];
-    const actorIdentity = canonicalizeIdentity(msg.sender);
     const context = { actorIdentity, source: 'signal_control' as const };
 
     const respond = async (text: string) => {
