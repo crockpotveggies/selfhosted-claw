@@ -61,7 +61,7 @@ function makeSignalUserJid(identifier: string): string {
 }
 
 function makeSignalGroupJid(identifier: string): string {
-  return `signal:group:${normalizeIdentifier(identifier)}`;
+  return `signal:group:${identifier}`;
 }
 
 function toIsoTimestamp(raw: number | string | undefined): string {

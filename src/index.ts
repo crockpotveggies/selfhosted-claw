@@ -60,9 +60,7 @@ import { SignalControlCommandParser } from './control-commands.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { sanitizeInboundMessage } from './inbound-guard.js';
-import {
-  parseAgentOutput,
-} from './outbound-directives.js';
+import { parseAgentOutput } from './outbound-directives.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
   restoreRemoteControl,
@@ -596,84 +594,88 @@ async function main(): Promise<void> {
 
   restoreRemoteControl();
   const controlService = new ControlActionService();
-  controlService.setApprovalReplyClassifier(async ({ reply, pendingSummary }) => {
-    const response = await fetch(
-      `${OPENAI_BASE_URL.replace(/\/$/, '')}/chat/completions`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(OPENAI_API_KEY
-            ? { Authorization: `Bearer ${OPENAI_API_KEY}` }
-            : {}),
+  controlService.setApprovalReplyClassifier(
+    async ({ reply, pendingSummary }) => {
+      const response = await fetch(
+        `${OPENAI_BASE_URL.replace(/\/$/, '')}/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(OPENAI_API_KEY
+              ? { Authorization: `Bearer ${OPENAI_API_KEY}` }
+              : {}),
+          },
+          body: JSON.stringify({
+            model: OPENAI_MODEL,
+            temperature: 0,
+            max_tokens: 80,
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'Classify whether a short follow-up reply about a pending action means approve, reject, revise, or unclear. ' +
+                  'Only choose approve or reject when the user intent is clear. ' +
+                  'Choose revise if the user wants changes before acting. ' +
+                  'Reply with compact JSON only, such as {"decision":"approve","reason":"..."}',
+              },
+              {
+                role: 'user',
+                content:
+                  `Pending action: ${pendingSummary}\n` +
+                  `User reply: ${reply}\n\n` +
+                  'Return JSON with keys decision and reason.',
+              },
+            ],
+          }),
         },
-        body: JSON.stringify({
-          model: OPENAI_MODEL,
-          temperature: 0,
-          max_tokens: 80,
-          messages: [
-            {
-              role: 'system',
-              content:
-                'Classify whether a short follow-up reply about a pending action means approve, reject, revise, or unclear. ' +
-                'Only choose approve or reject when the user intent is clear. ' +
-                'Choose revise if the user wants changes before acting. ' +
-                'Reply with compact JSON only, such as {"decision":"approve","reason":"..."}',
-            },
-            {
-              role: 'user',
-              content:
-                `Pending action: ${pendingSummary}\n` +
-                `User reply: ${reply}\n\n` +
-                'Return JSON with keys decision and reason.',
-            },
-          ],
-        }),
-      },
-    );
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(
-        `Approval reply classification failed (${response.status}): ${text || response.statusText}`,
       );
-    }
 
-    const payload = (await response.json()) as {
-      choices?: Array<{
-        message?: {
-          content?: string | Array<{ text?: string }>;
-        };
-      }>;
-    };
-    const content = payload.choices?.[0]?.message?.content;
-    const raw =
-      typeof content === 'string'
-        ? content
-        : Array.isArray(content)
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(
+          `Approval reply classification failed (${response.status}): ${text || response.statusText}`,
+        );
+      }
+
+      const payload = (await response.json()) as {
+        choices?: Array<{
+          message?: {
+            content?: string | Array<{ text?: string }>;
+          };
+        }>;
+      };
+      const content = payload.choices?.[0]?.message?.content;
+      const raw =
+        typeof content === 'string'
           ? content
-              .map((part) => (typeof part?.text === 'string' ? part.text : ''))
-              .join('')
-          : '';
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(jsonMatch?.[0] || raw) as {
-      decision?: string;
-      reason?: string;
-    };
-    const decision = parsed.decision as ApprovalReplyDecision | undefined;
-    if (
-      decision !== 'approve' &&
-      decision !== 'reject' &&
-      decision !== 'revise' &&
-      decision !== 'unclear'
-    ) {
-      throw new Error(`Invalid approval reply decision: ${raw}`);
-    }
-    return {
-      decision,
-      reason: typeof parsed.reason === 'string' ? parsed.reason : undefined,
-    };
-  });
+          : Array.isArray(content)
+            ? content
+                .map((part) =>
+                  typeof part?.text === 'string' ? part.text : '',
+                )
+                .join('')
+            : '';
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(jsonMatch?.[0] || raw) as {
+        decision?: string;
+        reason?: string;
+      };
+      const decision = parsed.decision as ApprovalReplyDecision | undefined;
+      if (
+        decision !== 'approve' &&
+        decision !== 'reject' &&
+        decision !== 'revise' &&
+        decision !== 'unclear'
+      ) {
+        throw new Error(`Invalid approval reply decision: ${raw}`);
+      }
+      return {
+        decision,
+        reason: typeof parsed.reason === 'string' ? parsed.reason : undefined,
+      };
+    },
+  );
   const configuredMain = buildConfiguredMainGroup(
     controlService.getSettings().controlSignalJid,
     registeredGroups,
@@ -710,7 +712,9 @@ async function main(): Promise<void> {
       await sendHostMessage(jid, text);
     },
     createSignalGroup: async ({ title, members, message }) => {
-      const signalChannel = channels.find((channel) => channel.name === 'signal') as
+      const signalChannel = channels.find(
+        (channel) => channel.name === 'signal',
+      ) as
         | (Channel & {
             createGroup?: (input: {
               title?: string;
@@ -761,11 +765,10 @@ async function main(): Promise<void> {
           );
           return `Confirmation required before starting a new Signal conversation with ${target.displayName} (${target.resolvedTarget}).\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
         }
-        await controlService.executeAction<OutboundSendInput, { status: string }>(
-          'outbound.send',
-          input,
-          agentContext,
-        );
+        await controlService.executeAction<
+          OutboundSendInput,
+          { status: string }
+        >('outbound.send', input, agentContext);
         return `Sent via Signal to ${target.displayName} (${target.resolvedTarget}).`;
       }
       if (directive.channel === 'email') {
@@ -791,7 +794,10 @@ async function main(): Promise<void> {
         );
         return `Confirmation required before starting a new email thread with ${target.displayName} (${target.resolvedTarget}).\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
       }
-      const target = await controlService.resolveOutboundTarget('sms', directive.to);
+      const target = await controlService.resolveOutboundTarget(
+        'sms',
+        directive.to,
+      );
       const pending = controlService.previewAction(
         'outbound.send',
         {
@@ -802,7 +808,8 @@ async function main(): Promise<void> {
           resolvedDisplayName: target.displayName,
           resolutionSource: target.source,
           requiresConfirmation: true,
-          confirmationReason: 'Starting a new SMS conversation requires approval.',
+          confirmationReason:
+            'Starting a new SMS conversation requires approval.',
         } satisfies OutboundSendInput,
         agentContext,
         { chatJid: sourceChatJid },
@@ -814,6 +821,19 @@ async function main(): Promise<void> {
         'signal',
         directive.members,
       );
+      if (
+        sourceChatJid.startsWith('signal:user:') &&
+        !members.some((m) => m.resolvedTarget === sourceChatJid)
+      ) {
+        members.push({
+          channel: 'signal',
+          query: sourceChatJid,
+          resolvedTarget: sourceChatJid,
+          displayName: sourceChatJid,
+          source: 'literal',
+          existingConversation: true,
+        });
+      }
       const pending = controlService.previewAction(
         'outbound.createGroup',
         {
@@ -831,7 +851,9 @@ async function main(): Promise<void> {
       );
       return `Confirmation required before creating a new Signal group with ${members
         .map((member) => `${member.displayName} (${member.resolvedTarget})`)
-        .join(', ')}.\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
+        .join(
+          ', ',
+        )}.\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
     }
     const pending = controlService.previewAction(
       'outbound.delete',
@@ -995,7 +1017,6 @@ async function main(): Promise<void> {
           logger.error({ err, chatJid }, 'Natural approval handling error'),
         );
       return;
-
     },
     onChatMetadata: (
       chatJid: string,
