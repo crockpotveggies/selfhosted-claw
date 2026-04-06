@@ -156,7 +156,12 @@ export class SignalChannel implements Channel {
     members: string[];
     message?: string;
   }): Promise<{ jid: string; title: string }> {
-    const members = input.members.map((member) => formatUuidLike(member));
+    const members = input.members.map((member) => {
+      const raw = member.startsWith('signal:user:')
+        ? member.slice('signal:user:'.length)
+        : member;
+      return formatUuidLike(raw);
+    });
     const title = input.title?.trim() || 'New conversation';
     const url = new URL(
       `/v1/groups/${encodeURIComponent(this.account)}`,
