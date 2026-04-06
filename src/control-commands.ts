@@ -1,8 +1,5 @@
 import { ControlActionService } from './control-actions.js';
-import {
-  canonicalizeIdentity,
-  identitiesMatch,
-} from './control-identities.js';
+import { canonicalizeIdentity, identitiesMatch } from './control-identities.js';
 import { ContactDetailView, ContactView } from './control-actions.js';
 import { ControlPolicy, VerifiedIdentity } from './control-types.js';
 import { NewMessage, RegisteredGroup } from './types.js';
@@ -411,6 +408,26 @@ export class SignalControlCommandParser {
             context,
           );
           await respond(result.message);
+          return { handled: true };
+        }
+        case '/pending': {
+          const sub = parts[1];
+          if (sub === 'list' || !sub) {
+            const count = Number(parts[2] || '10');
+            const pending = this.deps.service.listPendingActions(count);
+            await respond(
+              pending.length === 0
+                ? 'No pending approvals.'
+                : pending
+                    .map(
+                      (item) =>
+                        `- ${item.id} [${item.status}] ${item.summary}\n  Created: ${item.createdAt}\n  Expires: ${item.expiresAt}`,
+                    )
+                    .join('\n'),
+            );
+            return { handled: true };
+          }
+          await respond('Usage: /pending list [count]');
           return { handled: true };
         }
         case '/reject': {

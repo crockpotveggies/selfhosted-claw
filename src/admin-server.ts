@@ -124,9 +124,19 @@ export function startAdminServer(
       if (req.method === 'GET' && url.pathname === '/api/admin/setup-status') {
         const env = options.service.getSetupEnvironment();
         const signalCompose = options.service.getSignalComposeStatus();
+        const providers = await options.service.getProviderAvailability();
         const signalConfigured = Boolean(
           env.SIGNAL_ACCOUNT && env.SIGNAL_RPC_URL,
         );
+        let onecliReachable = false;
+        if (env.ONECLI_URL) {
+          try {
+            const response = await fetch(env.ONECLI_URL, { method: 'GET' });
+            onecliReachable = response.status < 500;
+          } catch {
+            onecliReachable = false;
+          }
+        }
         let signalReachable = false;
         if (signalConfigured) {
           try {
@@ -153,6 +163,7 @@ export function startAdminServer(
             SIGNAL_RECEIVE_TIMEOUT_SEC: env.SIGNAL_RECEIVE_TIMEOUT_SEC || '',
             CONTROL_SIGNAL_JID: env.CONTROL_SIGNAL_JID || '',
             ONECLI_URL: env.ONECLI_URL || '',
+            GOOGLE_CLIENT_ID: env.GOOGLE_CLIENT_ID || '',
             ADMIN_BIND_HOST: env.ADMIN_BIND_HOST || '',
             ADMIN_PORT: env.ADMIN_PORT || '',
             INBOUND_GUARD_SCRIPT: env.INBOUND_GUARD_SCRIPT || '',
@@ -165,6 +176,10 @@ export function startAdminServer(
             signalReachable,
             signalComposeConfigured: signalCompose.configured,
             signalComposeRunning: signalCompose.running,
+            onecliConfigured: Boolean(env.ONECLI_URL),
+            onecliReachable,
+            googleContactsAvailable: providers.googleContactsAvailable,
+            googleContactsSource: providers.googleContactsSource,
             controlChatConfigured: Boolean(env.CONTROL_SIGNAL_JID),
             verifiedIdentityCount:
               options.service.listVerifiedIdentities().length,
@@ -180,6 +195,108 @@ export function startAdminServer(
               options.service.listVerifiedIdentities().length > 0,
           },
           signalCompose,
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/admin/providers') {
+        sendJson(res, 200, {
+          providers: await options.service.getProviderAvailability(),
+        });
+        return;
+      }
+
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/google-contacts/setup'
+      ) {
+        const env = options.service.getSetupEnvironment();
+        const host = req.headers.host || `${ADMIN_BIND_HOST}:${ADMIN_PORT}`;
+        const origin = `http://${host}`;
+        const providers = await options.service.getProviderAvailability();
+        sendJson(res, 200, {
+          origin,
+          callbackUri: `${origin}/api/admin/google/oauth/callback`,
+          scopes: ['https://www.googleapis.com/auth/contacts.readonly'],
+          configured: {
+            clientId: Boolean(env.GOOGLE_CLIENT_ID),
+            clientSecret: Boolean(env.GOOGLE_CLIENT_SECRET),
+            accessToken: providers.googleContactsAvailable,
+          },
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/admin/google/oauth/start') {
+        const host = req.headers.host || `${ADMIN_BIND_HOST}:${ADMIN_PORT}`;
+        const origin = `http://${host}`;
+        const result = await options.service.startGoogleContactsOAuth(origin);
+        sendJson(res, 200, result);
+        return;
+      }
+
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/google/oauth/callback'
+      ) {
+        const host = req.headers.host || `${ADMIN_BIND_HOST}:${ADMIN_PORT}`;
+        const origin = `http://${host}`;
+        const code = url.searchParams.get('code') || '';
+        const state = url.searchParams.get('state') || '';
+        const error = url.searchParams.get('error') || '';
+
+        if (error) {
+          res.writeHead(302, {
+            Location: `/?tab=contacts&google_contacts=error&message=${encodeURIComponent(error)}`,
+          });
+          res.end();
+          return;
+        }
+        if (!code || !state) {
+          res.writeHead(302, {
+            Location:
+              '/?tab=contacts&google_contacts=error&message=missing_code_or_state',
+          });
+          res.end();
+          return;
+        }
+
+        try {
+          await options.service.completeGoogleContactsOAuth({
+            origin,
+            code,
+            state,
+          });
+          res.writeHead(302, {
+            Location:
+              '/?tab=contacts&google_contacts=connected&message=Google%20Contacts%20connected',
+          });
+          res.end();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          res.writeHead(302, {
+            Location: `/?tab=contacts&google_contacts=error&message=${encodeURIComponent(message)}`,
+          });
+          res.end();
+        }
+        return;
+      }
+
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/resolve-contact'
+      ) {
+        const query = url.searchParams.get('query') || '';
+        const channel = (url.searchParams.get('channel') || 'signal') as
+          | 'signal'
+          | 'sms'
+          | 'email';
+        if (!query.trim()) {
+          sendJson(res, 400, { error: 'missing_contact_query' });
+          return;
+        }
+        sendJson(res, 200, {
+          result: await options.service.resolveOutboundTarget(channel, query),
         });
         return;
       }
@@ -267,6 +384,13 @@ export function startAdminServer(
         return;
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/admin/signal/profile') {
+        sendJson(res, 200, {
+          profile: options.service.getSignalProfile(),
+        });
+        return;
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/admin/personality') {
         const scope = (url.searchParams.get('scope') || 'global') as
           | 'global'
@@ -308,6 +432,39 @@ export function startAdminServer(
         sendJson(res, 200, {
           audit: options.service.getAuditRecords(limit, identity),
         });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/admin/pending') {
+        const limit = Number(url.searchParams.get('limit') || '50');
+        sendJson(res, 200, {
+          pending: options.service.listPendingActions(limit),
+        });
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname.startsWith('/api/admin/pending/') &&
+        (url.pathname.endsWith('/approve') || url.pathname.endsWith('/reject'))
+      ) {
+        const approve = url.pathname.endsWith('/approve');
+        const actionPath = approve ? '/approve' : '/reject';
+        const id = decodeURIComponent(
+          url.pathname
+            .slice('/api/admin/pending/'.length)
+            .slice(0, -actionPath.length),
+        );
+        const result = approve
+          ? await options.service.approvePending(id, {
+              actorIdentity: 'ui:local-admin',
+              source: 'ui',
+            })
+          : options.service.rejectPending(id, {
+              actorIdentity: 'ui:local-admin',
+              source: 'ui',
+            });
+        sendJson(res, 200, { result });
         return;
       }
 

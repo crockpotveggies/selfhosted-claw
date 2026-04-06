@@ -1,3 +1,7 @@
+import { randomBytes } from 'crypto';
+
+import { OneCLI } from '@onecli-sh/sdk';
+
 import { readEnvFile, setEnvFileValues } from './env.js';
 import {
   CONTROL_SIGNAL_JID,
@@ -9,6 +13,12 @@ import {
   getIncomingContactSummaries,
   getMessagesBySender,
 } from './db.js';
+import {
+  ProviderAvailability,
+  ResolvedContactTarget,
+  resolveLiteralTarget,
+  searchGoogleContacts,
+} from './contact-resolution.js';
 import { canonicalizeIdentity, displayIdentity } from './control-identities.js';
 import {
   previewPersonalityProfile,
@@ -25,12 +35,15 @@ import {
   ControlContact,
   ControlPolicy,
   ControlSettings,
+  GoogleContactsOAuthState,
   PendingControlAction,
   PersonalityProfile,
   PersonalityScope,
+  SignalProfileSettings,
   VerifiedIdentity,
 } from './control-types.js';
 import { SignalComposeManager, SignalComposeStatus } from './signal-compose.js';
+import { resolveSignalTarget } from './outbound-directives.js';
 
 interface ContactMutationInput {
   identity: string;
@@ -87,6 +100,87 @@ interface SignalComposeUpInput {
   rpcUrl?: string;
 }
 
+interface SignalProfileInput {
+  account?: string;
+  name?: string;
+  about?: string;
+  avatarDataUrl?: string;
+}
+
+export interface OutboundSendInput {
+  channel: 'signal' | 'sms' | 'email';
+  target: string;
+  message: string;
+  requiresConfirmation: boolean;
+  confirmationReason?: string;
+  resolvedSignalJid?: string;
+  resolvedTarget?: string;
+  resolvedDisplayName?: string;
+  resolutionSource?: string;
+}
+
+export interface OutboundCreateGroupInput {
+  channel: 'signal';
+  title?: string;
+  message: string;
+  members: string[];
+  resolvedMemberTargets: string[];
+  resolvedMemberDisplayNames: string[];
+}
+
+export interface OutboundDeleteInput {
+  channel: 'signal' | 'sms' | 'email' | 'calendar';
+  target: string;
+  reason: string;
+}
+
+interface OutboundHandlers {
+  sendSignalMessage?: (jid: string, text: string) => Promise<void>;
+  createSignalGroup?: (input: {
+    title?: string;
+    members: string[];
+    message?: string;
+  }) => Promise<{ jid: string; title: string }>;
+  deleteResource?: (input: OutboundDeleteInput) => Promise<string>;
+}
+
+export type ApprovalReplyDecision =
+  | 'approve'
+  | 'reject'
+  | 'revise'
+  | 'unclear';
+
+interface ApprovalReplyClassification {
+  decision: ApprovalReplyDecision;
+  reason?: string;
+}
+
+type ApprovalReplyClassifier = (input: {
+  reply: string;
+  pendingSummary: string;
+}) => Promise<ApprovalReplyClassification>;
+
+const GOOGLE_CONTACT_TOKEN_KEYS = [
+  'GOOGLE_CONTACTS_ACCESS_TOKEN',
+  'GOOGLE_PEOPLE_ACCESS_TOKEN',
+  'GOOGLE_OAUTH_ACCESS_TOKEN',
+  'GMAIL_ACCESS_TOKEN',
+] as const;
+const GOOGLE_CONTACTS_SCOPE =
+  'https://www.googleapis.com/auth/contacts.readonly';
+
+function resolveSignalHistoryTarget(query: string): ResolvedContactTarget {
+  const resolved = resolveSignalTarget(query);
+  return {
+    channel: 'signal',
+    query,
+    resolvedTarget: resolved.jid,
+    displayName: query,
+    source: 'signal_history',
+    existingConversation: resolved.existingConversation,
+  };
+}
+
 interface ActionResultEnvelope<TResult> {
   result: TResult;
   beforeState: string;
@@ -121,6 +215,13 @@ function asArray<T>(value: T | T[]): T[] {
   return Array.isArray(value) ? value : [value];
 }
 
+function normalizeSignalAvatar(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const match = trimmed.match(/^data:[^;]+;base64,(.+)$/i);
+  return match ? match[1] : trimmed;
+}
+
 function summarizeStatus(status: ContactStatus, reasons: string[]): string {
   if (status === 'abuse') {
     return reasons.length
@@ -135,6 +236,59 @@ function summarizeStatus(status: ContactStatus, reasons: string[]): string {
   return reasons.length
     ? `Reset to unknown: ${reasons.join('; ')}`
     : 'Reset to unknown.';
+}
+
+function parseNaturalApprovalDecision(
+  text: string,
+): ApprovalReplyDecision | null {
+  const normalized = text.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!normalized || normalized.length > 160) return null;
+
+  const cleaned = normalized.replace(/[.!]/g, '').trim();
+  const hasQuestion = normalized.includes('?');
+  if (hasQuestion) return null;
+
+  const rejectPatterns = [
+    /\b(no|nope|nah)\b/,
+    /\bcancel( it| that)?\b/,
+    /\breject\b/,
+    /\bdo not\b/,
+    /\bdon't\b/,
+    /\bdont\b/,
+    /\bnot now\b/,
+    /\bnever mind\b/,
+    /\bhold off\b/,
+    /\bskip it\b/,
+    /\bplease stop\b/,
+  ];
+  if (rejectPatterns.some((pattern) => pattern.test(cleaned))) {
+    return 'reject';
+  }
+
+  const approvePatterns = [
+    /\b(yes|yep|yeah|yup)\b/,
+    /\bok(ay)?\b/,
+    /\bsure\b/,
+    /\bgo ahead\b/,
+    /\bdo it\b/,
+    /\bsend it\b/,
+    /\bapprove(d)?\b/,
+    /\bsounds good\b/,
+    /\bplease do\b/,
+    /\blooks good\b/,
+    /\bthat works\b/,
+    /\blets do it\b/,
+    /\blet's do it\b/,
+    /\bi'm good with that\b/,
+    /\bi am good with that\b/,
+    /\bthat is fine\b/,
+    /\bthats fine\b/,
+  ];
+  if (approvePatterns.some((pattern) => pattern.test(cleaned))) {
+    return 'approve';
+  }
+
+  return null;
 }
 
 function buildClassificationEntry(
@@ -227,6 +381,8 @@ export class ControlActionService {
     string,
     ControlActionDefinition<any, any>
   >();
+  private outboundHandlers: OutboundHandlers = {};
+  private approvalReplyClassifier?: ApprovalReplyClassifier;
 
   constructor(
     private readonly store: ControlStore = new ControlStore(),
@@ -601,6 +757,9 @@ export class ControlActionService {
           'SIGNAL_RECEIVE_TIMEOUT_SEC',
           'CONTROL_SIGNAL_JID',
           'ONECLI_URL',
+          'GOOGLE_CLIENT_ID',
+          'GOOGLE_CLIENT_SECRET',
+          'GOOGLE_CONTACTS_ACCESS_TOKEN',
           'ADMIN_BIND_HOST',
           'ADMIN_PORT',
           'ADMIN_UI_TOKEN',
@@ -641,6 +800,188 @@ export class ControlActionService {
         };
       },
     });
+
+    this.register<SignalProfileInput, SignalProfileSettings>({
+      name: 'signal.profile.update',
+      requiredTrust: 'owner_verified',
+      commandableAction: false,
+      previewable: true,
+      summarizeInput: () => 'Update Signal profile',
+      execute: async (input) => {
+        const before = this.getSignalProfile();
+        const env = this.getSetupEnvironment();
+        const account =
+          input.account ||
+          before.account ||
+          env.SIGNAL_ACCOUNT ||
+          SIGNAL_ACCOUNT;
+        const rpcUrl = env.SIGNAL_RPC_URL || SIGNAL_RPC_URL;
+
+        if (!account) {
+          throw new Error('SIGNAL_ACCOUNT is required before updating the profile');
+        }
+
+        const response = await this.fetchSignal(
+          `/v1/profiles/${encodeURIComponent(account)}`,
+          rpcUrl,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: input.name ?? before.name ?? '',
+              about: input.about ?? before.about ?? '',
+              ...(input.avatarDataUrl !== undefined
+                ? {
+                    base64_avatar: input.avatarDataUrl
+                      ? normalizeSignalAvatar(input.avatarDataUrl)
+                      : '',
+                  }
+                : before.avatarDataUrl
+                  ? {
+                      base64_avatar: normalizeSignalAvatar(before.avatarDataUrl),
+                    }
+                  : {}),
+            }),
+          },
+          'update profile',
+        );
+        if (response.status !== 204) {
+          throw new Error(`Signal profile update failed with ${response.status}`);
+        }
+
+        const next: SignalProfileSettings = {
+          account,
+          name: input.name ?? before.name ?? '',
+          about: input.about ?? before.about ?? '',
+          avatarDataUrl:
+            input.avatarDataUrl !== undefined
+              ? input.avatarDataUrl
+              : before.avatarDataUrl,
+          updatedAt: nowIso(),
+        };
+        this.store.saveSignalProfile(next);
+        return {
+          result: next,
+          beforeState: stableStringify(before),
+          afterState: stableStringify(next),
+        };
+      },
+    });
+
+    this.register<OutboundSendInput, { status: string }>({
+      name: 'outbound.send',
+      requiredTrust: 'owner_verified',
+      commandableAction: false,
+      previewable: true,
+      summarizeInput: (input) =>
+        input.requiresConfirmation
+          ? `Start a new ${input.channel} conversation with ${input.resolvedDisplayName || input.target}`
+          : `Send ${input.channel} message to ${input.resolvedDisplayName || input.target}`,
+      execute: async (input) => {
+        const beforeState = stableStringify({
+          status: 'pending',
+          channel: input.channel,
+          target: input.resolvedTarget || input.target,
+        });
+        if (input.channel === 'signal') {
+          if (!input.resolvedSignalJid) {
+            throw new Error('Signal target could not be resolved for approval');
+          }
+          if (!this.outboundHandlers.sendSignalMessage) {
+            throw new Error('Signal delivery is not configured');
+          }
+          await this.outboundHandlers.sendSignalMessage(
+            input.resolvedSignalJid,
+            input.message,
+          );
+          return {
+            result: { status: 'sent' },
+            beforeState,
+            afterState: stableStringify({
+              status: 'sent',
+              channel: input.channel,
+              target: input.resolvedTarget || input.target,
+            }),
+          };
+        }
+        if (input.channel === 'email') {
+          throw new Error(
+            'Email delivery is not configured yet. Configure an email provider first.',
+          );
+        }
+        throw new Error(
+          'SMS delivery is not configured yet. Configure an SMS provider first.',
+        );
+      },
+    });
+
+    this.register<OutboundDeleteInput, { status: string }>({
+      name: 'outbound.delete',
+      requiredTrust: 'owner_verified',
+      commandableAction: false,
+      previewable: true,
+      summarizeInput: (input) =>
+        `Delete ${input.channel} item "${input.target}"`,
+      execute: async (input) => {
+        if (!this.outboundHandlers.deleteResource) {
+          throw new Error(
+            `Deletion is not configured for ${input.channel}.`,
+          );
+        }
+        const result = await this.outboundHandlers.deleteResource(input);
+        return {
+          result: { status: result || 'deleted' },
+          beforeState: stableStringify({
+            status: 'pending',
+            channel: input.channel,
+            target: input.target,
+          }),
+          afterState: stableStringify({
+            status: result || 'deleted',
+            channel: input.channel,
+            target: input.target,
+          }),
+        };
+      },
+    });
+
+    this.register<OutboundCreateGroupInput, { status: string; jid: string }>({
+      name: 'outbound.createGroup',
+      requiredTrust: 'owner_verified',
+      commandableAction: false,
+      previewable: true,
+      summarizeInput: (input) =>
+        `Create a new ${input.channel} group with ${input.resolvedMemberDisplayNames.join(', ')}`,
+      execute: async (input) => {
+        if (input.channel !== 'signal') {
+          throw new Error('Only Signal group creation is implemented right now.');
+        }
+        if (!this.outboundHandlers.createSignalGroup) {
+          throw new Error('Signal group creation is not configured.');
+        }
+
+        const created = await this.outboundHandlers.createSignalGroup({
+          title: input.title,
+          members: input.resolvedMemberTargets,
+          message: input.message,
+        });
+        return {
+          result: { status: 'created', jid: created.jid },
+          beforeState: stableStringify({
+            status: 'pending',
+            channel: input.channel,
+            members: input.resolvedMemberTargets,
+            title: input.title || '',
+          }),
+          afterState: stableStringify({
+            status: 'created',
+            channel: input.channel,
+            jid: created.jid,
+            title: created.title,
+          }),
+        };
+      },
+    });
   }
 
   private register<TInput, TResult>(
@@ -651,6 +992,10 @@ export class ControlActionService {
 
   getDefinition(name: string): ControlActionDefinition<any, any> | undefined {
     return this.definitions.get(name);
+  }
+
+  setOutboundHandlers(handlers: OutboundHandlers): void {
+    this.outboundHandlers = handlers;
   }
 
   getSettings(): ControlSettings {
@@ -677,6 +1022,9 @@ export class ControlActionService {
       'SIGNAL_RECEIVE_TIMEOUT_SEC',
       'CONTROL_SIGNAL_JID',
       'ONECLI_URL',
+      'GOOGLE_CLIENT_ID',
+      'GOOGLE_CLIENT_SECRET',
+      'GOOGLE_CONTACTS_ACCESS_TOKEN',
       'ADMIN_BIND_HOST',
       'ADMIN_PORT',
       'ADMIN_UI_TOKEN',
@@ -690,6 +1038,193 @@ export class ControlActionService {
       account: env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT,
       rpcUrl: env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
     });
+  }
+
+  getSignalProfile(): SignalProfileSettings {
+    const stored = this.store.getSignalProfile();
+    const env = this.getSetupEnvironment();
+    return {
+      ...stored,
+      account: stored.account || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT || '',
+    };
+  }
+
+  getGoogleContactsOAuth(): GoogleContactsOAuthState {
+    return this.store.getGoogleContactsOAuth();
+  }
+
+  async startGoogleContactsOAuth(origin: string): Promise<{ url: string }> {
+    const env = this.getSetupEnvironment();
+    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+      throw new Error(
+        'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required before connecting Google Contacts.',
+      );
+    }
+
+    const current = this.store.getGoogleContactsOAuth();
+    const oauthState = randomBytes(18).toString('base64url');
+    this.store.saveGoogleContactsOAuth({
+      ...current,
+      oauthState,
+      oauthStateCreatedAt: nowIso(),
+    });
+
+    const callbackUri = `${origin.replace(/\/$/, '')}/api/admin/google/oauth/callback`;
+    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    authUrl.searchParams.set('client_id', env.GOOGLE_CLIENT_ID);
+    authUrl.searchParams.set('redirect_uri', callbackUri);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('scope', GOOGLE_CONTACTS_SCOPE);
+    authUrl.searchParams.set('access_type', 'offline');
+    authUrl.searchParams.set('prompt', 'consent');
+    authUrl.searchParams.set('include_granted_scopes', 'true');
+    authUrl.searchParams.set('state', oauthState);
+
+    return { url: authUrl.toString() };
+  }
+
+  async completeGoogleContactsOAuth(input: {
+    origin: string;
+    state: string;
+    code: string;
+  }): Promise<{ message: string }> {
+    const env = this.getSetupEnvironment();
+    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+      throw new Error(
+        'Google OAuth client settings are missing. Save the client ID and secret first.',
+      );
+    }
+
+    const stored = this.store.getGoogleContactsOAuth();
+    if (!stored.oauthState || stored.oauthState !== input.state) {
+      throw new Error('Google OAuth state did not match the active login request.');
+    }
+
+    const callbackUri = `${input.origin.replace(/\/$/, '')}/api/admin/google/oauth/callback`;
+    const body = new URLSearchParams({
+      code: input.code,
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
+      redirect_uri: callbackUri,
+      grant_type: 'authorization_code',
+    });
+
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body,
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+      scope?: string;
+      token_type?: string;
+      error?: string;
+      error_description?: string;
+    };
+    if (!response.ok || !payload.access_token) {
+      throw new Error(
+        payload.error_description ||
+          payload.error ||
+          `Google token exchange failed with ${response.status}`,
+      );
+    }
+
+    this.store.saveGoogleContactsOAuth({
+      accessToken: payload.access_token,
+      refreshToken: payload.refresh_token || stored.refreshToken,
+      expiryDate: new Date(
+        Date.now() + Math.max(60, payload.expires_in || 3600) * 1000,
+      ).toISOString(),
+      scope: payload.scope || GOOGLE_CONTACTS_SCOPE,
+      tokenType: payload.token_type || 'Bearer',
+      connectedAt: nowIso(),
+      oauthState: '',
+      oauthStateCreatedAt: '',
+    });
+
+    return { message: 'Google Contacts connected.' };
+  }
+
+  async getProviderAvailability(): Promise<ProviderAvailability> {
+    const env = this.getSetupEnvironment();
+    const providerEnv = await this.loadProviderEnvironment(env);
+    const googleToken = await this.ensureGoogleContactsAccessToken(
+      providerEnv,
+      env,
+    );
+    const storedOAuth = this.store.getGoogleContactsOAuth();
+
+    return {
+      onecliConfigured: Boolean(env.ONECLI_URL),
+      onecliReachable: providerEnv.__onecliReachable === 'true',
+      googleContactsAvailable: Boolean(googleToken),
+      googleContactsSource: env.GOOGLE_CONTACTS_ACCESS_TOKEN
+        ? 'env'
+        : storedOAuth.accessToken || storedOAuth.refreshToken
+          ? 'oauth'
+        : providerEnv.GOOGLE_CONTACTS_ACCESS_TOKEN ||
+            providerEnv.GOOGLE_PEOPLE_ACCESS_TOKEN ||
+            providerEnv.GOOGLE_OAUTH_ACCESS_TOKEN ||
+            providerEnv.GMAIL_ACCESS_TOKEN
+          ? 'onecli'
+          : 'none',
+      signalOutboundAvailable: Boolean(
+        (env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT) &&
+          (env.SIGNAL_RPC_URL || SIGNAL_RPC_URL),
+      ),
+      smsOutboundAvailable: false,
+      emailOutboundAvailable: false,
+      contactResolutionAvailable:
+        Boolean(googleToken) || getIncomingContactSummaries().length > 0,
+    };
+  }
+
+  async resolveOutboundTarget(
+    channel: 'signal' | 'sms' | 'email',
+    query: string,
+  ): Promise<ResolvedContactTarget> {
+    const literal = resolveLiteralTarget(channel, query);
+    if (literal) return literal;
+
+    if (channel === 'signal') {
+      try {
+        return resolveSignalHistoryTarget(query);
+      } catch {
+        // Fall through to Google Contacts lookup.
+      }
+    }
+
+    const env = this.getSetupEnvironment();
+    const providerEnv = await this.loadProviderEnvironment(env);
+    const googleToken = await this.ensureGoogleContactsAccessToken(
+      providerEnv,
+      env,
+    );
+    if (!googleToken) {
+      throw new Error(
+        `No ${channel} contact matched "${query}", and Google Contacts is not configured for host-side resolution.`,
+      );
+    }
+
+    const googleMatch = await searchGoogleContacts(googleToken, channel, query);
+    if (!googleMatch) {
+      throw new Error(`No ${channel} contact matched "${query}" in Google Contacts.`);
+    }
+    return googleMatch;
+  }
+
+  async resolveOutboundTargets(
+    channel: 'signal' | 'sms' | 'email',
+    queries: string[],
+  ): Promise<ResolvedContactTarget[]> {
+    const uniqueQueries = queries.map((item) => item.trim()).filter(Boolean);
+    return Promise.all(
+      uniqueQueries.map((query) => this.resolveOutboundTarget(channel, query)),
+    );
   }
 
   async getSignalLinkQrDataUrl(deviceName: string): Promise<string> {
@@ -740,7 +1275,7 @@ export class ControlActionService {
   }
 
   requireOwnerVerified(context: ControlActionContext): void {
-    if (context.source === 'ui') return;
+    if (context.source === 'ui' || context.source === 'agent') return;
     if (!this.isVerifiedIdentity(context.actorIdentity)) {
       throw new Error(
         `Identity ${canonicalizeIdentity(context.actorIdentity)} is not owner-verified`,
@@ -774,6 +1309,7 @@ export class ControlActionService {
     name: string,
     input: TInput,
     context: ControlActionContext,
+    options?: { chatJid?: string },
   ): PendingControlAction {
     const definition = this.definitions.get(name);
     if (!definition) throw new Error(`Unknown action: ${name}`);
@@ -787,6 +1323,7 @@ export class ControlActionService {
       summary: definition.summarizeInput(input),
       actorIdentity: canonicalizeIdentity(context.actorIdentity),
       source: context.source,
+      chatJid: options?.chatJid,
     });
     this.store.appendAuditRecord({
       id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -800,6 +1337,78 @@ export class ControlActionService {
       createdAt: nowIso(),
     });
     return pending;
+  }
+
+  setApprovalReplyClassifier(
+    classifier: ApprovalReplyClassifier | undefined,
+  ): void {
+    this.approvalReplyClassifier = classifier;
+  }
+
+  async handleNaturalApprovalReply(
+    chatJid: string,
+    text: string,
+    context: ControlActionContext,
+  ): Promise<{ handled: boolean; message?: string }> {
+    this.requireOwnerVerified(context);
+
+    const pending = this.listPendingActions(10).filter(
+      (item) => item.status === 'pending' && item.chatJid === chatJid,
+    );
+    if (pending.length === 0) return { handled: false };
+    if (pending.length > 1) {
+      return {
+        handled: true,
+        message:
+          'There are multiple pending approvals in this chat. Use /pending list and then /approve <id> or /reject <id>.',
+      };
+    }
+
+    let decision: ApprovalReplyDecision | null = null;
+    let reason: string | undefined;
+    if (this.approvalReplyClassifier) {
+      try {
+        const classified = await this.approvalReplyClassifier({
+          reply: text,
+          pendingSummary: pending[0].summary,
+        });
+        decision = classified.decision;
+        reason = classified.reason;
+      } catch {
+        decision = parseNaturalApprovalDecision(text);
+      }
+    } else {
+      decision = parseNaturalApprovalDecision(text);
+    }
+    if (!decision) return { handled: false };
+
+    if (decision === 'approve') {
+      const result = await this.approvePending(pending[0].id, context);
+      return { handled: true, message: result.message };
+    }
+
+    if (decision === 'reject') {
+      const result = this.rejectPending(pending[0].id, context);
+      return { handled: true, message: result.message };
+    }
+
+    if (decision === 'revise') {
+      return {
+        handled: true,
+        message:
+          reason?.trim()
+            ? `I kept that pending. It sounds like you want changes first: ${reason.trim()}`
+            : 'I kept that pending. Tell me what you want changed, or reply naturally to approve or reject it.',
+      };
+    }
+
+    return {
+      handled: true,
+      message:
+        reason?.trim()
+          ? `I couldn't confidently tell whether that means approve or reject: ${reason.trim()}`
+          : 'I could not confidently tell whether that means approve or reject.',
+    };
   }
 
   async approvePending(
@@ -891,6 +1500,10 @@ export class ControlActionService {
     return this.store.getVerifiedIdentities();
   }
 
+  listPendingActions(limit: number = 50): PendingControlAction[] {
+    return this.store.getPendingActions().slice(0, Math.max(1, limit));
+  }
+
   getPersonalityProfiles(): Record<string, PersonalityProfile> {
     return this.store.getPersonalityProfiles();
   }
@@ -924,6 +1537,115 @@ export class ControlActionService {
       );
   }
 
+  private async loadProviderEnvironment(
+    env: Record<string, string>,
+  ): Promise<Record<string, string>> {
+    const merged = { ...env };
+    if (!env.ONECLI_URL) return merged;
+
+    try {
+      const onecli = new OneCLI({ url: env.ONECLI_URL });
+      const config = await onecli.getContainerConfig();
+      for (const [key, value] of Object.entries(config.env || {})) {
+        if (!merged[key]) merged[key] = value;
+      }
+      merged.__onecliReachable = 'true';
+    } catch {
+      merged.__onecliReachable = 'false';
+    }
+    return merged;
+  }
+
+  private getGoogleContactsAccessToken(
+    env: Record<string, string>,
+  ): string {
+    for (const key of GOOGLE_CONTACT_TOKEN_KEYS) {
+      const value = env[key];
+      if (value?.trim()) return value.trim();
+    }
+    return '';
+  }
+
+  private async ensureGoogleContactsAccessToken(
+    providerEnv: Record<string, string>,
+    env: Record<string, string>,
+  ): Promise<string> {
+    const direct = this.getGoogleContactsAccessToken(providerEnv);
+    if (direct) return direct;
+
+    const stored = this.store.getGoogleContactsOAuth();
+    if (!stored.accessToken && !stored.refreshToken) return '';
+
+    const expiresAt = new Date(stored.expiryDate).getTime();
+    if (stored.accessToken && expiresAt > Date.now() + 60_000) {
+      return stored.accessToken;
+    }
+
+    if (!stored.refreshToken || !env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+      return stored.accessToken || '';
+    }
+
+    const refreshed = await this.refreshGoogleContactsAccessToken(
+      stored.refreshToken,
+      env.GOOGLE_CLIENT_ID,
+      env.GOOGLE_CLIENT_SECRET,
+      stored,
+    );
+    return refreshed.accessToken;
+  }
+
+  private async refreshGoogleContactsAccessToken(
+    refreshToken: string,
+    clientId: string,
+    clientSecret: string,
+    current: GoogleContactsOAuthState,
+  ): Promise<GoogleContactsOAuthState> {
+    const body = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    });
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body,
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      access_token?: string;
+      expires_in?: number;
+      scope?: string;
+      token_type?: string;
+      error?: string;
+      error_description?: string;
+    };
+    if (!response.ok || !payload.access_token) {
+      throw new Error(
+        payload.error_description ||
+          payload.error ||
+          `Google token refresh failed with ${response.status}`,
+      );
+    }
+
+    const next: GoogleContactsOAuthState = {
+      ...current,
+      accessToken: payload.access_token,
+      refreshToken,
+      expiryDate: new Date(
+        Date.now() + Math.max(60, payload.expires_in || 3600) * 1000,
+      ).toISOString(),
+      scope: payload.scope || current.scope || GOOGLE_CONTACTS_SCOPE,
+      tokenType: payload.token_type || current.tokenType || 'Bearer',
+      connectedAt: current.connectedAt || nowIso(),
+      oauthState: '',
+      oauthStateCreatedAt: '',
+    };
+    this.store.saveGoogleContactsOAuth(next);
+    return next;
+  }
+
   private audit(
     actionName: string,
     payloadSummary: string,
@@ -948,10 +1670,29 @@ export class ControlActionService {
     values: Record<string, string>,
   ): Record<string, string> {
     const redacted = { ...values };
-    for (const key of ['OPENAI_API_KEY', 'ADMIN_UI_TOKEN']) {
+    for (const key of [
+      'OPENAI_API_KEY',
+      'ADMIN_UI_TOKEN',
+      'GOOGLE_CLIENT_SECRET',
+      'GOOGLE_CONTACTS_ACCESS_TOKEN',
+    ]) {
       if (redacted[key]) redacted[key] = '<redacted>';
     }
     return redacted;
+  }
+
+  private async fetchSignal(
+    pathname: string,
+    rpcUrl: string,
+    init: RequestInit,
+    action: string,
+  ): Promise<Response> {
+    try {
+      return await fetch(new URL(pathname, rpcUrl), init);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`Signal RPC ${action} failed: ${reason}`);
+    }
   }
 
   private mergeContactSummary(

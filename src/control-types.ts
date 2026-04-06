@@ -1,4 +1,4 @@
-export type ControlActorSource = 'ui' | 'signal_control';
+export type ControlActorSource = 'ui' | 'signal_control' | 'agent';
 
 export type ContactStatus = 'trusted' | 'unknown' | 'abuse';
 
@@ -63,6 +63,25 @@ export interface ControlSettings {
   updatedAt: string;
 }
 
+export interface SignalProfileSettings {
+  account: string;
+  name: string;
+  about: string;
+  avatarDataUrl: string;
+  updatedAt: string;
+}
+
+export interface GoogleContactsOAuthState {
+  accessToken: string;
+  refreshToken: string;
+  expiryDate: string;
+  scope: string;
+  tokenType: string;
+  connectedAt: string;
+  oauthState: string;
+  oauthStateCreatedAt: string;
+}
+
 export interface PendingControlAction {
   id: string;
   actionName: string;
@@ -70,6 +89,7 @@ export interface PendingControlAction {
   summary: string;
   actorIdentity: string;
   source: ControlActorSource;
+  chatJid?: string;
   createdAt: string;
   expiresAt: string;
   status: 'pending' | 'approved' | 'rejected';

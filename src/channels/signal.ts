@@ -151,6 +151,54 @@ export class SignalChannel implements Channel {
     }
   }
 
+  async createGroup(input: {
+    title?: string;
+    members: string[];
+    message?: string;
+  }): Promise<{ jid: string; title: string }> {
+    const members = input.members.map((member) => formatUuidLike(member));
+    const title = input.title?.trim() || 'New conversation';
+    const url = new URL(
+      `/v1/groups/${encodeURIComponent(this.account)}`,
+      this.rpcUrl,
+    );
+    const response = await this.fetchWithContext(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: title,
+          members,
+        }),
+      },
+      'createGroup',
+    );
+    if (response.status !== 201) {
+      throw new Error(`Signal RPC createGroup failed with ${response.status}`);
+    }
+    const payload = (await response.json()) as { id?: string };
+    const groupId = String(payload.id || '').trim();
+    if (!groupId) {
+      throw new Error('Signal RPC createGroup did not return a group id');
+    }
+
+    const jid = makeSignalGroupJid(groupId);
+    this.opts.onChatMetadata(
+      jid,
+      new Date().toISOString(),
+      title,
+      'signal',
+      true,
+    );
+    if (input.message?.trim()) {
+      await this.sendMessage(jid, input.message);
+    }
+    return { jid, title };
+  }
+
   async syncGroups(_force: boolean): Promise<void> {
     const groups = await this.listGroups();
     const now = new Date().toISOString();
@@ -310,7 +358,9 @@ export class SignalChannel implements Channel {
 
       socket.onerror = () => {
         reject(
-          new Error(`Signal RPC receive websocket failed for ${wsUrl.toString()}`),
+          new Error(
+            `Signal RPC receive websocket failed for ${wsUrl.toString()}`,
+          ),
         );
       };
 

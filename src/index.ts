@@ -10,6 +10,9 @@ import {
   GROUPS_DIR,
   IDLE_TIMEOUT,
   MAX_MESSAGES_PER_PROMPT,
+  OPENAI_API_KEY,
+  OPENAI_BASE_URL,
+  OPENAI_MODEL,
   ONECLI_URL,
   POLL_INTERVAL,
   TIMEZONE,
@@ -47,10 +50,19 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { ControlActionService } from './control-actions.js';
+import type {
+  ApprovalReplyDecision,
+  OutboundCreateGroupInput,
+  OutboundDeleteInput,
+  OutboundSendInput,
+} from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { sanitizeInboundMessage } from './inbound-guard.js';
+import {
+  parseAgentOutput,
+} from './outbound-directives.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
   restoreRemoteControl,
@@ -75,6 +87,12 @@ let lastTimestamp = '';
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
+let executeAgentDirective: (
+  directive: ReturnType<typeof parseAgentOutput>['directives'][number],
+  sourceChatJid: string,
+) => Promise<string> = async () => {
+  throw new Error('Outbound directives are not initialized yet');
+};
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
@@ -309,9 +327,25 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         typeof result.result === 'string'
           ? result.result
           : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+      const cleaned = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+      const parsed = parseAgentOutput(cleaned);
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+      const statusLines: string[] = [];
+      for (const directive of parsed.directives) {
+        try {
+          statusLines.push(await executeAgentDirective(directive, chatJid));
+        } catch (err) {
+          statusLines.push(
+            err instanceof Error
+              ? `Send failed: ${err.message}`
+              : `Send failed: ${String(err)}`,
+          );
+        }
+      }
+      const text = [parsed.visibleText, ...statusLines]
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
@@ -562,6 +596,84 @@ async function main(): Promise<void> {
 
   restoreRemoteControl();
   const controlService = new ControlActionService();
+  controlService.setApprovalReplyClassifier(async ({ reply, pendingSummary }) => {
+    const response = await fetch(
+      `${OPENAI_BASE_URL.replace(/\/$/, '')}/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(OPENAI_API_KEY
+            ? { Authorization: `Bearer ${OPENAI_API_KEY}` }
+            : {}),
+        },
+        body: JSON.stringify({
+          model: OPENAI_MODEL,
+          temperature: 0,
+          max_tokens: 80,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'Classify whether a short follow-up reply about a pending action means approve, reject, revise, or unclear. ' +
+                'Only choose approve or reject when the user intent is clear. ' +
+                'Choose revise if the user wants changes before acting. ' +
+                'Reply with compact JSON only, such as {"decision":"approve","reason":"..."}',
+            },
+            {
+              role: 'user',
+              content:
+                `Pending action: ${pendingSummary}\n` +
+                `User reply: ${reply}\n\n` +
+                'Return JSON with keys decision and reason.',
+            },
+          ],
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(
+        `Approval reply classification failed (${response.status}): ${text || response.statusText}`,
+      );
+    }
+
+    const payload = (await response.json()) as {
+      choices?: Array<{
+        message?: {
+          content?: string | Array<{ text?: string }>;
+        };
+      }>;
+    };
+    const content = payload.choices?.[0]?.message?.content;
+    const raw =
+      typeof content === 'string'
+        ? content
+        : Array.isArray(content)
+          ? content
+              .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+              .join('')
+          : '';
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(jsonMatch?.[0] || raw) as {
+      decision?: string;
+      reason?: string;
+    };
+    const decision = parsed.decision as ApprovalReplyDecision | undefined;
+    if (
+      decision !== 'approve' &&
+      decision !== 'reject' &&
+      decision !== 'revise' &&
+      decision !== 'unclear'
+    ) {
+      throw new Error(`Invalid approval reply decision: ${raw}`);
+    }
+    return {
+      decision,
+      reason: typeof parsed.reason === 'string' ? parsed.reason : undefined,
+    };
+  });
   const configuredMain = buildConfiguredMainGroup(
     controlService.getSettings().controlSignalJid,
     registeredGroups,
@@ -592,6 +704,146 @@ async function main(): Promise<void> {
     }
     const text = formatOutbound(rawText);
     if (text) await channel.sendMessage(jid, text);
+  };
+  controlService.setOutboundHandlers({
+    sendSignalMessage: async (jid, text) => {
+      await sendHostMessage(jid, text);
+    },
+    createSignalGroup: async ({ title, members, message }) => {
+      const signalChannel = channels.find((channel) => channel.name === 'signal') as
+        | (Channel & {
+            createGroup?: (input: {
+              title?: string;
+              members: string[];
+              message?: string;
+            }) => Promise<{ jid: string; title: string }>;
+          })
+        | undefined;
+      if (!signalChannel?.createGroup) {
+        throw new Error('Signal group creation is not available.');
+      }
+      return signalChannel.createGroup({ title, members, message });
+    },
+  });
+  executeAgentDirective = async (
+    directive: ReturnType<typeof parseAgentOutput>['directives'][number],
+    sourceChatJid: string,
+  ): Promise<string> => {
+    const agentContext = {
+      actorIdentity: 'agent:nanoclaw',
+      source: 'agent' as const,
+    };
+    if (directive.kind === 'send_message') {
+      if (directive.channel === 'signal') {
+        const target = await controlService.resolveOutboundTarget(
+          'signal',
+          directive.to,
+        );
+        const input: OutboundSendInput = {
+          channel: 'signal',
+          target: directive.to,
+          message: directive.message,
+          resolvedSignalJid: target.resolvedTarget,
+          resolvedTarget: target.resolvedTarget,
+          resolvedDisplayName: target.displayName,
+          resolutionSource: target.source,
+          requiresConfirmation: !target.existingConversation,
+          confirmationReason: target.existingConversation
+            ? undefined
+            : 'Starting a new Signal conversation requires approval.',
+        };
+        if (input.requiresConfirmation) {
+          const pending = controlService.previewAction(
+            'outbound.send',
+            input,
+            agentContext,
+            { chatJid: sourceChatJid },
+          );
+          return `Confirmation required before starting a new Signal conversation with ${target.displayName} (${target.resolvedTarget}).\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
+        }
+        await controlService.executeAction<OutboundSendInput, { status: string }>(
+          'outbound.send',
+          input,
+          agentContext,
+        );
+        return `Sent via Signal to ${target.displayName} (${target.resolvedTarget}).`;
+      }
+      if (directive.channel === 'email') {
+        const target = await controlService.resolveOutboundTarget(
+          'email',
+          directive.to,
+        );
+        const pending = controlService.previewAction(
+          'outbound.send',
+          {
+            channel: directive.channel,
+            target: directive.to,
+            message: directive.message,
+            resolvedTarget: target.resolvedTarget,
+            resolvedDisplayName: target.displayName,
+            resolutionSource: target.source,
+            requiresConfirmation: true,
+            confirmationReason:
+              'Starting a new email thread requires approval.',
+          } satisfies OutboundSendInput,
+          agentContext,
+          { chatJid: sourceChatJid },
+        );
+        return `Confirmation required before starting a new email thread with ${target.displayName} (${target.resolvedTarget}).\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
+      }
+      const target = await controlService.resolveOutboundTarget('sms', directive.to);
+      const pending = controlService.previewAction(
+        'outbound.send',
+        {
+          channel: directive.channel,
+          target: directive.to,
+          message: directive.message,
+          resolvedTarget: target.resolvedTarget,
+          resolvedDisplayName: target.displayName,
+          resolutionSource: target.source,
+          requiresConfirmation: true,
+          confirmationReason: 'Starting a new SMS conversation requires approval.',
+        } satisfies OutboundSendInput,
+        agentContext,
+        { chatJid: sourceChatJid },
+      );
+      return `Confirmation required before starting a new SMS conversation with ${target.displayName} (${target.resolvedTarget}).\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
+    }
+    if (directive.kind === 'create_group') {
+      const members = await controlService.resolveOutboundTargets(
+        'signal',
+        directive.members,
+      );
+      const pending = controlService.previewAction(
+        'outbound.createGroup',
+        {
+          channel: 'signal',
+          title: directive.title,
+          message: directive.message,
+          members: directive.members,
+          resolvedMemberTargets: members.map((member) => member.resolvedTarget),
+          resolvedMemberDisplayNames: members.map(
+            (member) => member.displayName,
+          ),
+        } satisfies OutboundCreateGroupInput,
+        agentContext,
+        { chatJid: sourceChatJid },
+      );
+      return `Confirmation required before creating a new Signal group with ${members
+        .map((member) => `${member.displayName} (${member.resolvedTarget})`)
+        .join(', ')}.\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
+    }
+    const pending = controlService.previewAction(
+      'outbound.delete',
+      {
+        channel: directive.channel,
+        target: directive.target,
+        reason: directive.reason,
+      } satisfies OutboundDeleteInput,
+      agentContext,
+      { chatJid: sourceChatJid },
+    );
+    return `Confirmation required before deleting ${directive.channel} item "${directive.target}".\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
   };
 
   const controlCommandParser = new SignalControlCommandParser({
@@ -717,9 +969,33 @@ async function main(): Promise<void> {
         return;
       }
 
-      storeInboundMessage(chatJid, msg).catch((err) =>
-        logger.error({ err, chatJid }, 'Inbound message guard error'),
-      );
+      controlService
+        .handleNaturalApprovalReply(chatJid, trimmed, {
+          actorIdentity: msg.sender,
+          source: 'signal_control',
+        })
+        .then(({ handled, message }) => {
+          if (handled) {
+            if (message) {
+              sendHostMessage(chatJid, message, { bypassPause: true }).catch(
+                (err) =>
+                  logger.error(
+                    { err, chatJid },
+                    'Natural approval response send failed',
+                  ),
+              );
+            }
+            return;
+          }
+          storeInboundMessage(chatJid, msg).catch((err) =>
+            logger.error({ err, chatJid }, 'Inbound message guard error'),
+          );
+        })
+        .catch((err) =>
+          logger.error({ err, chatJid }, 'Natural approval handling error'),
+        );
+      return;
+
     },
     onChatMetadata: (
       chatJid: string,

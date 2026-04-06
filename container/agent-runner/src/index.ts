@@ -170,6 +170,12 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
     `You are ${containerInput.assistantName || 'the assistant'}, running inside NanoClaw.`,
     `You use an OpenAI-compatible chat completions backend and NanoClaw-native tools.`,
     `Use tools when they materially improve the answer. Prefer concise responses.`,
+    `If the user explicitly asks you to reach out, contact, message, email, or text someone, you may emit a send directive in this exact format: <send_message channel="signal|sms|email" to="recipient name or address">message to send</send_message>.`,
+    `If the user explicitly asks you to start a new Signal group conversation, you may emit a directive in this exact format: <create_group channel="signal" members="recipient one, recipient two" title="optional group title">first message to send to the new group</create_group>.`,
+    `If the user explicitly asks you to delete or remove an email, calendar item, or outbound thread, you may emit a directive in this exact format: <delete_resource channel="email|calendar|signal|sms" target="identifier or short label">short reason</delete_resource>.`,
+    `Only emit send directives for explicit outbound requests. If recipient, channel, or message content is ambiguous, ask a short clarifying question instead of guessing.`,
+    `Starting a new conversation thread, creating a new group conversation, or deleting something requires user confirmation; the host will enforce that approval gate.`,
+    `Do not mention OneCLI or secrets unless directly relevant; host-side credentials may be managed outside the container.`,
     `Your current working directory is ${GROUP_DIR}.`,
     `Current time: ${new Date().toISOString()}.`,
   ].join(' ');

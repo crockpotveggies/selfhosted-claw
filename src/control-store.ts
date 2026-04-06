@@ -11,8 +11,10 @@ import {
   ControlContact,
   ControlPolicy,
   ControlSettings,
+  GoogleContactsOAuthState,
   PendingControlAction,
   PersonalityProfile,
+  SignalProfileSettings,
   VerifiedIdentity,
 } from './control-types.js';
 
@@ -41,6 +43,8 @@ export class ControlStore {
   private readonly personalityFile: string;
   private readonly policyFile: string;
   private readonly settingsFile: string;
+  private readonly signalProfileFile: string;
+  private readonly googleContactsOAuthFile: string;
   private readonly pendingFile: string;
   private readonly auditFile: string;
 
@@ -55,6 +59,11 @@ export class ControlStore {
     this.personalityFile = path.join(configDir, 'personality.json');
     this.policyFile = path.join(configDir, 'policy.json');
     this.settingsFile = path.join(configDir, 'settings.json');
+    this.signalProfileFile = path.join(configDir, 'signal-profile.json');
+    this.googleContactsOAuthFile = path.join(
+      configDir,
+      'google-contacts-oauth.json',
+    );
     this.pendingFile = path.join(dataDir, 'pending-actions.json');
     this.auditFile = path.join(dataDir, 'audit-log.jsonl');
   }
@@ -107,6 +116,37 @@ export class ControlStore {
 
   saveSettings(settings: ControlSettings): void {
     writeJsonFile(this.settingsFile, settings);
+  }
+
+  getSignalProfile(): SignalProfileSettings {
+    return readJsonFile<SignalProfileSettings>(this.signalProfileFile, {
+      account: '',
+      name: '',
+      about: '',
+      avatarDataUrl: '',
+      updatedAt: new Date(0).toISOString(),
+    });
+  }
+
+  saveSignalProfile(profile: SignalProfileSettings): void {
+    writeJsonFile(this.signalProfileFile, profile);
+  }
+
+  getGoogleContactsOAuth(): GoogleContactsOAuthState {
+    return readJsonFile<GoogleContactsOAuthState>(this.googleContactsOAuthFile, {
+      accessToken: '',
+      refreshToken: '',
+      expiryDate: new Date(0).toISOString(),
+      scope: '',
+      tokenType: '',
+      connectedAt: '',
+      oauthState: '',
+      oauthStateCreatedAt: '',
+    });
+  }
+
+  saveGoogleContactsOAuth(state: GoogleContactsOAuthState): void {
+    writeJsonFile(this.googleContactsOAuthFile, state);
   }
 
   getPendingActions(): PendingControlAction[] {

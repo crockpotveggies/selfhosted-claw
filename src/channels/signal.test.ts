@@ -106,6 +106,54 @@ describe('SignalChannel', () => {
     });
   });
 
+  it('creates Signal groups and sends the initial message', async () => {
+    const fetchMock = vi
+      .fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body || '{}'));
+        if (body.members) {
+          return makeJsonResponse({ id: 'group-123' }, 201);
+        }
+        return makeJsonResponse({}, 201);
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const channel = new SignalChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      'http://127.0.0.1:8080',
+      '+15555550123',
+    );
+
+    const created = await channel.createGroup({
+      title: 'Lunch plans',
+      members: ['+15551234567'],
+      message: 'Can we do lunch next Monday?',
+    });
+
+    expect(created).toEqual({
+      jid: 'signal:group:group-123',
+      title: 'Lunch plans',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'http://127.0.0.1:8080/v1/groups/%2B15555550123',
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      name: 'Lunch plans',
+      members: ['+15551234567'],
+    });
+    expect(onChatMetadata).toHaveBeenCalledWith(
+      'signal:group:group-123',
+      expect.any(String),
+      'Lunch plans',
+      'signal',
+      true,
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({
+      recipients: ['group-123'],
+      message: 'Can we do lunch next Monday?',
+    });
+  });
+
   it('re-hyphenates uuid recipients before sending', async () => {
     const fetchMock = vi.fn(async () => makeJsonResponse({}, 201));
     vi.stubGlobal('fetch', fetchMock);
@@ -190,9 +238,12 @@ describe('SignalChannel', () => {
   });
 
   it('surfaces rpc url when fetch fails', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      throw new TypeError('fetch failed');
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('fetch failed');
+      }),
+    );
 
     const channel = new SignalChannel(
       { onMessage, onChatMetadata, registeredGroups },

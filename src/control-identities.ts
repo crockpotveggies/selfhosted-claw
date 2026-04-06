@@ -3,7 +3,10 @@ function normalizePhone(value: string): string {
 }
 
 function normalizeSignalIdentifier(value: string): string {
-  return value.trim().replace(/[^\dA-Za-z:+-]/g, '').toLowerCase();
+  return value
+    .trim()
+    .replace(/[^\dA-Za-z:+-]/g, '')
+    .toLowerCase();
 }
 
 function normalizeSignalUser(value: string): string {
@@ -47,7 +50,11 @@ export function canonicalizeIdentity(value: string): string {
   if (isPhoneLike(trimmed)) {
     return `phone:${normalizePhone(trimmed)}`;
   }
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) {
+  if (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      trimmed,
+    )
+  ) {
     return `signal-user:${normalizeSignalUser(trimmed)}`;
   }
   if (/^[0-9a-f]{32}$/i.test(trimmed)) {

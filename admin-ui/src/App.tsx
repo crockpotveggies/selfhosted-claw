@@ -1,10 +1,16 @@
-import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import type { ChangeEvent, Dispatch, ReactNode, SetStateAction } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { Wizard, useWizard } from 'react-use-wizard';
 
 type ContactStatus = 'trusted' | 'unknown' | 'abuse';
 type PersonalityScope = 'global' | 'main' | `group:${string}`;
-type Tab = 'setup' | 'contacts' | 'personality' | 'policy' | 'audit';
+type Tab =
+  | 'setup'
+  | 'contacts'
+  | 'personality'
+  | 'policy'
+  | 'approvals'
+  | 'audit';
 type SignalProvisionMode = 'link' | 'register';
 
 interface ContactView {
@@ -51,6 +57,18 @@ interface ControlSettings {
   assistantSignalIdentity: string;
 }
 
+interface SignalProfileSettings {
+  account: string;
+  name: string;
+  about: string;
+  avatarDataUrl: string;
+}
+
+interface ToastMessage {
+  kind: 'success' | 'error';
+  text: string;
+}
+
 interface AuditRecord {
   id: string;
   actorIdentity: string;
@@ -72,6 +90,7 @@ interface SetupStatusResponse {
     SIGNAL_RECEIVE_TIMEOUT_SEC: string;
     CONTROL_SIGNAL_JID: string;
     ONECLI_URL: string;
+    GOOGLE_CLIENT_ID: string;
     ADMIN_BIND_HOST: string;
     ADMIN_PORT: string;
     INBOUND_GUARD_SCRIPT: string;
@@ -84,6 +103,10 @@ interface SetupStatusResponse {
     signalReachable: boolean;
     signalComposeConfigured: boolean;
     signalComposeRunning: boolean;
+    onecliConfigured: boolean;
+    onecliReachable: boolean;
+    googleContactsAvailable: boolean;
+    googleContactsSource: 'env' | 'onecli' | 'oauth' | 'none';
     controlChatConfigured: boolean;
     verifiedIdentityCount: number;
     assistantSignalConfigured: boolean;
@@ -193,6 +216,112 @@ function useJson<T>(key: string, loader: () => Promise<T>) {
   }, [key]);
 
   return { data, error, loading, refresh };
+}
+
+interface PendingControlAction {
+  id: string;
+  actionName: string;
+  summary: string;
+  actorIdentity: string;
+  source: 'ui' | 'signal_control' | 'agent';
+  createdAt: string;
+  expiresAt: string;
+  status: 'pending' | 'approved' | 'rejected';
+}
+
+interface ProviderAvailability {
+  onecliConfigured: boolean;
+  onecliReachable: boolean;
+  googleContactsAvailable: boolean;
+  googleContactsSource: 'env' | 'onecli' | 'oauth' | 'none';
+  signalOutboundAvailable: boolean;
+  smsOutboundAvailable: boolean;
+  emailOutboundAvailable: boolean;
+  contactResolutionAvailable: boolean;
+}
+
+interface ResolvedContactTarget {
+  channel: 'signal' | 'sms' | 'email';
+  query: string;
+  resolvedTarget: string;
+  displayName: string;
+  source: 'literal' | 'signal_history' | 'google_contacts';
+  existingConversation: boolean;
+}
+
+interface GoogleContactsSetup {
+  origin: string;
+  callbackUri: string;
+  scopes: string[];
+  configured: {
+    clientId: boolean;
+    clientSecret: boolean;
+    accessToken: boolean;
+  };
+}
+
+interface GoogleOAuthStartResponse {
+  url: string;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error('Image file could not be decoded'));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load selected image'));
+    image.src = src;
+  });
+}
+
+async function cropAndResizeAvatar(file: File, size: number = 512): Promise<string> {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Please choose an image file for the avatar');
+  }
+
+  const dataUrl = await readFileAsDataUrl(file);
+  const image = await loadImage(dataUrl);
+  const cropSize = Math.min(image.naturalWidth, image.naturalHeight);
+  const sx = Math.floor((image.naturalWidth - cropSize) / 2);
+  const sy = Math.floor((image.naturalHeight - cropSize) / 2);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Browser could not prepare the avatar image');
+  }
+
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(
+    image,
+    sx,
+    sy,
+    cropSize,
+    cropSize,
+    0,
+    0,
+    size,
+    size,
+  );
+
+  return canvas.toDataURL('image/png');
 }
 
 function WizardFrame(props: {
@@ -456,6 +585,15 @@ function ModelStep(props: WizardSharedProps) {
         <p>
           OpenAI backend configured:{' '}
           {props.checks.openAIConfigured ? 'yes' : 'not yet'}
+          <br />
+          OneCLI configured: {props.checks.onecliConfigured ? 'yes' : 'not yet'}
+          <br />
+          OneCLI reachable: {props.checks.onecliReachable ? 'yes' : 'not yet'}
+          <br />
+          Google Contacts available: {props.checks.googleContactsAvailable ? 'yes' : 'not yet'}
+          {props.checks.googleContactsAvailable
+            ? ` (${props.checks.googleContactsSource})`
+            : ''}
         </p>
       </div>
     </WizardFrame>
@@ -858,10 +996,26 @@ export function App() {
   const [providerInput, setProviderInput] = useState('signal');
   const [verifiedIdentityInput, setVerifiedIdentityInput] = useState('');
   const [verifiedLabelInput, setVerifiedLabelInput] = useState('');
+  const [googleClientId, setGoogleClientId] = useState('');
+  const [googleClientSecret, setGoogleClientSecret] = useState('');
+  const [resolutionQuery, setResolutionQuery] = useState('');
+  const [resolutionChannel, setResolutionChannel] = useState<'signal' | 'sms' | 'email'>(
+    'signal',
+  );
+  const [resolutionPreview, setResolutionPreview] = useState<ResolvedContactTarget | null>(
+    null,
+  );
   const [settingsDraft, setSettingsDraft] = useState<ControlSettings>({
     controlSignalJid: '',
     assistantSignalIdentity: '',
   });
+  const [signalProfileDraft, setSignalProfileDraft] =
+    useState<SignalProfileSettings>({
+      account: '',
+      name: '',
+      about: '',
+      avatarDataUrl: '',
+    });
   const [signalProvisionMode, setSignalProvisionMode] =
     useState<SignalProvisionMode>('link');
   const [signalDeviceName, setSignalDeviceName] = useState('Self-Hosted Claw');
@@ -869,6 +1023,7 @@ export function App() {
   const [signalProvisionMessage, setSignalProvisionMessage] = useState('');
   const [signalVerificationCode, setSignalVerificationCode] = useState('');
   const [signalUseVoice, setSignalUseVoice] = useState(false);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
   const [tokenDraft, setTokenDraft] = useState(
     window.localStorage.getItem('admin-ui-token') || '',
   );
@@ -930,6 +1085,18 @@ export function App() {
   const settingsState = useJson('settings', () =>
     apiFetch<{ settings: ControlSettings }>('/api/admin/settings'),
   );
+  const signalProfileState = useJson('signal-profile', () =>
+    apiFetch<{ profile: SignalProfileSettings }>('/api/admin/signal/profile'),
+  );
+  const googleContactsSetupState = useJson('google-contacts-setup', () =>
+    apiFetch<GoogleContactsSetup>('/api/admin/google-contacts/setup'),
+  );
+  const providerState = useJson('providers', () =>
+    apiFetch<{ providers: ProviderAvailability }>('/api/admin/providers'),
+  );
+  const pendingState = useJson('pending', () =>
+    apiFetch<{ pending: PendingControlAction[] }>('/api/admin/pending?limit=50'),
+  );
   const auditState = useJson('audit', () =>
     apiFetch<{ audit: AuditRecord[] }>('/api/admin/audit?limit=50'),
   );
@@ -957,6 +1124,12 @@ export function App() {
       }));
     }
   }, [settingsState.data?.settings]);
+
+  useEffect(() => {
+    if (signalProfileState.data?.profile) {
+      setSignalProfileDraft(signalProfileState.data.profile);
+    }
+  }, [signalProfileState.data?.profile]);
 
   useEffect(() => {
     if (setupState.data) {
@@ -987,17 +1160,69 @@ export function App() {
           setupState.data?.env.INBOUND_GUARD_SCRIPT ||
           current.INBOUND_GUARD_SCRIPT,
       }));
+      setGoogleClientId(setupState.data.env.GOOGLE_CLIENT_ID || '');
       if (!setupState.data.checks.wizardComplete) {
         setTab('setup');
       }
     }
   }, [setupState.data]);
 
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const tabParam = url.searchParams.get('tab');
+    const googleStatus = url.searchParams.get('google_contacts');
+    const message = url.searchParams.get('message');
+
+    if (tabParam === 'contacts') {
+      setTab('contacts');
+    }
+    if (googleStatus === 'connected') {
+      setToast({
+        kind: 'success',
+        text: message || 'Google Contacts connected.',
+      });
+      void refreshAll();
+    } else if (googleStatus === 'error') {
+      setToast({
+        kind: 'error',
+        text: message || 'Google Contacts connection failed.',
+      });
+    }
+
+    if (tabParam || googleStatus || message) {
+      url.searchParams.delete('tab');
+      url.searchParams.delete('google_contacts');
+      url.searchParams.delete('message');
+      window.history.replaceState({}, '', url.toString());
+    }
+  }, []);
+
   const contacts = contactsState.data?.contacts || [];
   const selectedContact = contactDetailState.data?.contact || null;
   const preview = previewState.data?.preview || '';
   const policy = policyState.data?.policy || { pausedProviders: [] };
   const verifiedIdentities = verifiedState.data?.verifiedIdentities || [];
+  const pendingActions = pendingState.data?.pending || [];
+  const providers = providerState.data?.providers || {
+    onecliConfigured: false,
+    onecliReachable: false,
+    googleContactsAvailable: false,
+    googleContactsSource: 'none' as const,
+    signalOutboundAvailable: false,
+    smsOutboundAvailable: false,
+    emailOutboundAvailable: false,
+    contactResolutionAvailable: false,
+  };
+  const googleContactsSetup = googleContactsSetupState.data || {
+    origin: `http://${setupDraft.ADMIN_BIND_HOST || '127.0.0.1'}:${setupDraft.ADMIN_PORT || '3030'}`,
+    callbackUri: `http://${setupDraft.ADMIN_BIND_HOST || '127.0.0.1'}:${setupDraft.ADMIN_PORT || '3030'}/api/admin/google/oauth/callback`,
+    scopes: ['https://www.googleapis.com/auth/contacts.readonly'],
+    configured: {
+      clientId: false,
+      clientSecret: false,
+      accessToken: false,
+    },
+  };
   const auditRecords = auditState.data?.audit || [];
   const setupChecks = setupState.data?.checks || {
     openAIConfigured: false,
@@ -1005,6 +1230,10 @@ export function App() {
     signalReachable: false,
     signalComposeConfigured: false,
     signalComposeRunning: false,
+    onecliConfigured: false,
+    onecliReachable: false,
+    googleContactsAvailable: false,
+    googleContactsSource: 'none' as const,
     controlChatConfigured: false,
     verifiedIdentityCount: 0,
     assistantSignalConfigured: false,
@@ -1021,6 +1250,10 @@ export function App() {
     policyState.error,
     verifiedState.error,
     settingsState.error,
+    signalProfileState.error,
+    googleContactsSetupState.error,
+    providerState.error,
+    pendingState.error,
     auditState.error,
   ]
     .filter(Boolean)
@@ -1036,6 +1269,10 @@ export function App() {
       policyState.refresh(),
       verifiedState.refresh(),
       settingsState.refresh(),
+      signalProfileState.refresh(),
+      googleContactsSetupState.refresh(),
+      providerState.refresh(),
+      pendingState.refresh(),
       auditState.refresh(),
     ]);
   };
@@ -1048,11 +1285,20 @@ export function App() {
         body: JSON.stringify({ action, input }),
       });
       await refreshAll();
+      setToast({ kind: 'success', text: 'Saved successfully.' });
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Action failed');
+      const message = err instanceof Error ? err.message : 'Action failed';
+      setActionError(message);
+      setToast({ kind: 'error', text: message });
       throw err;
     }
   };
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timeout = window.setTimeout(() => setToast(null), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
 
   const saveEnvironment = async (values: Record<string, string>) => {
     const cleaned = Object.fromEntries(
@@ -1149,6 +1395,111 @@ export function App() {
     setVerifiedLabelInput('');
   };
 
+  const saveSignalProfile = async () => {
+    await mutate('signal.profile.update', signalProfileDraft);
+  };
+
+  const handleSignalAvatarSelected = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const avatarDataUrl = await cropAndResizeAvatar(file, 512);
+      setSignalProfileDraft((current) => ({
+        ...current,
+        avatarDataUrl,
+      }));
+      setToast({
+        kind: 'success',
+        text: 'Avatar cropped and resized to 512x512.',
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to prepare avatar image';
+      setActionError(message);
+      setToast({ kind: 'error', text: message });
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const decidePending = async (
+    id: string,
+    decision: 'approve' | 'reject',
+  ) => {
+    setActionError('');
+    try {
+      const response = await apiFetch<{ result: { message: string } }>(
+        `/api/admin/pending/${encodeURIComponent(id)}/${decision}`,
+        { method: 'POST' },
+      );
+      await refreshAll();
+      setToast({ kind: 'success', text: response.result.message });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : `Failed to ${decision} pending action`;
+      setActionError(message);
+      setToast({ kind: 'error', text: message });
+      throw err;
+    }
+  };
+
+  const previewResolution = async () => {
+    setActionError('');
+    try {
+      const response = await apiFetch<{ result: ResolvedContactTarget }>(
+        `/api/admin/resolve-contact?channel=${encodeURIComponent(
+          resolutionChannel,
+        )}&query=${encodeURIComponent(resolutionQuery)}`,
+      );
+      setResolutionPreview(response.result);
+      setToast({
+        kind: 'success',
+        text: `Resolved ${response.result.displayName} on ${response.result.channel}.`,
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Contact resolution failed';
+      setResolutionPreview(null);
+      setActionError(message);
+      setToast({ kind: 'error', text: message });
+    }
+  };
+
+  const saveGoogleContactsCredentials = async () => {
+    await saveEnvironment({
+      ...(googleClientId.trim()
+        ? { GOOGLE_CLIENT_ID: googleClientId.trim() }
+        : {}),
+      ...(googleClientSecret.trim()
+        ? { GOOGLE_CLIENT_SECRET: googleClientSecret.trim() }
+        : {}),
+    });
+    setGoogleClientSecret('');
+    setToast({
+      kind: 'success',
+      text: 'Google Contacts OAuth client settings saved.',
+    });
+    await googleContactsSetupState.refresh();
+  };
+
+  const connectGoogleContacts = async () => {
+    setActionError('');
+    try {
+      const response = await apiFetch<GoogleOAuthStartResponse>(
+        '/api/admin/google/oauth/start',
+      );
+      window.location.assign(response.url);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to start Google OAuth';
+      setActionError(message);
+      setToast({ kind: 'error', text: message });
+    }
+  };
+
   const tabs = useMemo(
     () =>
       [
@@ -1156,6 +1507,7 @@ export function App() {
         ['contacts', 'Contacts'],
         ['personality', 'Personality'],
         ['policy', 'Policy'],
+        ['approvals', 'Approvals'],
         ['audit', 'Audit'],
       ] as const,
     [],
@@ -1190,6 +1542,10 @@ export function App() {
           First-run setup is not complete. The UI is staying on the Setup tab
           until the core checks are configured.
         </div>
+      ) : null}
+
+      {toast ? (
+        <div className={`toast ${toast.kind}`}>{toast.text}</div>
       ) : null}
 
       <nav className="tabs">
@@ -1241,114 +1597,192 @@ export function App() {
       ) : null}
 
       {tab === 'contacts' ? (
-        <section className="panelGrid">
-          <div className="panel">
-            <div className="panelHeader">
-              <h2>Contacts</h2>
-              <select
-                value={contactStatusFilter}
-                onChange={(event) => setContactStatusFilter(event.target.value)}
-              >
-                <option value="">All</option>
-                <option value="trusted">Trusted</option>
-                <option value="unknown">Unknown</option>
-                <option value="abuse">Abuse</option>
-              </select>
-            </div>
-            <div className="contactList">
-              {contacts.map((contact) => (
-                <button
-                  key={contact.identity}
-                  className={
-                    selectedContactId === contact.identity
-                      ? 'contactRow selected'
-                      : 'contactRow'
-                  }
-                  onClick={() => setSelectedContactId(contact.identity)}
+        <>
+          <section className="panelGrid">
+            <div className="panel">
+              <div className="panelHeader">
+                <h2>Contacts</h2>
+                <select
+                  value={contactStatusFilter}
+                  onChange={(event) => setContactStatusFilter(event.target.value)}
                 >
-                  <span>{contact.displayName}</span>
-                  <span className={`status ${contact.status}`}>{contact.status}</span>
-                </button>
-              ))}
+                  <option value="">All</option>
+                  <option value="trusted">Trusted</option>
+                  <option value="unknown">Unknown</option>
+                  <option value="abuse">Abuse</option>
+                </select>
+              </div>
+              <div className="contactList">
+                {contacts.map((contact) => (
+                  <button
+                    key={contact.identity}
+                    className={
+                      selectedContactId === contact.identity
+                        ? 'contactRow selected'
+                        : 'contactRow'
+                    }
+                    onClick={() => setSelectedContactId(contact.identity)}
+                  >
+                    <span>{contact.displayName}</span>
+                    <span className={`status ${contact.status}`}>{contact.status}</span>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-          <div className="panel">
-            <div className="panelHeader">
-              <h2>Contact Detail</h2>
+            <div className="panel">
+              <div className="panelHeader">
+                <h2>Contact Detail</h2>
+                {selectedContact ? (
+                  <div className="buttonRow">
+                    <button
+                      onClick={() =>
+                        void mutate('contact.trust', {
+                          identity: selectedContact.identity,
+                        })
+                      }
+                    >
+                      Trust
+                    </button>
+                    <button
+                      onClick={() =>
+                        void mutate('contact.abuse', {
+                          identity: selectedContact.identity,
+                        })
+                      }
+                    >
+                      Abuse
+                    </button>
+                    <button
+                      onClick={() =>
+                        void mutate('contact.reset', {
+                          identity: selectedContact.identity,
+                        })
+                      }
+                    >
+                      Reset
+                    </button>
+                    <button
+                      onClick={() =>
+                        void mutate('contact.reclassify', {
+                          identity: selectedContact.identity,
+                        })
+                      }
+                    >
+                      Re-classify
+                    </button>
+                  </div>
+                ) : null}
+              </div>
               {selectedContact ? (
-                <div className="buttonRow">
-                  <button
-                    onClick={() =>
-                      void mutate('contact.trust', {
-                        identity: selectedContact.identity,
-                      })
-                    }
-                  >
-                    Trust
-                  </button>
-                  <button
-                    onClick={() =>
-                      void mutate('contact.abuse', {
-                        identity: selectedContact.identity,
-                      })
-                    }
-                  >
-                    Abuse
-                  </button>
-                  <button
-                    onClick={() =>
-                      void mutate('contact.reset', {
-                        identity: selectedContact.identity,
-                      })
-                    }
-                  >
-                    Reset
-                  </button>
-                  <button
-                    onClick={() =>
-                      void mutate('contact.reclassify', {
-                        identity: selectedContact.identity,
-                      })
-                    }
-                  >
-                    Re-classify
-                  </button>
-                </div>
-              ) : null}
+                <>
+                  <p>
+                    <strong>{selectedContact.displayName}</strong> ({selectedContact.identity})
+                  </p>
+                  <p>
+                    Status:{' '}
+                    <span className={`status ${selectedContact.status}`}>
+                      {selectedContact.status}
+                    </span>
+                  </p>
+                  <p>
+                    {selectedContact.classificationSummary ||
+                      'No classification summary yet.'}
+                  </p>
+                  <h3>History</h3>
+                  <div className="historyList">
+                    {selectedContact.history.map((entry) => (
+                      <article key={entry.id} className="historyCard">
+                        <div className="historyMeta">
+                          <strong>{entry.senderName}</strong>
+                          <span>{entry.timestamp}</span>
+                        </div>
+                        <p>{entry.content}</p>
+                      </article>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p>Select a contact to inspect its history.</p>
+              )}
             </div>
-            {selectedContact ? (
-              <>
-                <p>
-                  <strong>{selectedContact.displayName}</strong> ({selectedContact.identity})
-                </p>
-                <p>
-                  Status:{' '}
-                  <span className={`status ${selectedContact.status}`}>
-                    {selectedContact.status}
-                  </span>
-                </p>
-                <p>
-                  {selectedContact.classificationSummary ||
-                    'No classification summary yet.'}
-                </p>
-                <h3>History</h3>
-                <div className="historyList">
-                  {selectedContact.history.map((entry) => (
-                    <article key={entry.id} className="historyCard">
-                      <div className="historyMeta">
-                        <strong>{entry.senderName}</strong>
-                        <span>{entry.timestamp}</span>
-                      </div>
-                      <p>{entry.content}</p>
-                    </article>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <p>Select a contact to inspect its history.</p>
-            )}
-          </div>
-        </section>
+          </section>
+
+          <section className="panel googleContactsPanel">
+            <div className="panelHeader">
+              <h2>Google Contacts Setup</h2>
+              <span className="setupBadge">
+                {providers.googleContactsAvailable ? 'Connected' : 'Not connected'}
+              </span>
+            </div>
+            <p>
+              Use this when you want the agent to resolve people like “Elyssa”
+              from Google Contacts before starting a new Signal, SMS, or email thread.
+            </p>
+            <div className="hintBox">
+              <p>
+                Enable the <strong>People API</strong> in Google Cloud, then create an
+                OAuth client.
+              </p>
+              <p>
+                Application type: <strong>Web application</strong>
+              </p>
+              <p>
+                Authorized JavaScript origin:
+              </p>
+              <code className="inlineBlock">{googleContactsSetup.origin}</code>
+              <p>
+                Authorized redirect URI:
+              </p>
+              <code className="inlineBlock">{googleContactsSetup.callbackUri}</code>
+              <p>
+                Scope to request:
+              </p>
+              <code className="inlineBlock">{googleContactsSetup.scopes.join(' ')}</code>
+              <p>
+                Current status: client ID {googleContactsSetup.configured.clientId ? 'saved' : 'missing'},
+                client secret {googleContactsSetup.configured.clientSecret ? 'saved' : 'missing'},
+                access token {googleContactsSetup.configured.accessToken ? 'present' : 'missing'}.
+              </p>
+            </div>
+            <div className="wizardGrid">
+              <label>
+                Google client ID
+                <input
+                  value={googleClientId}
+                  onChange={(event) => setGoogleClientId(event.target.value)}
+                  placeholder="Google OAuth web client ID"
+                />
+              </label>
+              <label>
+                Google client secret
+                <input
+                  type="password"
+                  value={googleClientSecret}
+                  onChange={(event) => setGoogleClientSecret(event.target.value)}
+                  placeholder="Google OAuth client secret"
+                />
+              </label>
+            </div>
+            <div className="buttonRow">
+              <button onClick={() => void saveGoogleContactsCredentials()}>
+                Save Google OAuth settings
+              </button>
+              <button
+                onClick={() => void connectGoogleContacts()}
+                disabled={
+                  !googleContactsSetup.configured.clientId ||
+                  !googleContactsSetup.configured.clientSecret
+                }
+              >
+                Connect Google Contacts
+              </button>
+            </div>
+            <p className="mutedNote">
+              After saving the client ID and secret, use Connect Google Contacts to
+              complete the consent flow in your browser.
+            </p>
+          </section>
+        </>
       ) : null}
 
       {tab === 'personality' ? (
@@ -1502,6 +1936,57 @@ export function App() {
               </button>
             </div>
 
+            <h3>Availability</h3>
+            <ul className="plainList">
+              <li>OneCLI gateway: {providers.onecliReachable ? 'reachable' : providers.onecliConfigured ? 'configured but unreachable' : 'not configured'}</li>
+              <li>
+                Google Contacts: {providers.googleContactsAvailable ? 'available' : 'not available'}
+                {providers.googleContactsAvailable
+                  ? ` (${providers.googleContactsSource})`
+                  : ''}
+              </li>
+              <li>Signal outbound: {providers.signalOutboundAvailable ? 'available' : 'not available'}</li>
+              <li>SMS outbound: {providers.smsOutboundAvailable ? 'available' : 'not available'}</li>
+              <li>Email outbound: {providers.emailOutboundAvailable ? 'available' : 'not available'}</li>
+            </ul>
+
+            <h3>Contact Resolution Preview</h3>
+            <div className="buttonRow">
+              <select
+                value={resolutionChannel}
+                onChange={(event) =>
+                  setResolutionChannel(
+                    event.target.value as 'signal' | 'sms' | 'email',
+                  )
+                }
+              >
+                <option value="signal">Signal</option>
+                <option value="sms">SMS</option>
+                <option value="email">Email</option>
+              </select>
+              <input
+                value={resolutionQuery}
+                onChange={(event) => setResolutionQuery(event.target.value)}
+                placeholder="Sam, sam@example.com, +15555550123"
+              />
+              <button onClick={() => void previewResolution()}>
+                Resolve
+              </button>
+            </div>
+            {resolutionPreview ? (
+              <p>
+                {resolutionPreview.displayName} → {resolutionPreview.resolvedTarget}{' '}
+                via {resolutionPreview.source}
+                {resolutionPreview.existingConversation
+                  ? ' (existing conversation)'
+                  : ''}
+              </p>
+            ) : (
+              <p>
+                Resolve a name before trusting the agent with your social life.
+              </p>
+            )}
+
             <h3>Verified identities</h3>
             <div className="buttonRow">
               <input
@@ -1563,7 +2048,135 @@ export function App() {
             <button onClick={() => void saveSettings(settingsDraft)}>
               Save settings
             </button>
+
+            <h2>Signal Profile</h2>
+            <label>
+              Signal account
+              <input
+                value={signalProfileDraft.account}
+                onChange={(event) =>
+                  setSignalProfileDraft({
+                    ...signalProfileDraft,
+                    account: event.target.value,
+                  })
+                }
+                placeholder="+15555550123"
+              />
+            </label>
+            <label>
+              Profile name
+              <input
+                value={signalProfileDraft.name}
+                onChange={(event) =>
+                  setSignalProfileDraft({
+                    ...signalProfileDraft,
+                    name: event.target.value,
+                  })
+                }
+              />
+            </label>
+            <label>
+              About
+              <input
+                value={signalProfileDraft.about}
+                onChange={(event) =>
+                  setSignalProfileDraft({
+                    ...signalProfileDraft,
+                    about: event.target.value,
+                  })
+                }
+              />
+            </label>
+            <label>
+              Avatar image
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(event) => void handleSignalAvatarSelected(event)}
+              />
+            </label>
+            <p>
+              Uploaded images are center-cropped and resized to 512x512 PNG
+              before being sent to Signal.
+            </p>
+            {signalProfileDraft.avatarDataUrl ? (
+              <div className="hintBox">
+                <strong>Avatar preview</strong>
+                <img
+                  src={signalProfileDraft.avatarDataUrl}
+                  alt="Signal avatar preview"
+                  style={{
+                    width: '96px',
+                    height: '96px',
+                    objectFit: 'cover',
+                    borderRadius: '16px',
+                    display: 'block',
+                    marginTop: '0.75rem',
+                  }}
+                />
+                <div className="buttonRow">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSignalProfileDraft((current) => ({
+                        ...current,
+                        avatarDataUrl: '',
+                      }))
+                    }
+                  >
+                    Remove avatar
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            <button onClick={() => void saveSignalProfile()}>
+              Save Signal profile
+            </button>
           </div>
+        </section>
+      ) : null}
+
+      {tab === 'approvals' ? (
+        <section className="panel">
+          <div className="panelHeader">
+            <h2>Pending Approvals</h2>
+            <button onClick={() => void pendingState.refresh()}>Refresh</button>
+          </div>
+          {pendingActions.length === 0 ? (
+            <p>No pending approvals.</p>
+          ) : (
+            <div className="historyList">
+              {pendingActions.map((item) => (
+                <article key={item.id} className="historyCard">
+                  <div className="historyMeta">
+                    <strong>{item.summary}</strong>
+                    <span>{item.status}</span>
+                  </div>
+                  <p>ID: {item.id}</p>
+                  <p>
+                    Source: {item.source} | Actor: {item.actorIdentity}
+                  </p>
+                  <p>
+                    Created: {item.createdAt}
+                    <br />
+                    Expires: {item.expiresAt}
+                  </p>
+                  <div className="buttonRow">
+                    <button
+                      onClick={() => void decidePending(item.id, 'approve')}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => void decidePending(item.id, 'reject')}
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       ) : null}
 

@@ -154,9 +154,9 @@ describe('resolveContainerOpenAIBaseUrl', () => {
   });
 
   it('leaves non-local model endpoints unchanged', () => {
-    expect(
-      resolveContainerOpenAIBaseUrl('https://api.example.com/v1'),
-    ).toBe('https://api.example.com/v1');
+    expect(resolveContainerOpenAIBaseUrl('https://api.example.com/v1')).toBe(
+      'https://api.example.com/v1',
+    );
   });
 });
 

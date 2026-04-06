@@ -99,10 +99,22 @@ export async function run(_args: string[]): Promise<void> {
   // 3. Check credentials
   let credentials = 'missing';
   const envFile = path.join(projectRoot, '.env');
+  let onecliConfigured = false;
+  let onecliReachable = false;
   if (fs.existsSync(envFile)) {
     const envContent = fs.readFileSync(envFile, 'utf-8');
     if (/^(OPENAI_BASE_URL|OPENAI_API_KEY|OPENAI_MODEL|ONECLI_URL)=/m.test(envContent)) {
       credentials = 'configured';
+    }
+    const onecliMatch = envContent.match(/^ONECLI_URL=(.+)$/m);
+    if (onecliMatch?.[1]?.trim()) {
+      onecliConfigured = true;
+      try {
+        const response = await fetch(onecliMatch[1].trim(), { method: 'GET' });
+        onecliReachable = response.status < 500;
+      } catch {
+        onecliReachable = false;
+      }
     }
   }
 
@@ -188,6 +200,8 @@ export async function run(_args: string[]): Promise<void> {
     SERVICE: service,
     CONTAINER_RUNTIME: containerRuntime,
     CREDENTIALS: credentials,
+    ONECLI_CONFIGURED: onecliConfigured ? 'yes' : 'no',
+    ONECLI_REACHABLE: onecliReachable ? 'yes' : 'no',
     CONFIGURED_CHANNELS: configuredChannels.join(','),
     CHANNEL_AUTH: JSON.stringify(channelAuth),
     REGISTERED_GROUPS: registeredGroups,

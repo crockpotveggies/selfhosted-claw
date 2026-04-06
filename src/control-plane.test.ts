@@ -6,10 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ContactView, ControlActionService } from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
-import {
-  canonicalizeIdentity,
-  identitiesMatch,
-} from './control-identities.js';
+import { canonicalizeIdentity, identitiesMatch } from './control-identities.js';
 import { ControlStore } from './control-store.js';
 import { _closeDatabase, _initTestDatabase } from './db.js';
 import { SignalComposeManager } from './signal-compose.js';
@@ -89,6 +86,7 @@ function createHarness() {
 
 afterEach(() => {
   delete process.env.SELF_HOSTED_CLAW_GROUPS_DIR;
+  vi.unstubAllGlobals();
   _closeDatabase();
 });
 
@@ -213,6 +211,232 @@ describe('control plane parity', () => {
     ).toBe(true);
   });
 
+  it('updates the Signal profile through the shared control action surface', async () => {
+    const harness = createHarness();
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 204,
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await harness.service.executeAction<
+      {
+        account: string;
+        name: string;
+        about: string;
+        avatarDataUrl: string;
+      },
+      { account: string; name: string; about: string; avatarDataUrl: string }
+    >(
+      'signal.profile.update',
+      {
+        account: '+15551112222',
+        name: 'Lena',
+        about: 'Helping from home',
+        avatarDataUrl: 'data:image/png;base64,abc123',
+      },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, requestInit] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String(requestInit?.body)).base64_avatar).toBe('abc123');
+    expect(result.name).toBe('Lena');
+    expect(result.about).toBe('Helping from home');
+    expect(result.avatarDataUrl).toBe('data:image/png;base64,abc123');
+    expect(harness.service.getSignalProfile().name).toBe('Lena');
+  });
+
+  it('supports approval-gated outbound sends for new conversations', async () => {
+    const harness = createHarness();
+    const sendSignalMessage = vi.fn().mockResolvedValue(undefined);
+    harness.service.setOutboundHandlers({ sendSignalMessage });
+
+    const pending = harness.service.previewAction(
+      'outbound.send',
+      {
+        channel: 'signal',
+        target: '+15552223333',
+        message: 'Hello there',
+        resolvedSignalJid: 'signal:user:+15552223333',
+        requiresConfirmation: true,
+      },
+      { actorIdentity: 'agent:nanoclaw', source: 'agent' },
+    );
+
+    expect(pending.summary).toContain('Start a new signal conversation');
+
+    await harness.service.executeAction(
+      'verified.add',
+      { identity: '+15550001111', label: 'Owner' },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    const approval = await harness.service.approvePending(pending.id, {
+      actorIdentity: '+15550001111',
+      source: 'signal_control',
+    });
+
+    expect(approval.message).toContain('Approved');
+    expect(sendSignalMessage).toHaveBeenCalledWith(
+      'signal:user:+15552223333',
+      'Hello there',
+    );
+  });
+
+  it('supports approval-gated Signal group creation', async () => {
+    const harness = createHarness();
+    const createSignalGroup = vi.fn().mockResolvedValue({
+      jid: 'signal:group:lunch123',
+      title: 'Lunch plans',
+    });
+    harness.service.setOutboundHandlers({ createSignalGroup });
+
+    const pending = harness.service.previewAction(
+      'outbound.createGroup',
+      {
+        channel: 'signal',
+        title: 'Lunch plans',
+        message: 'Can we do lunch next Monday?',
+        members: ['Elyssa'],
+        resolvedMemberTargets: ['+15552223333'],
+        resolvedMemberDisplayNames: ['Elyssa'],
+      },
+      { actorIdentity: 'agent:nanoclaw', source: 'agent' },
+    );
+
+    await harness.service.executeAction(
+      'verified.add',
+      { identity: '+15550001111', label: 'Owner' },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    const approval = await harness.service.approvePending(pending.id, {
+      actorIdentity: '+15550001111',
+      source: 'signal_control',
+    });
+
+    expect(approval.message).toContain('Approved');
+    expect(createSignalGroup).toHaveBeenCalledWith({
+      title: 'Lunch plans',
+      members: ['+15552223333'],
+      message: 'Can we do lunch next Monday?',
+    });
+  });
+
+  it('lists pending approvals through the shared service and signal command surface', async () => {
+    const harness = createHarness();
+    harness.service.previewAction(
+      'outbound.delete',
+      {
+        channel: 'email',
+        target: 'Draft to Sam',
+        reason: 'duplicate draft',
+      },
+      { actorIdentity: 'agent:nanoclaw', source: 'agent' },
+    );
+
+    expect(harness.service.listPendingActions(10)).toHaveLength(1);
+
+    await harness.service.executeAction(
+      'verified.add',
+      { identity: '+15550001111', label: 'Owner' },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    const result = await harness.parser.handle(
+      'signal:user:+15550009999',
+      makeMessage('+15550001111', '/pending list 5'),
+    );
+
+    expect(result.handled).toBe(true);
+    expect(harness.sent.at(-1)?.text).toContain('Draft to Sam');
+  });
+
+  it('approves a single pending action from a natural yes reply in the same chat', async () => {
+    const harness = createHarness();
+    const sendSignalMessage = vi.fn().mockResolvedValue(undefined);
+    harness.service.setOutboundHandlers({ sendSignalMessage });
+    harness.service.setApprovalReplyClassifier(async () => ({
+      decision: 'approve',
+      reason: 'The user clearly approved sending it.',
+    }));
+
+    const pending = harness.service.previewAction(
+      'outbound.send',
+      {
+        channel: 'signal',
+        target: '+15552223333',
+        message: 'Hello there',
+        resolvedSignalJid: 'signal:user:+15552223333',
+        requiresConfirmation: true,
+      },
+      { actorIdentity: 'agent:nanoclaw', source: 'agent' },
+      { chatJid: 'signal:user:+15550009999' },
+    );
+
+    await harness.service.executeAction(
+      'verified.add',
+      { identity: '+15550001111', label: 'Owner' },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    const result = await harness.service.handleNaturalApprovalReply(
+      'signal:user:+15550009999',
+      'yeah, go ahead and send that',
+      { actorIdentity: '+15550001111', source: 'signal_control' },
+    );
+
+    expect(result.handled).toBe(true);
+    expect(result.message).toContain(`Approved ${pending.summary}`);
+    expect(sendSignalMessage).toHaveBeenCalledWith(
+      'signal:user:+15552223333',
+      'Hello there',
+    );
+  });
+
+  it('keeps a pending action open when the follow-up reply asks for revisions', async () => {
+    const harness = createHarness();
+    const sendSignalMessage = vi.fn().mockResolvedValue(undefined);
+    harness.service.setOutboundHandlers({ sendSignalMessage });
+    harness.service.setApprovalReplyClassifier(async () => ({
+      decision: 'revise',
+      reason: 'The user asked to make it friendlier before sending.',
+    }));
+
+    const pending = harness.service.previewAction(
+      'outbound.send',
+      {
+        channel: 'signal',
+        target: '+15552223333',
+        message: 'Hello there',
+        resolvedSignalJid: 'signal:user:+15552223333',
+        requiresConfirmation: true,
+      },
+      { actorIdentity: 'agent:nanoclaw', source: 'agent' },
+      { chatJid: 'signal:user:+15550009999' },
+    );
+
+    await harness.service.executeAction(
+      'verified.add',
+      { identity: '+15550001111', label: 'Owner' },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    const result = await harness.service.handleNaturalApprovalReply(
+      'signal:user:+15550009999',
+      'make it a bit friendlier first',
+      { actorIdentity: '+15550001111', source: 'signal_control' },
+    );
+
+    expect(result.handled).toBe(true);
+    expect(result.message).toContain('I kept that pending');
+    expect(sendSignalMessage).not.toHaveBeenCalled();
+    expect(
+      harness.service.listPendingActions().find((item) => item.id === pending.id)
+        ?.status,
+    ).toBe('pending');
+  });
+
   it('treats Signal UUID identities consistently across raw and signal:user forms', () => {
     const uuid = '5396f050-7ac2-4610-8c5f-c8f1be353fec';
 
@@ -236,8 +460,7 @@ describe('control plane parity', () => {
     await harness.service.executeAction(
       'settings.update',
       {
-        controlSignalJid:
-          'signal:user:5396f050-7ac2-4610-8c5f-c8f1be353fec',
+        controlSignalJid: 'signal:user:5396f050-7ac2-4610-8c5f-c8f1be353fec',
       },
       { actorIdentity: 'ui:local-admin', source: 'ui' },
     );
@@ -263,8 +486,7 @@ describe('control plane parity', () => {
     await harness.service.executeAction(
       'settings.update',
       {
-        controlSignalJid:
-          'signal:user:5396f0507ac246108c5fc8f1be353fec',
+        controlSignalJid: 'signal:user:5396f0507ac246108c5fc8f1be353fec',
       },
       { actorIdentity: 'ui:local-admin', source: 'ui' },
     );
@@ -290,8 +512,7 @@ describe('control plane parity', () => {
     await harness.service.executeAction(
       'settings.update',
       {
-        controlSignalJid:
-          'signal:user:5396f0507ac246108c5fc8f1be353fec',
+        controlSignalJid: 'signal:user:5396f0507ac246108c5fc8f1be353fec',
       },
       { actorIdentity: 'ui:local-admin', source: 'ui' },
     );
