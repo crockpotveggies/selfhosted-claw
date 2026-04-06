@@ -735,19 +735,31 @@ async function main(): Promise<void> {
       const signalChannel = channels.find((c) => c.name === 'signal') as
         | (Channel & {
             addMembers?: (groupId: string, members: string[]) => Promise<void>;
-            removeMembers?: (groupId: string, members: string[]) => Promise<void>;
+            removeMembers?: (
+              groupId: string,
+              members: string[],
+            ) => Promise<void>;
             updateGroupName?: (groupId: string, name: string) => Promise<void>;
           })
         | undefined;
       if (!signalChannel) throw new Error('Signal channel is not available.');
       if (input.action === 'add_member') {
-        if (!signalChannel.addMembers) throw new Error('addMembers not available.');
-        await signalChannel.addMembers(input.groupId, input.resolvedMemberTargets);
+        if (!signalChannel.addMembers)
+          throw new Error('addMembers not available.');
+        await signalChannel.addMembers(
+          input.groupId,
+          input.resolvedMemberTargets,
+        );
       } else if (input.action === 'remove_member') {
-        if (!signalChannel.removeMembers) throw new Error('removeMembers not available.');
-        await signalChannel.removeMembers(input.groupId, input.resolvedMemberTargets);
+        if (!signalChannel.removeMembers)
+          throw new Error('removeMembers not available.');
+        await signalChannel.removeMembers(
+          input.groupId,
+          input.resolvedMemberTargets,
+        );
       } else if (input.action === 'rename') {
-        if (!signalChannel.updateGroupName) throw new Error('updateGroupName not available.');
+        if (!signalChannel.updateGroupName)
+          throw new Error('updateGroupName not available.');
         await signalChannel.updateGroupName(input.groupId, input.newName || '');
       }
     },
@@ -887,7 +899,11 @@ async function main(): Promise<void> {
         | (Channel & {
             findGroupByName?: (
               name: string,
-            ) => Promise<{ id: string; name: string; members: string[] } | null>;
+            ) => Promise<{
+              id: string;
+              name: string;
+              members: string[];
+            } | null>;
           })
         | undefined;
       if (!signalChannel?.findGroupByName) {
@@ -966,15 +982,23 @@ async function main(): Promise<void> {
       }
       const normalized = directive.groupName.toLowerCase().trim();
       const group = groups.find((g: any) => {
-        const name = String(g.name || g.title || g.groupName || '').toLowerCase();
+        const name = String(
+          g.name || g.title || g.groupName || '',
+        ).toLowerCase();
         return name === normalized || name.includes(normalized);
       });
       if (!group) {
         return `No Signal group found matching "${directive.groupName}".`;
       }
-      const groupMembers = Array.isArray(group.members) ? (group.members as string[]) : [];
-      const admins = Array.isArray(group.admins) ? (group.admins as string[]) : [];
-      const groupName = String(group.name || group.title || group.groupName || 'Unnamed');
+      const groupMembers = Array.isArray(group.members)
+        ? (group.members as string[])
+        : [];
+      const admins = Array.isArray(group.admins)
+        ? (group.admins as string[])
+        : [];
+      const groupName = String(
+        group.name || group.title || group.groupName || 'Unnamed',
+      );
       return `Group: ${groupName}\nMembers (${groupMembers.length}): ${groupMembers.join(', ')}\nAdmins: ${admins.join(', ')}`;
     }
     const pending = controlService.previewAction(
@@ -1150,6 +1174,8 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
+  startAdminServer({ service: controlService });
+
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
@@ -1174,11 +1200,10 @@ async function main(): Promise<void> {
     }
   }
   if (channels.length === 0) {
-    logger.fatal('No channels connected');
-    process.exit(1);
+    logger.warn(
+      'No channels connected — running in admin-only mode. Use the admin UI to reconfigure channels.',
+    );
   }
-
-  startAdminServer({ service: controlService });
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
