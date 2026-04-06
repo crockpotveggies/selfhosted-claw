@@ -158,8 +158,13 @@ interface WizardSharedProps {
   startSignalCompose: () => Promise<void>;
   refreshSetupStatus: () => Promise<void>;
   requestSignalLinkQr: (deviceName: string) => Promise<string>;
-  startSignalRegistration: (useVoice: boolean) => Promise<string>;
+  startSignalRegistration: (useVoice: boolean, captchaToken?: string) => Promise<string>;
   verifySignalRegistration: (code: string) => Promise<string>;
+  signalCaptchaRequired: boolean;
+  signalCaptchaToken: string;
+  setSignalCaptchaToken: Dispatch<SetStateAction<string>>;
+  signalExistingAccounts: string[];
+  fetchSignalExistingAccounts: (rpcUrl?: string) => Promise<void>;
   signalProvisionMode: SignalProvisionMode;
   setSignalProvisionMode: Dispatch<SetStateAction<SignalProvisionMode>>;
   signalDeviceName: string;
@@ -739,6 +744,32 @@ function SignalProvisionStep(props: WizardSharedProps) {
         </div>
       }
     >
+      {props.signalExistingAccounts.length > 0 ? (
+        <div className="hintBox">
+          <strong>Existing Signal identity detected</strong>
+          <p>
+            signal-cli already has{' '}
+            {props.signalExistingAccounts.join(', ')} registered. If this is
+            the account you want to use, no provisioning step is needed — just
+            click &ldquo;Refresh Signal status&rdquo; above to confirm
+            readiness.
+          </p>
+        </div>
+      ) : (
+        <div className="buttonRow noMargin">
+          <button
+            type="button"
+            onClick={() =>
+              void props.fetchSignalExistingAccounts(
+                props.setupDraft.SIGNAL_RPC_URL,
+              )
+            }
+          >
+            Check for existing Signal identity
+          </button>
+        </div>
+      )}
+
       <div className="segmented">
         <button
           type="button"
@@ -817,6 +848,55 @@ function SignalProvisionStep(props: WizardSharedProps) {
               Start registration
             </button>
           </div>
+          {props.signalCaptchaRequired ? (
+            <>
+              <div className="hintBox">
+                <strong>Captcha required</strong>
+                <p>
+                  Signal requires a captcha before sending the verification
+                  code. Open{' '}
+                  <a
+                    href="https://signalcaptchas.org/registration/generate.html"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    signalcaptchas.org
+                  </a>{' '}
+                  in your browser, complete the captcha, then right-click the
+                  &ldquo;Open Signal&rdquo; button and copy the link. Paste the
+                  full <code>signalcaptcha://…</code> URL below.
+                </p>
+              </div>
+              <label>
+                Captcha token
+                <input
+                  value={props.signalCaptchaToken}
+                  onChange={(event) =>
+                    props.setSignalCaptchaToken(event.target.value)
+                  }
+                  placeholder="signalcaptcha://03AFY_..."
+                />
+              </label>
+              <div className="buttonRow noMargin">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void props
+                      .startSignalRegistration(
+                        props.signalUseVoice,
+                        props.signalCaptchaToken,
+                      )
+                      .then((message) =>
+                        props.setSignalProvisionMessage(message),
+                      )
+                      .catch(() => undefined)
+                  }
+                >
+                  Retry with captcha
+                </button>
+              </div>
+            </>
+          ) : null}
           <label>
             Verification code
             <input
@@ -1023,6 +1103,9 @@ export function App() {
   const [signalProvisionMessage, setSignalProvisionMessage] = useState('');
   const [signalVerificationCode, setSignalVerificationCode] = useState('');
   const [signalUseVoice, setSignalUseVoice] = useState(false);
+  const [signalCaptchaRequired, setSignalCaptchaRequired] = useState(false);
+  const [signalCaptchaToken, setSignalCaptchaToken] = useState('');
+  const [signalExistingAccounts, setSignalExistingAccounts] = useState<string[]>([]);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [tokenDraft, setTokenDraft] = useState(
     window.localStorage.getItem('admin-ui-token') || '',
@@ -1340,25 +1423,43 @@ export function App() {
     }
   };
 
-  const startSignalRegistration = async (useVoice: boolean) => {
+  const startSignalRegistration = async (useVoice: boolean, captchaToken?: string) => {
     setActionError('');
+    setSignalCaptchaRequired(false);
     try {
-      const result = await apiFetch<{ message: string }>(
+      const result = await apiFetch<{ message: string; captchaRequired?: boolean; captchaUrl?: string }>(
         '/api/admin/signal/register/start',
         {
           method: 'POST',
           body: JSON.stringify({
             account: setupDraft.SIGNAL_ACCOUNT,
             useVoice,
+            ...(captchaToken ? { captchaToken } : {}),
           }),
         },
       );
+      if (result.captchaRequired) {
+        setSignalCaptchaRequired(true);
+        return result.message;
+      }
       return result.message;
     } catch (err) {
       setActionError(
         err instanceof Error ? err.message : 'Signal registration failed',
       );
       throw err;
+    }
+  };
+
+  const fetchSignalExistingAccounts = async (rpcUrl?: string) => {
+    try {
+      const query = rpcUrl ? `?rpcUrl=${encodeURIComponent(rpcUrl)}` : '';
+      const result = await apiFetch<{ accounts: string[] }>(
+        `/api/admin/signal/accounts${query}`,
+      );
+      setSignalExistingAccounts(result.accounts || []);
+    } catch {
+      setSignalExistingAccounts([]);
     }
   };
 
@@ -1503,14 +1604,14 @@ export function App() {
   const tabs = useMemo(
     () =>
       [
-        ['setup', 'Setup'],
+        ...(!setupChecks.wizardComplete ? [['setup', 'Setup'] as const] : []),
         ['contacts', 'Contacts'],
         ['personality', 'Personality'],
         ['policy', 'Policy'],
         ['approvals', 'Approvals'],
         ['audit', 'Audit'],
       ] as const,
-    [],
+    [setupChecks.wizardComplete],
   );
 
   return (
@@ -1592,6 +1693,11 @@ export function App() {
           setSignalVerificationCode={setSignalVerificationCode}
           signalUseVoice={signalUseVoice}
           setSignalUseVoice={setSignalUseVoice}
+          signalCaptchaRequired={signalCaptchaRequired}
+          signalCaptchaToken={signalCaptchaToken}
+          setSignalCaptchaToken={setSignalCaptchaToken}
+          signalExistingAccounts={signalExistingAccounts}
+          fetchSignalExistingAccounts={fetchSignalExistingAccounts}
           addVerifiedIdentity={addVerifiedIdentity}
         />
       ) : null}

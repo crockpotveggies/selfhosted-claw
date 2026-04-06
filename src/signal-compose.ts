@@ -26,6 +26,8 @@ interface SignalComposeRuntime {
 
 interface SignalRegistrationResponse {
   message: string;
+  captchaRequired?: true;
+  captchaUrl?: string;
 }
 
 type ComposeRunner = (args: string[], cwd: string) => SignalComposeRuntime;
@@ -242,10 +244,31 @@ export class SignalComposeManager {
     return `data:${contentType};base64,${body}`;
   }
 
+  async listAccounts(rpcUrl: string): Promise<string[]> {
+    const base = parseRpcUrl(rpcUrl || DEFAULT_RPC_URL)
+      .toString()
+      .replace(/\/$/, '');
+    const url = new URL('/v1/accounts', base);
+    const response = await fetch(url, { method: 'GET' });
+    if (!response.ok) return [];
+    const payload = (await response.json()) as unknown;
+    if (!Array.isArray(payload)) return [];
+    return payload
+      .map((item) =>
+        typeof item === 'string'
+          ? item
+          : typeof item === 'object' && item !== null && 'number' in item
+            ? String((item as { number: unknown }).number)
+            : '',
+      )
+      .filter(Boolean);
+  }
+
   async startRegistration(input: {
     account: string;
     rpcUrl: string;
     useVoice: boolean;
+    captchaToken?: string;
   }): Promise<SignalRegistrationResponse> {
     const account = input.account.trim();
     if (!account) throw new Error('SIGNAL_ACCOUNT is required');
@@ -253,14 +276,25 @@ export class SignalComposeManager {
       .toString()
       .replace(/\/$/, '');
     const url = new URL(`/v1/register/${encodeURIComponent(account)}`, rpcUrl);
+    const body: Record<string, unknown> = { use_voice: input.useVoice };
+    if (input.captchaToken?.trim()) {
+      body.captcha = input.captchaToken.trim();
+    }
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ use_voice: input.useVoice }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     });
     const text = await response.text();
+    if (response.status === 402 || (text && /captcha/i.test(text))) {
+      return {
+        message:
+          parseJsonMessage(text) ||
+          'Captcha required before Signal will send the verification code.',
+        captchaRequired: true,
+        captchaUrl: 'https://signalcaptchas.org/registration/generate.html',
+      };
+    }
     if (!response.ok) {
       throw new Error(
         parseJsonMessage(text) ||

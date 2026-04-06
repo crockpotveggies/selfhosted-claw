@@ -33,7 +33,8 @@ function sendJson(
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Token, Authorization',
+    'Access-Control-Allow-Headers':
+      'Content-Type, X-Admin-Token, Authorization',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   });
   res.end(JSON.stringify(payload));
@@ -48,9 +49,10 @@ function isBasicAuthAuthorized(
   if (!header?.startsWith('Basic ')) return false;
 
   try {
-    const decoded = Buffer.from(header.slice('Basic '.length), 'base64').toString(
-      'utf-8',
-    );
+    const decoded = Buffer.from(
+      header.slice('Basic '.length),
+      'base64',
+    ).toString('utf-8');
     const separator = decoded.indexOf(':');
     if (separator === -1) return false;
     const username = decoded.slice(0, separator);
@@ -66,7 +68,8 @@ function sendUnauthorized(res: http.ServerResponse): void {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Token, Authorization',
+    'Access-Control-Allow-Headers':
+      'Content-Type, X-Admin-Token, Authorization',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     'WWW-Authenticate': 'Basic realm="NanoClaw Admin", charset="UTF-8"',
   });
@@ -227,7 +230,10 @@ export function startAdminServer(
         return;
       }
 
-      if (req.method === 'GET' && url.pathname === '/api/admin/google/oauth/start') {
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/google/oauth/start'
+      ) {
         const host = req.headers.host || `${ADMIN_BIND_HOST}:${ADMIN_PORT}`;
         const origin = `http://${host}`;
         const result = await options.service.startGoogleContactsOAuth(origin);
@@ -301,6 +307,13 @@ export function startAdminServer(
         return;
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/admin/signal/accounts') {
+        const rpcUrl = url.searchParams.get('rpcUrl') || undefined;
+        const accounts = await options.service.listSignalAccounts(rpcUrl);
+        sendJson(res, 200, { accounts });
+        return;
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/admin/signal/link') {
         const body = JSON.parse((await readBody(req)) || '{}') as {
           deviceName?: string;
@@ -323,10 +336,12 @@ export function startAdminServer(
         const body = JSON.parse((await readBody(req)) || '{}') as {
           account?: string;
           useVoice?: boolean;
+          captchaToken?: string;
         };
         const result = await options.service.startSignalRegistration(
           body.account || '',
           body.useVoice === true,
+          body.captchaToken,
         );
         sendJson(res, 200, result);
         return;
@@ -384,7 +399,10 @@ export function startAdminServer(
         return;
       }
 
-      if (req.method === 'GET' && url.pathname === '/api/admin/signal/profile') {
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/signal/profile'
+      ) {
         sendJson(res, 200, {
           profile: options.service.getSignalProfile(),
         });

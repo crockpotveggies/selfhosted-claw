@@ -1021,7 +1021,8 @@ export class ControlActionService {
             action: input.action,
           }),
           afterState: stableStringify({
-            groupName: input.action === 'rename' ? input.newName : input.groupName,
+            groupName:
+              input.action === 'rename' ? input.newName : input.groupName,
             action: input.action,
             members: input.resolvedMemberTargets,
           }),
@@ -1285,15 +1286,24 @@ export class ControlActionService {
     });
   }
 
+  async listSignalAccounts(rpcUrl?: string): Promise<string[]> {
+    const env = this.getSetupEnvironment();
+    return this.signalCompose.listAccounts(
+      rpcUrl || env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
+    );
+  }
+
   async startSignalRegistration(
     account: string,
     useVoice: boolean,
-  ): Promise<{ message: string }> {
+    captchaToken?: string,
+  ): Promise<{ message: string; captchaRequired?: true; captchaUrl?: string }> {
     const env = this.getSetupEnvironment();
     return this.signalCompose.startRegistration({
       account: account || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT,
       rpcUrl: env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
       useVoice,
+      captchaToken,
     });
   }
 
