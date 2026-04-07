@@ -129,6 +129,8 @@ export interface ControlActionDefinition<TInput, TResult> {
   commandableAction: boolean;
   interactiveView?: boolean;
   previewable?: boolean;
+  toolType?: string;
+  iconKey?: string;
   summarizeInput: (input: TInput) => string;
   execute: (
     input: TInput,
@@ -138,4 +140,13 @@ export interface ControlActionDefinition<TInput, TResult> {
     beforeState: string;
     afterState: string;
   }>;
+}
+
+export interface ControlToolDefinitionSummary {
+  name: string;
+  commandableAction: boolean;
+  interactiveView?: boolean;
+  previewable?: boolean;
+  toolType?: string;
+  iconKey?: string;
 }

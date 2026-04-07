@@ -507,6 +507,11 @@ export function startAdminServer(
         return;
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/admin/tools') {
+        sendJson(res, 200, { tools: options.service.listToolDefinitions() });
+        return;
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/admin/audit') {
         const limit = Number(url.searchParams.get('limit') || '100');
         const identity = url.searchParams.get('identity') || undefined;

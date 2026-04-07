@@ -1,4 +1,10 @@
-import type { ChangeEvent, Dispatch, ReactNode, SetStateAction } from 'react';
+import type {
+  ChangeEvent,
+  CSSProperties,
+  Dispatch,
+  ReactNode,
+  SetStateAction,
+} from 'react';
 import { useEffect, useState } from 'react';
 import {
   CBadge,
@@ -27,6 +33,7 @@ import {
   CSidebarNav,
   CSidebarToggler,
   CTooltip,
+  CWidgetStatsE,
   useColorModes,
 } from '@coreui/react';
 import CIcon from '@coreui/icons-react';
@@ -45,6 +52,17 @@ import {
   cilSpeech,
   cilUser,
 } from '@coreui/icons';
+import {
+  Calendar3,
+  ChatDotsFill,
+  GearFill,
+  Google,
+  PeopleFill,
+  PersonBadgeFill,
+  Robot,
+  SendFill,
+  ShieldLockFill,
+} from 'react-bootstrap-icons';
 import { Wizard, useWizard } from 'react-use-wizard';
 
 type ContactStatus = 'trusted' | 'unknown' | 'abuse';
@@ -53,6 +71,7 @@ type Tab =
   | 'contacts'
   | 'personality'
   | 'policy'
+  | 'tools'
   | 'approvals'
   | 'audit';
 type SignalProvisionMode = 'link' | 'register';
@@ -120,6 +139,22 @@ interface AuditRecord {
   status: string;
   createdAt: string;
   payloadSummary: string;
+}
+
+interface ToolRegistryItem {
+  name: string;
+  commandableAction: boolean;
+  interactiveView?: boolean;
+  previewable?: boolean;
+  toolType?: string;
+  iconKey?: string;
+}
+
+interface ToolVisual {
+  label: string;
+  accent: string;
+  accentSoft: string;
+  icon: ReactNode;
 }
 
 interface SetupStatusResponse {
@@ -265,6 +300,100 @@ function useJson<T>(key: string, loader: () => Promise<T>) {
   }, [key]);
 
   return { data, error, loading, refresh };
+}
+
+function formatRegistryName(name: string): string {
+  return name
+    .split(/[._-]/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
+function getToolTypeKey(tool: ToolRegistryItem): string {
+  return (tool.toolType || 'unknown').toLowerCase();
+}
+
+function getToolVisual(tool: ToolRegistryItem): ToolVisual {
+  const iconKey = (tool.iconKey || tool.toolType || 'unknown').toLowerCase();
+
+  switch (iconKey) {
+    case 'google_calendar':
+    case 'calendar':
+      return {
+        label: 'Google Calendar',
+        accent: '#f6c343',
+        accentSoft: 'rgba(246, 195, 67, 0.16)',
+        icon: <Calendar3 size={18} />,
+      };
+    case 'google_contacts':
+    case 'google':
+      return {
+        label: 'Google Contacts',
+        accent: '#4f9cff',
+        accentSoft: 'rgba(79, 156, 255, 0.16)',
+        icon: <Google size={18} />,
+      };
+    case 'signal':
+      return {
+        label: 'Signal',
+        accent: '#5c7cfa',
+        accentSoft: 'rgba(92, 124, 250, 0.16)',
+        icon: <ChatDotsFill size={18} />,
+      };
+    case 'contacts':
+    case 'people':
+      return {
+        label: 'Contacts',
+        accent: '#2fb75d',
+        accentSoft: 'rgba(47, 183, 93, 0.16)',
+        icon: <PeopleFill size={18} />,
+      };
+    case 'personality':
+      return {
+        label: 'Personality',
+        accent: '#8b5cf6',
+        accentSoft: 'rgba(139, 92, 246, 0.16)',
+        icon: <PersonBadgeFill size={18} />,
+      };
+    case 'policy':
+      return {
+        label: 'Policy',
+        accent: '#f87171',
+        accentSoft: 'rgba(248, 113, 113, 0.16)',
+        icon: <ShieldLockFill size={18} />,
+      };
+    case 'settings':
+      return {
+        label: 'Settings',
+        accent: '#94a3b8',
+        accentSoft: 'rgba(148, 163, 184, 0.16)',
+        icon: <GearFill size={18} />,
+      };
+    case 'outbound':
+    case 'send':
+      return {
+        label: 'Outbound',
+        accent: '#fb7185',
+        accentSoft: 'rgba(251, 113, 133, 0.16)',
+        icon: <SendFill size={18} />,
+      };
+    default:
+      return {
+        label: formatRegistryName(getToolTypeKey(tool)),
+        accent: '#8892a6',
+        accentSoft: 'rgba(136, 146, 166, 0.18)',
+        icon: <Robot size={18} />,
+      };
+  }
+}
+
+function getToolCapabilities(tool: ToolRegistryItem): string[] {
+  return [
+    tool.commandableAction ? 'Commandable' : 'UI only',
+    tool.previewable ? 'Preview' : 'Direct',
+    tool.interactiveView ? 'Interactive' : 'Action',
+  ];
 }
 
 interface PendingControlAction {
@@ -1207,6 +1336,9 @@ export function App() {
   const settingsState = useJson('settings', () =>
     apiFetch<{ settings: ControlSettings }>('/api/admin/settings'),
   );
+  const toolsState = useJson('tools', () =>
+    apiFetch<{ tools: ToolRegistryItem[] }>('/api/admin/tools'),
+  );
   const signalProfileState = useJson('signal-profile', () =>
     apiFetch<{ profile: SignalProfileSettings }>('/api/admin/signal/profile'),
   );
@@ -1296,8 +1428,15 @@ export function App() {
     const googleStatus = url.searchParams.get('google_contacts');
     const message = url.searchParams.get('message');
 
-    if (tabParam === 'contacts') {
-      setTab('contacts');
+    if (
+      tabParam === 'contacts' ||
+      tabParam === 'personality' ||
+      tabParam === 'policy' ||
+      tabParam === 'tools' ||
+      tabParam === 'approvals' ||
+      tabParam === 'audit'
+    ) {
+      setTab(tabParam);
     }
     if (googleStatus === 'connected') {
       setToast({
@@ -1325,6 +1464,7 @@ export function App() {
   const preview = previewState.data?.preview || '';
   const policy = policyState.data?.policy || { pausedProviders: [] };
   const verifiedIdentities = verifiedState.data?.verifiedIdentities || [];
+  const tools = toolsState.data?.tools || [];
   const pendingActions = pendingState.data?.pending || [];
   const providers = providerState.data?.providers || {
     onecliConfigured: false,
@@ -1347,6 +1487,13 @@ export function App() {
     },
   };
   const auditRecords = auditState.data?.audit || [];
+  const groupedTools = Object.entries(
+    tools.reduce<Record<string, ToolRegistryItem[]>>((groups, tool) => {
+      const key = getToolTypeKey(tool);
+      groups[key] = [...(groups[key] || []), tool];
+      return groups;
+    }, {}),
+  ).sort(([left], [right]) => left.localeCompare(right));
   const setupChecks = setupState.data?.checks || {
     openAIConfigured: false,
     signalConfigured: false,
@@ -1392,6 +1539,7 @@ export function App() {
       policyState.refresh(),
       verifiedState.refresh(),
       settingsState.refresh(),
+      toolsState.refresh(),
       signalProfileState.refresh(),
       googleContactsSetupState.refresh(),
       providerState.refresh(),
@@ -1645,6 +1793,7 @@ export function App() {
     ['contacts', 'Contacts', 'People and identity control', cilPeople],
     ['personality', 'Personality', 'Voice, role, and prompt shaping', cilUser],
     ['policy', 'Policy', 'Provider switches and trust settings', cilShieldAlt],
+    ['tools', 'Tools', 'Registry-backed control actions and integrations', cilNotes],
     ['approvals', 'Approvals', 'Pending actions that need a human', cilCheckCircle],
     ['audit', 'Audit', 'Action history and accountability', cilDescription],
   ] as const;
@@ -2370,6 +2519,100 @@ export function App() {
         </section>
       ) : null}
 
+          {tab === 'tools' ? (
+        <>
+          <section className="panel">
+            <div className="panelHeader">
+              <h2>Tool Registry</h2>
+              <button onClick={() => void toolsState.refresh()}>Refresh</button>
+            </div>
+            <p className="mutedNote">
+              These cards come directly from the registered control-action definitions on
+              the server, grouped by integration or capability family.
+            </p>
+          </section>
+
+          {groupedTools.length === 0 ? (
+            <section className="panel">
+              <p>No tools are registered yet.</p>
+            </section>
+          ) : (
+            groupedTools.map(([groupKey, groupTools]) => {
+              const groupVisual = getToolVisual({
+                name: groupKey,
+                commandableAction: false,
+                toolType: groupKey,
+              });
+
+              return (
+                <section key={groupKey} className="toolGroupSection">
+                  <div className="panel toolGroupPanel">
+                    <div className="panelHeader toolGroupHeader">
+                      <div>
+                        <h2>{groupVisual.label}</h2>
+                        <p className="mutedNote">
+                          {groupTools.length} registered tool
+                          {groupTools.length === 1 ? '' : 's'}
+                        </p>
+                      </div>
+                      <span
+                        className="toolLegendPill"
+                        style={
+                          {
+                            '--tool-accent': groupVisual.accent,
+                            '--tool-accent-soft': groupVisual.accentSoft,
+                          } as CSSProperties
+                        }
+                      >
+                        {groupVisual.icon}
+                        {groupVisual.label}
+                      </span>
+                    </div>
+                  </div>
+                  <CRow className="g-4">
+                    {groupTools.map((tool) => {
+                      const visual = getToolVisual(tool);
+                      return (
+                        <CCol md={6} xxl={4} key={tool.name}>
+                          <CWidgetStatsE
+                            className="toolWidget"
+                            style={
+                              {
+                                '--tool-accent': visual.accent,
+                                '--tool-accent-soft': visual.accentSoft,
+                              } as CSSProperties
+                            }
+                            title={formatRegistryName(tool.name)}
+                            value={
+                              <div className="toolWidgetValue">
+                                <span className="toolColorPill">{visual.label}</span>
+                                <span className="toolIconWrap">{visual.icon}</span>
+                              </div>
+                            }
+                            chart={
+                              <div className="toolWidgetMeta">
+                                <code>{tool.name}</code>
+                                <div className="toolCapabilityRow">
+                                  {getToolCapabilities(tool).map((capability) => (
+                                    <span key={capability} className="toolCapability">
+                                      {capability}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            }
+                          />
+                        </CCol>
+                      );
+                    })}
+                  </CRow>
+                </section>
+              );
+            })
+          )}
+        </>
+      ) : null}
+
           {tab === 'approvals' ? (
         <section className="panel">
           <div className="panelHeader">
@@ -2536,6 +2779,42 @@ export function App() {
                       ) : (
                         <p className="mutedNote">No approvals are waiting right now.</p>
                       )}
+                    </CCardBody>
+                  </CCard>
+                ) : null}
+
+                {tab === 'tools' ? (
+                  <CCard className="sidebarCard">
+                    <CCardHeader className="sidebarCardHeader">
+                      <h2>Registry summary</h2>
+                    </CCardHeader>
+                    <CCardBody>
+                      <p className="mutedNote">Registered tools: {tools.length}</p>
+                      <p className="mutedNote">Tool families: {groupedTools.length}</p>
+                      <div className="toolLegendList">
+                        {groupedTools.map(([groupKey]) => {
+                          const visual = getToolVisual({
+                            name: groupKey,
+                            commandableAction: false,
+                            toolType: groupKey,
+                          });
+                          return (
+                            <span
+                              key={groupKey}
+                              className="toolLegendPill"
+                              style={
+                                {
+                                  '--tool-accent': visual.accent,
+                                  '--tool-accent-soft': visual.accentSoft,
+                                } as CSSProperties
+                              }
+                            >
+                              {visual.icon}
+                              {visual.label}
+                            </span>
+                          );
+                        })}
+                      </div>
                     </CCardBody>
                   </CCard>
                 ) : null}

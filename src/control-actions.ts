@@ -42,6 +42,7 @@ import {
   PersonalityProfile,
   PersonalityScope,
   SignalProfileSettings,
+  ControlToolDefinitionSummary,
   VerifiedIdentity,
 } from './control-types.js';
 import { SignalComposeManager, SignalComposeStatus } from './signal-compose.js';
@@ -410,6 +411,8 @@ export class ControlActionService {
       name: 'contact.trust',
       requiredTrust: 'owner_verified',
       commandableAction: true,
+      toolType: 'contacts',
+      iconKey: 'people',
       summarizeInput: (input) =>
         `Trust contact ${canonicalizeIdentity(input.identity)}`,
       execute: async (input, context) => {
@@ -433,6 +436,8 @@ export class ControlActionService {
       name: 'contact.abuse',
       requiredTrust: 'owner_verified',
       commandableAction: true,
+      toolType: 'contacts',
+      iconKey: 'people',
       summarizeInput: (input) =>
         `Mark contact ${canonicalizeIdentity(input.identity)} as abuse`,
       execute: async (input, context) => {
@@ -456,6 +461,8 @@ export class ControlActionService {
       name: 'contact.reset',
       requiredTrust: 'owner_verified',
       commandableAction: true,
+      toolType: 'contacts',
+      iconKey: 'people',
       summarizeInput: (input) =>
         `Reset contact ${canonicalizeIdentity(input.identity)} to unknown`,
       execute: async (input, context) => {
@@ -479,6 +486,8 @@ export class ControlActionService {
       name: 'contact.reclassify',
       requiredTrust: 'owner_verified',
       commandableAction: true,
+      toolType: 'contacts',
+      iconKey: 'people',
       summarizeInput: (input) =>
         `Reclassify contact ${canonicalizeIdentity(input.identity)}`,
       execute: async (input, context) => {
@@ -525,6 +534,8 @@ export class ControlActionService {
       name: 'verified.add',
       requiredTrust: 'owner_verified',
       commandableAction: true,
+      toolType: 'contacts',
+      iconKey: 'people',
       summarizeInput: (input) =>
         `Add verified identity ${canonicalizeIdentity(input.identity)}`,
       execute: async (input) => {
@@ -558,6 +569,8 @@ export class ControlActionService {
       name: 'verified.remove',
       requiredTrust: 'owner_verified',
       commandableAction: true,
+      toolType: 'contacts',
+      iconKey: 'people',
       summarizeInput: (input) =>
         `Remove verified identity ${canonicalizeIdentity(input.identity)}`,
       execute: async (input) => {
@@ -577,6 +590,8 @@ export class ControlActionService {
       name: 'personality.upsert',
       requiredTrust: 'owner_verified',
       commandableAction: true,
+      toolType: 'personality',
+      iconKey: 'personality',
       summarizeInput: (input) => `Update personality profile ${input.scope}`,
       execute: async (input) => {
         const profiles = this.store.getPersonalityProfiles();
@@ -604,6 +619,8 @@ export class ControlActionService {
       requiredTrust: 'owner_verified',
       commandableAction: true,
       previewable: true,
+      toolType: 'personality',
+      iconKey: 'personality',
       summarizeInput: (input) =>
         `Set personality field ${input.field} on ${input.scope}`,
       execute: async (input) => {
@@ -631,6 +648,8 @@ export class ControlActionService {
       requiredTrust: 'owner_verified',
       commandableAction: true,
       previewable: true,
+      toolType: 'personality',
+      iconKey: 'personality',
       summarizeInput: (input) =>
         `Append custom personality instructions on ${input.scope}`,
       execute: async (input) => {
@@ -661,6 +680,8 @@ export class ControlActionService {
       requiredTrust: 'owner_verified',
       commandableAction: true,
       previewable: true,
+      toolType: 'personality',
+      iconKey: 'personality',
       summarizeInput: (input) => `Reset personality scope ${input.scope}`,
       execute: async (input) => {
         const profiles = this.store.getPersonalityProfiles();
@@ -682,6 +703,8 @@ export class ControlActionService {
       name: 'policy.pauseProvider',
       requiredTrust: 'owner_verified',
       commandableAction: true,
+      toolType: 'policy',
+      iconKey: 'policy',
       summarizeInput: (input) => `Pause outbound provider ${input.provider}`,
       execute: async (input) => {
         const before = this.getPolicy();
@@ -703,6 +726,8 @@ export class ControlActionService {
       name: 'policy.resumeProvider',
       requiredTrust: 'owner_verified',
       commandableAction: true,
+      toolType: 'policy',
+      iconKey: 'policy',
       summarizeInput: (input) => `Resume outbound provider ${input.provider}`,
       execute: async (input) => {
         const before = this.getPolicy();
@@ -727,6 +752,8 @@ export class ControlActionService {
       requiredTrust: 'owner_verified',
       commandableAction: true,
       previewable: true,
+      toolType: 'settings',
+      iconKey: 'settings',
       summarizeInput: () => 'Update control settings',
       execute: async (input) => {
         const before = this.getSettings();
@@ -755,6 +782,8 @@ export class ControlActionService {
       requiredTrust: 'owner_verified',
       commandableAction: true,
       previewable: true,
+      toolType: 'settings',
+      iconKey: 'settings',
       summarizeInput: (input) =>
         `Update environment keys ${Object.keys(input.values).join(', ')}`,
       execute: async (input) => {
@@ -800,6 +829,8 @@ export class ControlActionService {
       name: 'signal.composeUp',
       requiredTrust: 'owner_verified',
       commandableAction: true,
+      toolType: 'signal',
+      iconKey: 'signal',
       summarizeInput: () => 'Start managed Signal bridge container',
       execute: async (input) => {
         const before = this.getSignalComposeStatus();
@@ -820,6 +851,8 @@ export class ControlActionService {
       requiredTrust: 'owner_verified',
       commandableAction: false,
       previewable: true,
+      toolType: 'signal',
+      iconKey: 'signal',
       summarizeInput: () => 'Update Signal profile',
       execute: async (input) => {
         const before = this.getSignalProfile();
@@ -893,6 +926,8 @@ export class ControlActionService {
       requiredTrust: 'owner_verified',
       commandableAction: false,
       previewable: true,
+      toolType: 'outbound',
+      iconKey: 'send',
       summarizeInput: (input) =>
         input.requiresConfirmation
           ? `Start a new ${input.channel} conversation with ${input.resolvedDisplayName || input.target}`
@@ -940,6 +975,8 @@ export class ControlActionService {
       requiredTrust: 'owner_verified',
       commandableAction: false,
       previewable: true,
+      toolType: 'outbound',
+      iconKey: 'send',
       summarizeInput: (input) =>
         `Delete ${input.channel} item "${input.target}"`,
       execute: async (input) => {
@@ -968,6 +1005,8 @@ export class ControlActionService {
       requiredTrust: 'owner_verified',
       commandableAction: false,
       previewable: true,
+      toolType: 'outbound',
+      iconKey: 'send',
       summarizeInput: (input) =>
         `Create a new ${input.channel} group with ${input.resolvedMemberDisplayNames.join(', ')}`,
       execute: async (input) => {
@@ -1008,6 +1047,8 @@ export class ControlActionService {
       requiredTrust: 'owner_verified',
       commandableAction: false,
       previewable: true,
+      toolType: 'outbound',
+      iconKey: 'send',
       summarizeInput: (input) => {
         if (input.action === 'rename') {
           return `Rename Signal group "${input.groupName}" to "${input.newName}"`;
@@ -1046,6 +1087,19 @@ export class ControlActionService {
 
   getDefinition(name: string): ControlActionDefinition<any, any> | undefined {
     return this.definitions.get(name);
+  }
+
+  listToolDefinitions(): ControlToolDefinitionSummary[] {
+    return Array.from(this.definitions.values())
+      .map((definition) => ({
+        name: definition.name,
+        commandableAction: definition.commandableAction,
+        interactiveView: definition.interactiveView,
+        previewable: definition.previewable,
+        toolType: definition.toolType,
+        iconKey: definition.iconKey,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
   }
 
   setOutboundHandlers(handlers: OutboundHandlers): void {

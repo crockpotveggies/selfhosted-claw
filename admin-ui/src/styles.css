@@ -185,9 +185,98 @@ body {
 .metricCard,
 .panel,
 .sidebarCard,
-.wizardCard {
+.wizardCard,
+.toolWidget {
   border: 1px solid rgba(255, 255, 255, 0.06);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.14);
+}
+
+.toolGroupSection {
+  display: grid;
+  gap: 1rem;
+}
+
+.toolGroupPanel {
+  padding: 1.1rem 1.25rem;
+}
+
+.toolGroupHeader {
+  align-items: center;
+}
+
+.toolWidget {
+  --tool-accent: #8892a6;
+  --tool-accent-soft: rgba(136, 146, 166, 0.18);
+  height: 100%;
+  border-top: 3px solid var(--tool-accent);
+  background: linear-gradient(180deg, var(--tool-accent-soft), rgba(17, 22, 31, 0.86) 28%);
+}
+
+.toolWidget .card-body {
+  display: grid;
+  gap: 0.9rem;
+  text-align: left !important;
+}
+
+.toolWidgetValue {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.toolColorPill,
+.toolLegendPill,
+.toolCapability {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.toolColorPill,
+.toolLegendPill {
+  background: var(--tool-accent-soft);
+  color: var(--tool-accent);
+  padding: 0.4rem 0.72rem;
+}
+
+.toolIconWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 0.85rem;
+  background: var(--tool-accent-soft);
+  color: var(--tool-accent);
+}
+
+.toolWidgetMeta {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.toolWidgetMeta code {
+  color: #d7dce5;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 0.65rem;
+  padding: 0.55rem 0.7rem;
+}
+
+.toolCapabilityRow,
+.toolLegendList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.toolCapability {
+  background: rgba(255, 255, 255, 0.05);
+  color: #c8d0dd;
+  padding: 0.35rem 0.6rem;
 }
 
 .metricValue {
