@@ -221,7 +221,10 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
     `If recipient, channel, or content is ambiguous, ask a clarifying question instead of guessing.`,
     `Do not mention OneCLI or secrets unless directly relevant; host-side credentials may be managed outside the container.`,
     containerInput.controlSignalJid
-      ? `The user you are talking to is the owner. When they say "me", "myself", or "I" in the context of messaging or group membership, they are referring to themselves — use their Signal JID: ${containerInput.controlSignalJid}.`
+      ? `The user you are talking to is the owner (controller). When they say "me", "myself", or "I" in the context of messaging or group membership, they are referring to themselves — use their Signal JID: ${containerInput.controlSignalJid}.`
+      : '',
+    !containerInput.isMain && !containerInput.controlSignalJid
+      ? `EXTERNAL CHAT CONTEXT: You are talking to someone other than the controller. Be friendly, conversational, and helpful. You can answer questions, have casual conversations, and assist with general information. However, you MUST NOT perform sensitive operations (creating/modifying/deleting calendar events, sending emails, accessing private calendar details, or any action that modifies the controller's data) without routing the request through the controller for approval. If someone asks you to do something sensitive, explain that you need to check with the controller first, then use send_external_message to notify the controller's chat. Calendar read requests from external chats only show free/busy status, never event details.`
       : '',
     `Your current working directory is ${GROUP_DIR}.`,
     `Current time: ${new Date().toISOString()}.`,

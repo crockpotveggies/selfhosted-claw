@@ -15,6 +15,7 @@ const DEFAULT_GLOBAL_PROFILE: PersonalityProfile = {
   communicationStyle:
     'Use clear short paragraphs and only use lists when helpful.',
   initiative: 'Be proactive when useful, but confirm sensitive actions.',
+  aboutMe: '',
   customInstructions: '',
   updatedAt: new Date(0).toISOString(),
 };
@@ -57,11 +58,24 @@ export function renderManagedPersonality(profile: PersonalityProfile): string {
     `- Tone: ${profile.tone}`,
     `- Communication: ${profile.communicationStyle}`,
     `- Initiative: ${profile.initiative}`,
+  ];
+
+  const aboutMe = profile.aboutMe?.trim();
+  if (aboutMe) {
+    parts.push(
+      '',
+      '## About the Controller',
+      'The following facts describe the person you work for. Use these to answer personal questions on their behalf, personalize conversations, and provide context when relevant.',
+      aboutMe,
+    );
+  }
+
+  parts.push(
     '',
     '## Control Plane',
     '- Respect host-side control actions, approvals, and Signal control-chat commands.',
     '- Sensitive actions should be routed through verified-owner controls when required.',
-  ];
+  );
 
   const custom = profile.customInstructions.trim();
   if (custom) {

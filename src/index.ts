@@ -1186,6 +1186,34 @@ async function main(): Promise<void> {
         }
       }
 
+      // Auto-register unregistered chats so the agent can receive and respond.
+      // This makes the agent accessible to anyone who messages the Signal account.
+      // Security is enforced downstream: non-main groups cannot perform sensitive
+      // actions (calendar writes, email) without controller approval.
+      if (!registeredGroups[chatJid] && !msg.is_from_me && !msg.is_bot_message) {
+        const displayName =
+          msg.sender_name && msg.sender_name !== msg.sender
+            ? msg.sender_name
+            : chatJid;
+        const folder = deriveGroupFolder(displayName);
+        const folderInUse = Object.values(registeredGroups).some(
+          (g) => g.folder === folder,
+        );
+        if (!folderInUse) {
+          registerGroup(chatJid, {
+            name: displayName,
+            folder,
+            trigger: '',
+            added_at: new Date().toISOString(),
+            requiresTrigger: false,
+          });
+          logger.info(
+            { jid: chatJid, folder, displayName },
+            'Auto-registered chat on first inbound message',
+          );
+        }
+      }
+
       // Remote control commands — intercept before storage
       const trimmed = msg.content.trim();
       if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
