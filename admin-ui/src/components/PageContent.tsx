@@ -1,0 +1,26 @@
+import type { AdminTab } from '../admin/types';
+import { ContactsPage } from '../pages/ContactsPage';
+import { PersonalityPage } from '../pages/PersonalityPage';
+import { PolicyPage } from '../pages/PolicyPage';
+import { ToolsPage } from '../pages/ToolsPage';
+import { ApprovalsPage } from '../pages/ApprovalsPage';
+import { AuditPage } from '../pages/AuditPage';
+
+export function PageContent(props: { activeTab: AdminTab }) {
+  switch (props.activeTab) {
+    case 'contacts':
+      return <ContactsPage />;
+    case 'personality':
+      return <PersonalityPage />;
+    case 'policy':
+      return <PolicyPage />;
+    case 'tools':
+      return <ToolsPage />;
+    case 'approvals':
+      return <ApprovalsPage />;
+    case 'audit':
+      return <AuditPage />;
+    default:
+      return null;
+  }
+}

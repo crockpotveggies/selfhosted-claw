@@ -1190,7 +1190,11 @@ async function main(): Promise<void> {
       // This makes the agent accessible to anyone who messages the Signal account.
       // Security is enforced downstream: non-main groups cannot perform sensitive
       // actions (calendar writes, email) without controller approval.
-      if (!registeredGroups[chatJid] && !msg.is_from_me && !msg.is_bot_message) {
+      if (
+        !registeredGroups[chatJid] &&
+        !msg.is_from_me &&
+        !msg.is_bot_message
+      ) {
         const displayName =
           msg.sender_name && msg.sender_name !== msg.sender
             ? msg.sender_name

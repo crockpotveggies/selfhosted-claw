@@ -81,6 +81,17 @@ body {
   border-radius: 0.8rem;
 }
 
+.navRouterLink,
+.setupLink,
+.heroChipLink,
+.headerRouteLink {
+  text-decoration: none;
+}
+
+.navRouterLink {
+  color: inherit;
+}
+
 .navItem .navIcon {
   align-self: center;
 }
@@ -149,6 +160,10 @@ body {
   justify-content: flex-end;
 }
 
+.heroChipLink {
+  display: inline-flex;
+}
+
 .heroChip,
 .setupBadge,
 .wizardProgress,
@@ -180,6 +195,26 @@ body {
 
 .adminBody {
   padding-bottom: 2rem;
+}
+
+.setupLink {
+  display: inline-flex;
+}
+
+.headerRouteLink {
+  color: inherit;
+}
+
+.headerRouteLink.active {
+  color: var(--cui-body-color);
+}
+
+.headerIconWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 0.75rem;
+  color: inherit;
 }
 
 .metricCard,
