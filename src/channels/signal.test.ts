@@ -107,14 +107,13 @@ describe('SignalChannel', () => {
   });
 
   it('creates Signal groups and sends the initial message', async () => {
-    const fetchMock = vi
-      .fn(async (_url: string, init?: RequestInit) => {
-        const body = JSON.parse(String(init?.body || '{}'));
-        if (body.members) {
-          return makeJsonResponse({ id: 'group-123' }, 201);
-        }
-        return makeJsonResponse({}, 201);
-      });
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || '{}'));
+      if (body.members) {
+        return makeJsonResponse({ id: 'group-123' }, 201);
+      }
+      return makeJsonResponse({}, 201);
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     const channel = new SignalChannel(

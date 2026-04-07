@@ -347,6 +347,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         .join('\n\n')
         .trim();
       if (text) {
+        // Brief typing indicator so the reply feels natural
+        await channel.setTyping?.(chatJid, true);
+        await new Promise((r) => setTimeout(r, 1000));
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
@@ -897,9 +900,7 @@ async function main(): Promise<void> {
     if (directive.kind === 'update_group') {
       const signalChannel = channels.find((c) => c.name === 'signal') as
         | (Channel & {
-            findGroupByName?: (
-              name: string,
-            ) => Promise<{
+            findGroupByName?: (name: string) => Promise<{
               id: string;
               name: string;
               members: string[];
@@ -1113,7 +1114,25 @@ async function main(): Promise<void> {
   };
 
   const channelOpts = {
-    onMessage: (chatJid: string, msg: NewMessage) => {
+    onMessage: (incomingJid: string, msg: NewMessage) => {
+      // Normalize Signal DM JIDs: if a UUID-based JID doesn't match any
+      // registered group, re-route to the main group (same person, different
+      // identifier format — Signal sometimes sends UUID instead of phone).
+      let chatJid = incomingJid;
+      if (
+        chatJid.startsWith('signal:user:') &&
+        !chatJid.startsWith('signal:user:+') &&
+        !registeredGroups[chatJid]
+      ) {
+        const mainEntry = Object.entries(registeredGroups).find(
+          ([jid, g]) => g.isMain && jid.startsWith('signal:user:+'),
+        );
+        if (mainEntry) {
+          chatJid = mainEntry[0];
+          msg = { ...msg, chat_jid: chatJid };
+        }
+      }
+
       // Remote control commands — intercept before storage
       const trimmed = msg.content.trim();
       if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
@@ -1174,8 +1193,6 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
-  startAdminServer({ service: controlService });
-
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
@@ -1200,10 +1217,11 @@ async function main(): Promise<void> {
     }
   }
   if (channels.length === 0) {
-    logger.warn(
-      'No channels connected — running in admin-only mode. Use the admin UI to reconfigure channels.',
-    );
+    logger.fatal('No channels connected');
+    process.exit(1);
   }
+
+  startAdminServer({ service: controlService });
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
@@ -1216,6 +1234,11 @@ async function main(): Promise<void> {
   const getSignalChannel = () =>
     channels.find((c) => c.name === 'signal') as
       | (Channel & {
+          createGroup?: (input: {
+            title: string;
+            members: string[];
+            message?: string;
+          }) => Promise<{ jid: string; title: string }>;
           findGroupByName?: (
             name: string,
           ) => Promise<{ id: string; name: string; members: string[] } | null>;
@@ -1225,6 +1248,10 @@ async function main(): Promise<void> {
 
   startIpcWatcher({
     sendMessage: (jid, text) => sendHostMessage(jid, text),
+    resolveRecipient: async (name: string) => {
+      const target = await controlService.resolveOutboundTarget('signal', name);
+      return target.resolvedTarget;
+    },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {
@@ -1262,6 +1289,11 @@ async function main(): Promise<void> {
       if (!ch?.addMembers) throw new Error('Signal addMembers not available');
       await ch.addMembers(groupId, members);
     },
+    signalCreateGroup: async (input) => {
+      const ch = getSignalChannel();
+      if (!ch?.createGroup) throw new Error('Signal createGroup not available');
+      return ch.createGroup(input);
+    },
   });
   startSessionCleanup();
   queue.setProcessMessagesFn(processGroupMessages);
@@ -1272,11 +1304,14 @@ async function main(): Promise<void> {
   });
 }
 
-// Guard: only run when executed directly, not when imported by tests
+// Guard: only run when executed directly, not when imported by tests.
+// PM2 sets pm_exec_path to the real script; argv[1] is PM2's fork container.
+// Use pathToFileURL for Windows backslash path compatibility.
+import { pathToFileURL } from 'url';
+const _scriptPath = process.env.pm_exec_path || process.argv[1];
 const isDirectRun =
-  process.argv[1] &&
-  new URL(import.meta.url).pathname ===
-    new URL(`file://${process.argv[1]}`).pathname;
+  Boolean(_scriptPath) &&
+  pathToFileURL(_scriptPath!).pathname === new URL(import.meta.url).pathname;
 
 if (isDirectRun) {
   main().catch((err) => {

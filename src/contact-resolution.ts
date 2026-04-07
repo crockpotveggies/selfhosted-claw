@@ -71,7 +71,10 @@ export function resolveLiteralTarget(
     };
   }
 
-  if (channel === 'signal' && (trimmed.startsWith('signal:user:') || trimmed.startsWith('+'))) {
+  if (
+    channel === 'signal' &&
+    (trimmed.startsWith('signal:user:') || trimmed.startsWith('+'))
+  ) {
     const resolved = resolveSignalTarget(trimmed);
     return {
       channel,
@@ -89,7 +92,11 @@ export function resolveLiteralTarget(
 function pickEmail(
   person: NonNullable<GoogleSearchResult['results']>[number]['person'],
 ): string {
-  return person?.emailAddresses?.find((entry) => entry.value?.trim())?.value?.trim() || '';
+  return (
+    person?.emailAddresses
+      ?.find((entry) => entry.value?.trim())
+      ?.value?.trim() || ''
+  );
 }
 
 function pickPhone(
@@ -105,7 +112,11 @@ function displayNameForPerson(
   person: NonNullable<GoogleSearchResult['results']>[number]['person'],
   fallback: string,
 ): string {
-  return person?.names?.find((entry) => entry.displayName?.trim())?.displayName?.trim() || fallback;
+  return (
+    person?.names
+      ?.find((entry) => entry.displayName?.trim())
+      ?.displayName?.trim() || fallback
+  );
 }
 
 export async function searchGoogleContacts(

@@ -432,8 +432,9 @@ describe('control plane parity', () => {
     expect(result.message).toContain('I kept that pending');
     expect(sendSignalMessage).not.toHaveBeenCalled();
     expect(
-      harness.service.listPendingActions().find((item) => item.id === pending.id)
-        ?.status,
+      harness.service
+        .listPendingActions()
+        .find((item) => item.id === pending.id)?.status,
     ).toBe('pending');
   });
 

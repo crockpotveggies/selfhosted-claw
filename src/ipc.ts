@@ -10,8 +10,28 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
+/** Dedup recent IPC messages — suppress identical (jid+text) within a short window. */
+const DEDUP_WINDOW_MS = 30_000;
+const recentIpcMessages = new Map<string, number>();
+
+function isDuplicateIpcMessage(chatJid: string, text: string): boolean {
+  const key = `${chatJid}\0${text}`;
+  const now = Date.now();
+  const prev = recentIpcMessages.get(key);
+  if (prev && now - prev < DEDUP_WINDOW_MS) return true;
+  recentIpcMessages.set(key, now);
+  // Prune old entries periodically
+  if (recentIpcMessages.size > 200) {
+    for (const [k, ts] of recentIpcMessages) {
+      if (now - ts > DEDUP_WINDOW_MS) recentIpcMessages.delete(k);
+    }
+  }
+  return false;
+}
+
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
+  resolveRecipient: (name: string) => Promise<string>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -27,6 +47,11 @@ export interface IpcDeps {
     name: string,
   ) => Promise<{ id: string; name: string; members: string[] } | null>;
   signalAddMembers?: (groupId: string, members: string[]) => Promise<void>;
+  signalCreateGroup?: (input: {
+    title: string;
+    members: string[];
+    message?: string;
+  }) => Promise<{ jid: string; title: string }>;
 }
 
 let ipcWatcherRunning = false;
@@ -78,23 +103,50 @@ export function startIpcWatcher(deps: IpcDeps): void {
             const filePath = path.join(messagesDir, file);
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (data.type === 'message' && data.chatJid && data.text) {
-                // Authorization: verify this group can send to this chatJid
-                const targetGroup = registeredGroups[data.chatJid];
-                if (
-                  isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
-                ) {
-                  await deps.sendMessage(data.chatJid, data.text);
-                  logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'IPC message sent',
+              if (data.type === 'message' && data.text) {
+                // Resolve target: either an explicit chatJid or a "to" name to resolve
+                let chatJid: string = data.chatJid || '';
+                if (!chatJid && data.to) {
+                  try {
+                    chatJid = await deps.resolveRecipient(data.to);
+                    logger.info(
+                      { to: data.to, resolvedJid: chatJid },
+                      'IPC message recipient resolved',
+                    );
+                  } catch (err) {
+                    logger.warn(
+                      { to: data.to, sourceGroup, err: String(err) },
+                      'IPC message recipient resolution failed',
+                    );
+                  }
+                }
+                if (!chatJid) {
+                  logger.warn(
+                    { sourceGroup, to: data.to },
+                    'IPC message has no resolvable target',
                   );
                 } else {
-                  logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'Unauthorized IPC message attempt blocked',
-                  );
+                  // Authorization: verify this group can send to this chatJid
+                  const targetGroup = registeredGroups[chatJid];
+                  if (
+                    isMain ||
+                    (targetGroup && targetGroup.folder === sourceGroup)
+                  ) {
+                    if (isDuplicateIpcMessage(chatJid, data.text)) {
+                      logger.warn(
+                        { chatJid, sourceGroup },
+                        'Duplicate IPC message suppressed',
+                      );
+                    } else {
+                      await deps.sendMessage(chatJid, data.text);
+                      logger.info({ chatJid, sourceGroup }, 'IPC message sent');
+                    }
+                  } else {
+                    logger.warn(
+                      { chatJid, sourceGroup },
+                      'Unauthorized IPC message attempt blocked',
+                    );
+                  }
                 }
               }
               fs.unlinkSync(filePath);
@@ -177,9 +229,11 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
-    // For signal_add_group_members
+    // For signal_add_group_members / signal_create_group
     groupName?: string;
     members?: string[];
+    title?: string;
+    message?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -525,6 +579,57 @@ export async function processTaskIpc(
           await deps.sendMessage(
             data.chatJid,
             `Failed to add members to group "${data.groupName}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      break;
+
+    case 'signal_create_group':
+      if (!data.title || !data.members || data.members.length === 0) {
+        logger.warn(
+          { data },
+          'Invalid signal_create_group request - missing title or members',
+        );
+        break;
+      }
+      if (!deps.signalCreateGroup) {
+        logger.warn(
+          { sourceGroup },
+          'signal_create_group: Signal channel not available',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            'Signal is not configured — cannot create group.',
+          );
+        }
+        break;
+      }
+      try {
+        const result = await deps.signalCreateGroup({
+          title: data.title,
+          members: data.members,
+          message: data.message,
+        });
+        logger.info(
+          { title: result.title, jid: result.jid, members: data.members },
+          'Signal group created via IPC',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Created Signal group "${result.title}".`,
+          );
+        }
+      } catch (err) {
+        logger.error(
+          { err, title: data.title },
+          'Failed to create Signal group',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to create group "${data.title}": ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }

@@ -53,6 +53,7 @@ beforeEach(() => {
 
   deps = {
     sendMessage: async () => {},
+    resolveRecipient: async () => 'mock@jid',
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {
       groups[jid] = group;

@@ -254,6 +254,35 @@ export interface ContactActivitySummary {
 }
 
 /**
+ * Find a Signal group chat by name (case-insensitive substring match).
+ * Returns the JID if exactly one group matches, or null.
+ */
+export function findSignalGroupByName(
+  name: string,
+): { jid: string; name: string } | null {
+  const rows = db
+    .prepare(
+      `SELECT jid, name FROM chats
+       WHERE jid LIKE 'signal:group:%' AND LOWER(name) = LOWER(?)
+       LIMIT 2`,
+    )
+    .all(name.trim()) as { jid: string; name: string }[];
+  if (rows.length === 1) return rows[0];
+  // Try substring match if exact fails
+  if (rows.length === 0) {
+    const fuzzy = db
+      .prepare(
+        `SELECT jid, name FROM chats
+         WHERE jid LIKE 'signal:group:%' AND LOWER(name) LIKE '%' || LOWER(?) || '%'
+         LIMIT 2`,
+      )
+      .all(name.trim()) as { jid: string; name: string }[];
+    if (fuzzy.length === 1) return fuzzy[0];
+  }
+  return null;
+}
+
+/**
  * Get all known chats, ordered by most recent activity.
  */
 export function getAllChats(): ChatInfo[] {

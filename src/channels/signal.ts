@@ -12,6 +12,7 @@ interface SignalEnvelope {
   timestamp?: number | string;
   source?: string;
   sourceNumber?: string;
+  sourceUuid?: string;
   sourceName?: string;
   dataMessage?: {
     message?: string;
@@ -83,6 +84,8 @@ export class SignalChannel implements Channel {
   private stopped = false;
   private receiveSocket: WebSocket | null = null;
   private readonly seenMessageIds = new Set<string>();
+  /** Maps Signal UUIDs → phone numbers so DMs always use a stable JID. */
+  private readonly uuidToPhone = new Map<string, string>();
 
   constructor(
     private readonly opts: ChannelOpts,
@@ -119,6 +122,32 @@ export class SignalChannel implements Channel {
 
   ownsJid(jid: string): boolean {
     return jid.startsWith('signal:');
+  }
+
+  async setTyping(jid: string, isTyping: boolean): Promise<void> {
+    const recipient = jid.startsWith('signal:group:')
+      ? jid.slice('signal:group:'.length)
+      : jid.startsWith('signal:user:')
+        ? formatUuidLike(jid.slice('signal:user:'.length))
+        : null;
+    if (!recipient) return;
+    const url = new URL(
+      `/v1/typing-indicator/${encodeURIComponent(this.account)}`,
+      this.rpcUrl,
+    );
+    try {
+      await this.fetchWithContext(
+        url,
+        {
+          method: isTyping ? 'PUT' : 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ recipient }),
+        },
+        'setTyping',
+      );
+    } catch {
+      // best-effort — don't break message flow if typing indicator fails
+    }
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
@@ -206,7 +235,9 @@ export class SignalChannel implements Channel {
 
   async addMembers(groupId: string, members: string[]): Promise<void> {
     const normalized = members.map((m) => {
-      const raw = m.startsWith('signal:user:') ? m.slice('signal:user:'.length) : m;
+      const raw = m.startsWith('signal:user:')
+        ? m.slice('signal:user:'.length)
+        : m;
       return formatUuidLike(raw);
     });
     const url = new URL(
@@ -229,7 +260,9 @@ export class SignalChannel implements Channel {
 
   async removeMembers(groupId: string, members: string[]): Promise<void> {
     const normalized = members.map((m) => {
-      const raw = m.startsWith('signal:user:') ? m.slice('signal:user:'.length) : m;
+      const raw = m.startsWith('signal:user:')
+        ? m.slice('signal:user:'.length)
+        : m;
       return formatUuidLike(raw);
     });
     const url = new URL(
@@ -246,7 +279,9 @@ export class SignalChannel implements Channel {
       'removeMembers',
     );
     if (!response.ok) {
-      throw new Error(`Signal RPC removeMembers failed with ${response.status}`);
+      throw new Error(
+        `Signal RPC removeMembers failed with ${response.status}`,
+      );
     }
   }
 
@@ -265,7 +300,9 @@ export class SignalChannel implements Channel {
       'updateGroupName',
     );
     if (!response.ok) {
-      throw new Error(`Signal RPC updateGroupName failed with ${response.status}`);
+      throw new Error(
+        `Signal RPC updateGroupName failed with ${response.status}`,
+      );
     }
   }
 
@@ -279,7 +316,9 @@ export class SignalChannel implements Channel {
     const groups = await this.listGroups();
     const normalized = name.toLowerCase().trim();
     const match = groups.find((g: any) => {
-      const groupName = String(g.name || g.title || g.groupName || '').toLowerCase();
+      const groupName = String(
+        g.name || g.title || g.groupName || '',
+      ).toLowerCase();
       return groupName === normalized || groupName.includes(normalized);
     });
     if (!match) return null;
@@ -344,11 +383,24 @@ export class SignalChannel implements Channel {
       envelope.groupInfo?.id ||
       envelope.groupId;
     const isGroup = Boolean(groupId);
+    const rawSourceNumber = envelope.sourceNumber?.trim() || '';
+    const rawSourceUuid = (envelope.sourceUuid || envelope.source || '').trim();
+
+    // Cache UUID→phone mapping whenever both are present
+    if (rawSourceNumber && rawSourceUuid && !rawSourceUuid.startsWith('+')) {
+      this.uuidToPhone.set(normalizeIdentifier(rawSourceUuid), rawSourceNumber);
+    }
+
+    // Prefer phone number; fall back to cached phone for the UUID; last resort: UUID
     const sender =
-      envelope.sourceNumber ||
-      envelope.source ||
+      rawSourceNumber ||
+      (rawSourceUuid
+        ? (this.uuidToPhone.get(normalizeIdentifier(rawSourceUuid)) ??
+          rawSourceUuid)
+        : '') ||
       sentMessage?.destination ||
       this.account;
+
     const timestamp = toIsoTimestamp(
       dataMessage?.timestamp || envelope.timestamp || Date.now(),
     );
@@ -427,6 +479,8 @@ export class SignalChannel implements Channel {
       this.rpcUrl,
     );
     wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+    // Automatically send read receipts for every received message
+    wsUrl.searchParams.set('send_read_receipts', 'true');
 
     await new Promise<void>((resolve, reject) => {
       const socket = new WebSocket(wsUrl);

@@ -133,16 +133,19 @@ export class ControlStore {
   }
 
   getGoogleContactsOAuth(): GoogleContactsOAuthState {
-    return readJsonFile<GoogleContactsOAuthState>(this.googleContactsOAuthFile, {
-      accessToken: '',
-      refreshToken: '',
-      expiryDate: new Date(0).toISOString(),
-      scope: '',
-      tokenType: '',
-      connectedAt: '',
-      oauthState: '',
-      oauthStateCreatedAt: '',
-    });
+    return readJsonFile<GoogleContactsOAuthState>(
+      this.googleContactsOAuthFile,
+      {
+        accessToken: '',
+        refreshToken: '',
+        expiryDate: new Date(0).toISOString(),
+        scope: '',
+        tokenType: '',
+        connectedAt: '',
+        oauthState: '',
+        oauthStateCreatedAt: '',
+      },
+    );
   }
 
   saveGoogleContactsOAuth(state: GoogleContactsOAuthState): void {

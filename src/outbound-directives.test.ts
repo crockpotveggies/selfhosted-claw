@@ -6,7 +6,10 @@ import {
   storeChatMetadata,
   storeMessageDirect,
 } from './db.js';
-import { parseAgentOutput, resolveSignalTarget } from './outbound-directives.js';
+import {
+  parseAgentOutput,
+  resolveSignalTarget,
+} from './outbound-directives.js';
 
 describe('parseAgentOutput', () => {
   it('extracts send directives and leaves visible text', () => {

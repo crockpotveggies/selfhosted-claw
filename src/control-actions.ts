@@ -10,6 +10,7 @@ import {
 } from './config.js';
 import {
   ContactActivitySummary,
+  findSignalGroupByName,
   getIncomingContactSummaries,
   getMessagesBySender,
 } from './db.js';
@@ -1243,7 +1244,20 @@ export class ControlActionService {
       try {
         return resolveSignalHistoryTarget(query);
       } catch {
-        // Fall through to Google Contacts lookup.
+        // Fall through to group name lookup, then Google Contacts.
+      }
+
+      // Check if the query matches a Signal group name
+      const group = findSignalGroupByName(query);
+      if (group) {
+        return {
+          channel: 'signal',
+          query,
+          resolvedTarget: group.jid,
+          displayName: group.name,
+          source: 'signal_history',
+          existingConversation: true,
+        };
       }
     }
 
@@ -1297,7 +1311,7 @@ export class ControlActionService {
     account: string,
     useVoice: boolean,
     captchaToken?: string,
-  ): Promise<{ message: string; captchaRequired?: true; captchaUrl?: string }> {
+  ): Promise<{ message: string }> {
     const env = this.getSetupEnvironment();
     return this.signalCompose.startRegistration({
       account: account || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT,

@@ -1,11 +1,55 @@
 import type { ChangeEvent, Dispatch, ReactNode, SetStateAction } from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
+import {
+  CBadge,
+  CButton,
+  CCard,
+  CCardBody,
+  CCardHeader,
+  CCloseButton,
+  CCol,
+  CContainer,
+  CFormInput,
+  CFormSelect,
+  CHeader,
+  CHeaderBrand,
+  CHeaderNav,
+  CHeaderToggler,
+  CModal,
+  CModalBody,
+  CNavItem,
+  CNavLink,
+  CRow,
+  CSidebar,
+  CSidebarBrand,
+  CSidebarFooter,
+  CSidebarHeader,
+  CSidebarNav,
+  CSidebarToggler,
+  CTooltip,
+  useColorModes,
+} from '@coreui/react';
+import CIcon from '@coreui/icons-react';
+import {
+  cilBell,
+  cilCheckCircle,
+  cilContact,
+  cilDescription,
+  cilList,
+  cilMenu,
+  cilMoon,
+  cilNotes,
+  cilPeople,
+  cilSettings,
+  cilShieldAlt,
+  cilSpeech,
+  cilUser,
+} from '@coreui/icons';
 import { Wizard, useWizard } from 'react-use-wizard';
 
 type ContactStatus = 'trusted' | 'unknown' | 'abuse';
 type PersonalityScope = 'global' | 'main' | `group:${string}`;
 type Tab =
-  | 'setup'
   | 'contacts'
   | 'personality'
   | 'policy'
@@ -348,29 +392,34 @@ function WizardFrame(props: {
   };
 
   return (
-    <div className="wizardCard">
-      <div className="wizardProgress">
+    <CCard className="wizardCard border-0">
+      <CBadge className="wizardProgress">
         Step {activeStep + 1} of {stepCount}
-      </div>
+      </CBadge>
       <h2>{props.title}</h2>
       <p className="wizardLead">{props.lead}</p>
       <div className="wizardBody">{props.children}</div>
       <div className="wizardActions">
         {activeStep > 0 ? (
-          <button type="button" onClick={props.onSecondary || previousStep}>
+          <CButton
+            type="button"
+            color="secondary"
+            variant="ghost"
+            onClick={props.onSecondary || previousStep}
+          >
             {props.secondaryLabel || 'Back'}
-          </button>
+          </CButton>
         ) : (
           <span />
         )}
-        <div className="buttonRow">
+        <div className="buttonRow noMargin">
           {props.tertiary}
-          <button type="button" onClick={() => void handlePrimary()}>
+          <CButton type="button" color="primary" onClick={() => void handlePrimary()}>
             {props.primaryLabel || (isLastStep ? 'Finish' : 'Save and continue')}
-          </button>
+          </CButton>
         </div>
       </div>
-    </div>
+    </CCard>
   );
 }
 
@@ -394,8 +443,10 @@ function SecurityStep(props: WizardSharedProps) {
       lead="The admin UI should stay on localhost and use an admin token if you want browser-level protection on top of local-only binding."
       onPrimary={save}
       tertiary={
-        <button
+        <CButton
           type="button"
+          color="secondary"
+          variant="ghost"
           onClick={() => {
             props.setSetupDraft((current) => ({
               ...current,
@@ -405,7 +456,7 @@ function SecurityStep(props: WizardSharedProps) {
           }}
         >
           Use safe defaults
-        </button>
+        </CButton>
       }
     >
       <label>
@@ -1044,7 +1095,10 @@ function SetupWizard(props: WizardSharedProps) {
 }
 
 export function App() {
+  const { setColorMode } = useColorModes('selfhosted-claw-admin-theme');
   const [actionError, setActionError] = useState('');
+  const [sidebarVisible, setSidebarVisible] = useState(true);
+  const [sidebarUnfoldable, setSidebarUnfoldable] = useState(false);
   const [tab, setTab] = useState<Tab>('contacts');
   const [contactStatusFilter, setContactStatusFilter] = useState<string>('');
   const [selectedContactId, setSelectedContactId] = useState('');
@@ -1182,6 +1236,10 @@ export function App() {
   }, [personalityState.data?.profile]);
 
   useEffect(() => {
+    setColorMode('dark');
+  }, [setColorMode]);
+
+  useEffect(() => {
     if (settingsState.data?.settings) {
       setSettingsDraft(settingsState.data.settings);
       setSetupDraft((current) => ({
@@ -1229,9 +1287,6 @@ export function App() {
           current.INBOUND_GUARD_SCRIPT,
       }));
       setGoogleClientId(setupState.data.env.GOOGLE_CLIENT_ID || '');
-      if (!setupState.data.checks.wizardComplete) {
-        setTab('setup');
-      }
     }
   }, [setupState.data]);
 
@@ -1586,108 +1641,196 @@ export function App() {
     }
   };
 
-  const tabs = useMemo(
-    () =>
-      [
-        ...(!setupChecks.wizardComplete ? [['setup', 'Setup'] as const] : []),
-        ['contacts', 'Contacts'],
-        ['personality', 'Personality'],
-        ['policy', 'Policy'],
-        ['approvals', 'Approvals'],
-        ['audit', 'Audit'],
-      ] as const,
-    [setupChecks.wizardComplete],
-  );
+  const tabs = [
+    ['contacts', 'Contacts', 'People and identity control', cilPeople],
+    ['personality', 'Personality', 'Voice, role, and prompt shaping', cilUser],
+    ['policy', 'Policy', 'Provider switches and trust settings', cilShieldAlt],
+    ['approvals', 'Approvals', 'Pending actions that need a human', cilCheckCircle],
+    ['audit', 'Audit', 'Action history and accountability', cilDescription],
+  ] as const;
+  const setupBlocked = !setupChecks.wizardComplete;
+  const activeTab = tabs.find(([value]) => value === tab) || tabs[0];
+  const systemChecks = [
+    ['Model backend', setupChecks.openAIConfigured],
+    ['Signal account', setupChecks.signalConfigured],
+    ['Signal bridge', setupChecks.signalComposeRunning],
+    ['Control chat', setupChecks.controlChatConfigured],
+    ['Verified identities', setupChecks.verifiedIdentityCount > 0],
+  ] as const;
 
   return (
-    <div className="shell">
-      <header className="topbar">
-        <div>
-          <h1>Self-Hosted Claw Control Plane</h1>
-          <p>
-            The admin UI and Signal control chat use the same host-side actions.
-            The first-run wizard keeps setup local and security-sensitive.
-          </p>
-        </div>
-        <label className="tokenBox">
-          Admin token
-          <input
-            type="password"
-            value={tokenDraft}
-            onChange={(event) => setTokenDraft(event.target.value)}
-            onBlur={() =>
-              window.localStorage.setItem('admin-ui-token', tokenDraft)
-            }
-            placeholder="Local X-Admin-Token"
-          />
-        </label>
-      </header>
-
-      {!setupChecks.wizardComplete ? (
-        <div className="banner warn">
-          First-run setup is not complete. The UI is staying on the Setup tab
-          until the core checks are configured.
-        </div>
-      ) : null}
-
+    <div className="adminCoreui">
       {toast ? (
         <div className={`toast ${toast.kind}`}>{toast.text}</div>
       ) : null}
 
-      <nav className="tabs">
-        {tabs.map(([value, label]) => (
-          <button
-            key={value}
-            className={tab === value ? 'active' : ''}
-            onClick={() => setTab(value)}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
+      <CSidebar
+        className="border-end adminSidebar"
+        colorScheme="dark"
+        position="fixed"
+        unfoldable={sidebarUnfoldable}
+        visible={sidebarVisible}
+        onVisibleChange={setSidebarVisible}
+      >
+        <CSidebarHeader className="border-bottom">
+          <CSidebarBrand className="adminSidebarBrand" href="#">
+            <div className="brandMark">
+              <CIcon icon={cilSpeech} size="lg" />
+            </div>
+            <div className="brandCopy">
+              <span>Self-Hosted Claw</span>
+              <small>Admin control plane</small>
+            </div>
+          </CSidebarBrand>
+          <CCloseButton className="d-lg-none" dark onClick={() => setSidebarVisible(false)} />
+        </CSidebarHeader>
+        <CSidebarNav className="adminSidebarNav">
+          {tabs.map(([value, label, description, icon]) => (
+            <CNavItem key={value}>
+              <CTooltip
+                content={description}
+                placement="right"
+                trigger={['hover', 'focus']}
+              >
+                <CNavLink
+                  href="#"
+                  active={tab === value}
+                  className="navItem"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    setTab(value);
+                  }}
+                >
+                  <CIcon className="navIcon" icon={icon} />
+                  <span>{label}</span>
+                </CNavLink>
+              </CTooltip>
+            </CNavItem>
+          ))}
+        </CSidebarNav>
+        <CSidebarFooter className="border-top d-none d-lg-flex justify-content-between align-items-center">
+          <CBadge className={`setupBadge ${setupBlocked ? 'warn' : 'ok'}`}>
+            {setupBlocked ? 'Setup required' : 'Ready'}
+          </CBadge>
+          <CSidebarToggler onClick={() => setSidebarUnfoldable((current) => !current)} />
+        </CSidebarFooter>
+      </CSidebar>
 
-      {errorBanner ? <div className="banner error">{errorBanner}</div> : null}
+      <div className="wrapper d-flex flex-column min-vh-100 adminWrapper">
+        <CHeader position="sticky" className="mb-4 p-0 adminHeader">
+          <CContainer fluid className="border-bottom px-4">
+            <CHeaderToggler
+              onClick={() => setSidebarVisible((current) => !current)}
+              style={{ marginInlineStart: '-14px' }}
+            >
+              <CIcon icon={cilMenu} size="lg" />
+            </CHeaderToggler>
+            <CHeaderBrand className="d-md-none" href="#">
+              Claw Admin
+            </CHeaderBrand>
+            <CHeaderNav className="d-none d-md-flex">
+              <CNavItem>
+                <CNavLink href="#" active>
+                  Dashboard
+                </CNavLink>
+              </CNavItem>
+              <CNavItem>
+                <CNavLink href="#">Operations</CNavLink>
+              </CNavItem>
+              <CNavItem>
+                <CNavLink href="#">Security</CNavLink>
+              </CNavItem>
+            </CHeaderNav>
+            <CHeaderNav className="ms-auto">
+              <CNavItem>
+                <CNavLink href="#">
+                  <CIcon icon={cilBell} size="lg" />
+                </CNavLink>
+              </CNavItem>
+              <CNavItem>
+                <CNavLink href="#">
+                  <CIcon icon={cilList} size="lg" />
+                </CNavLink>
+              </CNavItem>
+              <CNavItem>
+                <CNavLink href="#">
+                  <CIcon icon={cilSettings} size="lg" />
+                </CNavLink>
+              </CNavItem>
+            </CHeaderNav>
+          </CContainer>
+          <CContainer fluid className="px-4 py-3 adminHeaderDetails">
+            <div>
+              <div className="heroEyebrow">{activeTab[1]}</div>
+              <h1 className="adminPageTitle">{activeTab[2]}</h1>
+              <p className="adminPageLead">
+                The admin UI and Signal control chat call the same host-side actions,
+                so everything here reflects the real control plane.
+              </p>
+            </div>
+            <div className="heroChips">
+              <CBadge className={`heroChip ${setupBlocked ? 'warn' : 'ok'}`}>
+                {setupBlocked ? 'Setup overlay active' : 'Setup complete'}
+              </CBadge>
+              <CBadge className="heroChip">
+                {providers.googleContactsAvailable
+                  ? `Google Contacts ${providers.googleContactsSource}`
+                  : 'Google Contacts offline'}
+              </CBadge>
+              <CBadge className="heroChip">
+                {providers.onecliReachable ? 'OneCLI reachable' : 'OneCLI pending'}
+              </CBadge>
+            </div>
+          </CContainer>
+        </CHeader>
 
-      {tab === 'setup' ? (
-        <SetupWizard
-          setupDraft={setupDraft}
-          setSetupDraft={setSetupDraft}
-          verifiedIdentityInput={verifiedIdentityInput}
-          setVerifiedIdentityInput={setVerifiedIdentityInput}
-          verifiedLabelInput={verifiedLabelInput}
-          setVerifiedLabelInput={setVerifiedLabelInput}
-          verifiedIdentities={verifiedIdentities}
-          checks={setupChecks}
-          setupStatus={setupState.data}
-          saveEnvironment={saveEnvironment}
-          saveSettings={saveSettings}
-          startSignalCompose={startSignalCompose}
-          refreshSetupStatus={setupState.refresh}
-          requestSignalLinkQr={requestSignalLinkQr}
-          startSignalRegistration={startSignalRegistration}
-          verifySignalRegistration={verifySignalRegistration}
-          signalProvisionMode={signalProvisionMode}
-          setSignalProvisionMode={setSignalProvisionMode}
-          signalDeviceName={signalDeviceName}
-          setSignalDeviceName={setSignalDeviceName}
-          signalQrDataUrl={signalQrDataUrl}
-          setSignalQrDataUrl={setSignalQrDataUrl}
-          signalProvisionMessage={signalProvisionMessage}
-          setSignalProvisionMessage={setSignalProvisionMessage}
-          signalVerificationCode={signalVerificationCode}
-          setSignalVerificationCode={setSignalVerificationCode}
-          signalUseVoice={signalUseVoice}
-          setSignalUseVoice={setSignalUseVoice}
-          signalCaptchaRequired={signalCaptchaRequired}
-          signalCaptchaToken={signalCaptchaToken}
-          setSignalCaptchaToken={setSignalCaptchaToken}
-          signalExistingAccounts={signalExistingAccounts}
-          fetchSignalExistingAccounts={fetchSignalExistingAccounts}
-          addVerifiedIdentity={addVerifiedIdentity}
-        />
-      ) : null}
+        <div className="body flex-grow-1 adminBody">
+          <CContainer fluid className="px-4">
+            <CRow className="g-4 mb-4">
+              <CCol sm={6} xl={3}>
+                <CCard className="metricCard">
+                  <CCardBody>
+                    <div className="text-body-secondary small text-uppercase">Contacts</div>
+                    <div className="metricValue">{contacts.length}</div>
+                    <div className="metricMeta">Known identities in review</div>
+                  </CCardBody>
+                </CCard>
+              </CCol>
+              <CCol sm={6} xl={3}>
+                <CCard className="metricCard">
+                  <CCardBody>
+                    <div className="text-body-secondary small text-uppercase">Approvals</div>
+                    <div className="metricValue">{pendingActions.length}</div>
+                    <div className="metricMeta">Pending human decisions</div>
+                  </CCardBody>
+                </CCard>
+              </CCol>
+              <CCol sm={6} xl={3}>
+                <CCard className="metricCard">
+                  <CCardBody>
+                    <div className="text-body-secondary small text-uppercase">Audit log</div>
+                    <div className="metricValue">{auditRecords.length}</div>
+                    <div className="metricMeta">Recent control-plane events</div>
+                  </CCardBody>
+                </CCard>
+              </CCol>
+              <CCol sm={6} xl={3}>
+                <CCard className="metricCard">
+                  <CCardBody>
+                    <div className="text-body-secondary small text-uppercase">Verified</div>
+                    <div className="metricValue">{verifiedIdentities.length}</div>
+                    <div className="metricMeta">Trusted human identities</div>
+                  </CCardBody>
+                </CCard>
+              </CCol>
+            </CRow>
 
-      {tab === 'contacts' ? (
+            <CRow className="g-4">
+              <CCol xl={9} className="workspace">
+                {errorBanner ? <div className="banner error">{errorBanner}</div> : null}
+
+                <div className="contentDeck">
+          {tab === 'contacts' ? (
         <>
           <section className="panelGrid">
             <div className="panel">
@@ -1876,7 +2019,7 @@ export function App() {
         </>
       ) : null}
 
-      {tab === 'personality' ? (
+          {tab === 'personality' ? (
         <section className="panelGrid">
           <div className="panel">
             <div className="panelHeader">
@@ -1995,7 +2138,7 @@ export function App() {
         </section>
       ) : null}
 
-      {tab === 'policy' ? (
+          {tab === 'policy' ? (
         <section className="panelGrid">
           <div className="panel">
             <h2>Provider Controls</h2>
@@ -2227,7 +2370,7 @@ export function App() {
         </section>
       ) : null}
 
-      {tab === 'approvals' ? (
+          {tab === 'approvals' ? (
         <section className="panel">
           <div className="panelHeader">
             <h2>Pending Approvals</h2>
@@ -2271,7 +2414,7 @@ export function App() {
         </section>
       ) : null}
 
-      {tab === 'audit' ? (
+          {tab === 'audit' ? (
         <section className="panel">
           <div className="panelHeader">
             <h2>Audit Log</h2>
@@ -2291,7 +2434,194 @@ export function App() {
               </article>
             ))}
           </div>
-        </section>
+          </section>
+        ) : null}
+                </div>
+              </CCol>
+
+              <CCol xl={3} className="inspector">
+                <CCard className="sidebarCard">
+                  <CCardHeader className="sidebarCardHeader">
+                    <h2>System checks</h2>
+                    <span className="mutedMeta">
+                      {systemChecks.filter(([, ok]) => ok).length}/{systemChecks.length}
+                    </span>
+                  </CCardHeader>
+                  <CCardBody>
+                    <div className="checklist">
+                      {systemChecks.map(([label, ok]) => (
+                        <div key={label} className={ok ? 'ok' : 'warn'}>
+                          {label}: {ok ? 'ready' : 'needs attention'}
+                        </div>
+                      ))}
+                    </div>
+                  </CCardBody>
+                </CCard>
+
+                {tab === 'contacts' ? (
+                  <CCard className="sidebarCard">
+                    <CCardHeader className="sidebarCardHeader">
+                      <h2>Selected contact</h2>
+                      {selectedContact ? (
+                        <CBadge className={`status ${selectedContact.status}`}>
+                          {selectedContact.status}
+                        </CBadge>
+                      ) : null}
+                    </CCardHeader>
+                    <CCardBody>
+                      {selectedContact ? (
+                        <>
+                          <p>
+                            <strong>{selectedContact.displayName}</strong>
+                          </p>
+                          <p className="mutedNote">{selectedContact.identity}</p>
+                          <p>{selectedContact.classificationSummary || 'No summary yet.'}</p>
+                        </>
+                      ) : (
+                        <p className="mutedNote">
+                          Pick a contact to inspect message history and trust state.
+                        </p>
+                      )}
+                    </CCardBody>
+                  </CCard>
+                ) : null}
+
+                {tab === 'personality' ? (
+                  <CCard className="sidebarCard">
+                    <CCardHeader className="sidebarCardHeader">
+                      <h2>Preview scope</h2>
+                      <span className="mutedMeta">{scope}</span>
+                    </CCardHeader>
+                    <CCardBody>
+                      <p className="mutedNote">Role: {personalityForm.role || 'Unset'}</p>
+                      <p className="mutedNote">Tone: {personalityForm.tone || 'Unset'}</p>
+                      <p className="mutedNote">Initiative: {personalityForm.initiative || 'Unset'}</p>
+                    </CCardBody>
+                  </CCard>
+                ) : null}
+
+                {tab === 'policy' ? (
+                  <CCard className="sidebarCard">
+                    <CCardHeader className="sidebarCardHeader">
+                      <h2>Trust ledger</h2>
+                    </CCardHeader>
+                    <CCardBody>
+                      <p className="mutedNote">Verified identities: {verifiedIdentities.length}</p>
+                      <p className="mutedNote">
+                        Paused providers:{' '}
+                        {policy.pausedProviders.length ? policy.pausedProviders.join(', ') : 'none'}
+                      </p>
+                      <p className="mutedNote">
+                        Contact resolution:{' '}
+                        {providers.contactResolutionAvailable ? 'available' : 'offline'}
+                      </p>
+                    </CCardBody>
+                  </CCard>
+                ) : null}
+
+                {tab === 'approvals' ? (
+                  <CCard className="sidebarCard">
+                    <CCardHeader className="sidebarCardHeader">
+                      <h2>Queue focus</h2>
+                    </CCardHeader>
+                    <CCardBody>
+                      {pendingActions[0] ? (
+                        <>
+                          <p>
+                            <strong>{pendingActions[0].summary}</strong>
+                          </p>
+                          <p className="mutedNote">Requested by {pendingActions[0].actorIdentity}</p>
+                          <p className="mutedNote">Expires {pendingActions[0].expiresAt}</p>
+                        </>
+                      ) : (
+                        <p className="mutedNote">No approvals are waiting right now.</p>
+                      )}
+                    </CCardBody>
+                  </CCard>
+                ) : null}
+
+                {tab === 'audit' ? (
+                  <CCard className="sidebarCard">
+                    <CCardHeader className="sidebarCardHeader">
+                      <h2>Latest event</h2>
+                    </CCardHeader>
+                    <CCardBody>
+                      {auditRecords[0] ? (
+                        <>
+                          <p>
+                            <strong>{auditRecords[0].actionName}</strong>
+                          </p>
+                          <p className="mutedNote">{auditRecords[0].payloadSummary}</p>
+                          <p className="mutedNote">
+                            {auditRecords[0].actorIdentity} | {auditRecords[0].status}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="mutedNote">No audit events recorded yet.</p>
+                      )}
+                    </CCardBody>
+                  </CCard>
+                ) : null}
+              </CCol>
+            </CRow>
+          </CContainer>
+        </div>
+      </div>
+
+      {setupBlocked ? (
+        <CModal
+          visible={setupBlocked}
+          backdrop="static"
+          alignment="center"
+          className="setupOverlayDialog"
+        >
+          <CModalBody className="setupOverlayPanel">
+            <div className="setupOverlayHeader">
+              <span className="heroEyebrow">First-run setup</span>
+              <h2>Finish setup before the control plane unlocks</h2>
+              <p>
+                This stays on top until the core model, Signal bridge, and trust
+                controls are configured.
+              </p>
+            </div>
+            <SetupWizard
+              setupDraft={setupDraft}
+              setSetupDraft={setSetupDraft}
+              verifiedIdentityInput={verifiedIdentityInput}
+              setVerifiedIdentityInput={setVerifiedIdentityInput}
+              verifiedLabelInput={verifiedLabelInput}
+              setVerifiedLabelInput={setVerifiedLabelInput}
+              verifiedIdentities={verifiedIdentities}
+              checks={setupChecks}
+              setupStatus={setupState.data}
+              saveEnvironment={saveEnvironment}
+              saveSettings={saveSettings}
+              startSignalCompose={startSignalCompose}
+              refreshSetupStatus={setupState.refresh}
+              requestSignalLinkQr={requestSignalLinkQr}
+              startSignalRegistration={startSignalRegistration}
+              verifySignalRegistration={verifySignalRegistration}
+              signalProvisionMode={signalProvisionMode}
+              setSignalProvisionMode={setSignalProvisionMode}
+              signalDeviceName={signalDeviceName}
+              setSignalDeviceName={setSignalDeviceName}
+              signalQrDataUrl={signalQrDataUrl}
+              setSignalQrDataUrl={setSignalQrDataUrl}
+              signalProvisionMessage={signalProvisionMessage}
+              setSignalProvisionMessage={setSignalProvisionMessage}
+              signalVerificationCode={signalVerificationCode}
+              setSignalVerificationCode={setSignalVerificationCode}
+              signalUseVoice={signalUseVoice}
+              setSignalUseVoice={setSignalUseVoice}
+              signalCaptchaRequired={signalCaptchaRequired}
+              signalCaptchaToken={signalCaptchaToken}
+              setSignalCaptchaToken={setSignalCaptchaToken}
+              signalExistingAccounts={signalExistingAccounts}
+              fetchSignalExistingAccounts={fetchSignalExistingAccounts}
+              addVerifiedIdentity={addVerifiedIdentity}
+            />
+          </CModalBody>
+        </CModal>
       ) : null}
     </div>
   );

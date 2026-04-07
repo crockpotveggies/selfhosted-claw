@@ -171,13 +171,10 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
     `You are ${containerInput.assistantName || 'the assistant'}, running inside NanoClaw.`,
     `You use an OpenAI-compatible chat completions backend and NanoClaw-native tools.`,
     `Use tools when they materially improve the answer. Prefer concise responses.`,
-    `If the user explicitly asks you to reach out, contact, message, email, or text someone, you may emit a send directive in this exact format: <send_message channel="signal|sms|email" to="recipient name or address">message to send</send_message>.`,
-    `If the user explicitly asks you to start a new Signal group conversation, you may emit a directive in this exact format: <create_group channel="signal" members="recipient one, recipient two" title="optional group title">first message to send to the new group</create_group>.`,
+    `To message external people or groups, use the send_external_message tool with "to" set to the recipient's name, phone number, or group name. To reply to the controller (the user you are chatting with), use send_internal_message. Your normal text response is also delivered to the controller — only use send_internal_message for interim updates during multi-step tasks. NEVER repeat the message content in your text response after calling either tool.`,
+    `To create a new Signal group, use the signal_create_group tool. Always provide a descriptive title — never leave it blank. After creating a group, use send_external_message with "to" set to the group's title to send follow-up messages.`,
     `To add people to a Signal group, use the signal_add_group_members tool with the group name and member phone numbers or UUIDs.`,
-    `If the user asks you to list their Signal groups or check who is in a group, emit: <inspect_group channel="signal"></inspect_group> (lists all groups) or <inspect_group channel="signal" group_name="Group Name"></inspect_group> (shows members of that group). This does not require confirmation.`,
-    `If the user explicitly asks you to delete or remove an email, calendar item, or outbound thread, you may emit a directive in this exact format: <delete_resource channel="email|calendar|signal|sms" target="identifier or short label">short reason</delete_resource>.`,
-    `Only emit send directives for explicit outbound requests. If recipient, channel, or message content is ambiguous, ask a short clarifying question instead of guessing.`,
-    `Starting a new conversation thread, creating a new group conversation, or deleting something requires user confirmation; the host will enforce that approval gate.`,
+    `If recipient, channel, or content is ambiguous, ask a clarifying question instead of guessing.`,
     `Do not mention OneCLI or secrets unless directly relevant; host-side credentials may be managed outside the container.`,
     containerInput.controlSignalJid
       ? `The user you are talking to is the owner. When they say "me", "myself", or "I" in the context of messaging or group membership, they are referring to themselves — use their Signal JID: ${containerInput.controlSignalJid}.`
@@ -195,6 +192,22 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
       `Group memory:\n${truncateMemory(groupMemory, MAX_GROUP_MEMORY_CHARS)}`,
     );
   }
+
+  // Inject available Signal groups so the agent knows what exists
+  const groupsFile = path.join(IPC_DIR, 'available_groups.json');
+  try {
+    if (fs.existsSync(groupsFile)) {
+      const groupsData = JSON.parse(fs.readFileSync(groupsFile, 'utf-8'));
+      const groupList = (groupsData.groups || [])
+        .filter((g: { name?: string }) => g.name)
+        .map((g: { name: string }) => g.name);
+      if (groupList.length > 0) {
+        sections.push(
+          `Existing Signal groups you can message with <send_message channel="signal" to="Group Name">: ${groupList.join(', ')}. Do NOT create a new group if one with the right name already exists.`,
+        );
+      }
+    }
+  } catch { /* best-effort */ }
 
   const globalDirs = ['/workspace/global', '/workspace/project/groups/global'];
   for (const dirPath of globalDirs) {
@@ -811,33 +824,59 @@ async function runShellCommand(command: string, timeoutMs: number): Promise<stri
 }
 
 const TOOL_REGISTRY: Record<string, ToolSpec> = {
-  send_message: {
+  send_external_message: {
     description:
-      'Send a chat message immediately while you continue working in the current run.',
+      'Send a message to an external person or group — NOT the controller. Use this to message other people, Signal groups, etc.',
     parameters: {
       type: 'object',
       properties: {
-        text: { type: 'string', description: 'Message text to send now.' },
-        sender: {
+        to: {
           type: 'string',
-          description: 'Optional sender/role label for the outbound message.',
+          description:
+            'Recipient: a person name, phone number, or group name (e.g. "Lunch Meeting").',
         },
+        text: { type: 'string', description: 'Message text to send.' },
+      },
+      required: ['to', 'text'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const text = String(args.text || '').trim();
+      if (!text) throw new Error('send_external_message requires non-empty text');
+      const to = String(args.to || '').trim();
+      if (!to) throw new Error('send_external_message requires a recipient in "to"');
+      writeIpcFile(MESSAGES_DIR, {
+        type: 'message',
+        to,
+        text,
+        groupFolder: ctx.containerInput.groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+      return `Message sent to ${to}.`;
+    },
+  },
+  send_internal_message: {
+    description:
+      'Send a reply back to the controller (the user you are talking to). Use this when you need to send an interim update or a separate message to the controller during a multi-step task.',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Message text to send to the controller.' },
       },
       required: ['text'],
       additionalProperties: false,
     },
     execute: async (args, ctx) => {
       const text = String(args.text || '').trim();
-      if (!text) throw new Error('send_message requires non-empty text');
+      if (!text) throw new Error('send_internal_message requires non-empty text');
       writeIpcFile(MESSAGES_DIR, {
         type: 'message',
         chatJid: ctx.containerInput.chatJid,
         text,
-        sender: typeof args.sender === 'string' ? args.sender : undefined,
         groupFolder: ctx.containerInput.groupFolder,
         timestamp: new Date().toISOString(),
       });
-      return 'Message sent.';
+      return 'Reply sent to controller.';
     },
   },
   shell: {
@@ -1308,6 +1347,48 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
         timestamp: new Date().toISOString(),
       });
       return `Request to add ${members.length} member(s) to Signal group "${groupName}" submitted. The host will resolve the group and add the members.`;
+    },
+  },
+  signal_create_group: {
+    description:
+      'Create a new Signal group with the specified members and send an initial message.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description:
+            'A short, descriptive name for the group (e.g. "Monday Lunch with Elyssa"). Required — never leave blank.',
+        },
+        members: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'List of members to add. Each can be a phone number (with country code, e.g. +15551234567) or a person\'s name.',
+        },
+        message: {
+          type: 'string',
+          description: 'The first message to send to the group after creation.',
+        },
+      },
+      required: ['title', 'members'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const title = String(args.title || '').trim();
+      if (!title) throw new Error('A descriptive group title is required');
+      const members = Array.isArray(args.members) ? args.members : [];
+      if (members.length === 0) throw new Error('At least one member is required');
+      writeIpcFile(TASKS_DIR, {
+        type: 'signal_create_group',
+        title,
+        members: members.map((m: unknown) => String(m).trim()),
+        message: typeof args.message === 'string' ? String(args.message).trim() : undefined,
+        chatJid: ctx.containerInput.chatJid,
+        groupFolder: ctx.containerInput.groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+      return `Request to create Signal group "${title}" submitted.`;
     },
   },
   delegate_task: {
