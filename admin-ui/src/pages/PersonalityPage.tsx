@@ -83,15 +83,30 @@ export function PersonalityPage() {
           />
         </label>
         <label>
-          About me (controller)
+          About the agent
           <textarea
-            rows={6}
-            placeholder="Biographical facts about you — location, job, hobbies, preferences, etc. The agent uses these to answer personal questions on your behalf."
-            value={dashboard.personalityForm.aboutMe}
+            rows={5}
+            placeholder="The agent's own backstory and personality facts — where it 'lives', what it enjoys, quirks, fun facts. Used when people ask the agent about itself."
+            value={dashboard.personalityForm.aboutAgent}
             onChange={(event) =>
               dashboard.setPersonalityForm({
                 ...dashboard.personalityForm,
-                aboutMe: event.target.value,
+                aboutAgent: event.target.value,
+                scope: dashboard.scope,
+              })
+            }
+          />
+        </label>
+        <label>
+          About the controller
+          <textarea
+            rows={5}
+            placeholder="Facts about you — location, job, hobbies, preferences. The agent uses these to answer questions about you and personalize conversations."
+            value={dashboard.personalityForm.aboutController}
+            onChange={(event) =>
+              dashboard.setPersonalityForm({
+                ...dashboard.personalityForm,
+                aboutController: event.target.value,
                 scope: dashboard.scope,
               })
             }

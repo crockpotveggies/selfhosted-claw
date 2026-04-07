@@ -48,9 +48,14 @@ export interface PersonalityProfile {
   tone: string;
   communicationStyle: string;
   initiative: string;
-  /** Biographical facts about the controller that the agent can reference in
-   *  conversations (e.g. location, job, hobbies). */
-  aboutMe: string;
+  /** The agent's own backstory, personality facts, and self-description
+   *  (e.g. where it "lives", what it enjoys, its quirks). */
+  aboutAgent: string;
+  /** Facts about the controller/owner that the agent can reference
+   *  (e.g. location, job, hobbies, preferences). */
+  aboutController: string;
+  /** @deprecated Use aboutAgent + aboutController instead. */
+  aboutMe?: string;
   customInstructions: string;
   updatedAt: string;
 }

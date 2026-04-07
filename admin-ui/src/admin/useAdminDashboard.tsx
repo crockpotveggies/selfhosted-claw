@@ -39,7 +39,8 @@ export function useAdminDashboard() {
     tone: '',
     communicationStyle: '',
     initiative: '',
-    aboutMe: '',
+    aboutAgent: '',
+    aboutController: '',
     customInstructions: '',
   });
   const [providerInput, setProviderInput] = useState('signal');
@@ -166,10 +167,12 @@ export function useAdminDashboard() {
 
   useEffect(() => {
     if (personalityState.data?.profile) {
+      const p = personalityState.data.profile;
       setPersonalityForm({
-        ...personalityState.data.profile,
-        // Backfill for profiles saved before aboutMe existed
-        aboutMe: personalityState.data.profile.aboutMe ?? '',
+        ...p,
+        // Migrate legacy aboutMe → aboutAgent if new fields are empty
+        aboutAgent: p.aboutAgent || p.aboutMe || '',
+        aboutController: p.aboutController ?? '',
       });
     }
   }, [personalityState.data?.profile]);

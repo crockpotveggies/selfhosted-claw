@@ -36,7 +36,10 @@ export interface PersonalityProfile {
   tone: string;
   communicationStyle: string;
   initiative: string;
-  aboutMe: string;
+  aboutAgent: string;
+  aboutController: string;
+  /** @deprecated Use aboutAgent + aboutController. */
+  aboutMe?: string;
   customInstructions: string;
 }
 

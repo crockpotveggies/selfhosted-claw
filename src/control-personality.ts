@@ -15,7 +15,8 @@ const DEFAULT_GLOBAL_PROFILE: PersonalityProfile = {
   communicationStyle:
     'Use clear short paragraphs and only use lists when helpful.',
   initiative: 'Be proactive when useful, but confirm sensitive actions.',
-  aboutMe: '',
+  aboutAgent: '',
+  aboutController: '',
   customInstructions: '',
   updatedAt: new Date(0).toISOString(),
 };
@@ -60,15 +61,34 @@ export function renderManagedPersonality(profile: PersonalityProfile): string {
     `- Initiative: ${profile.initiative}`,
   ];
 
-  const aboutMe = profile.aboutMe?.trim();
-  if (aboutMe) {
+  // Migrate legacy aboutMe field
+  const aboutAgent = (profile.aboutAgent || profile.aboutMe || '').trim();
+  const aboutController = (profile.aboutController || '').trim();
+
+  if (aboutAgent) {
+    parts.push(
+      '',
+      '## About You',
+      'These facts describe who you are. Use them when people ask about you — your background, where you live, what you like, etc.',
+      aboutAgent,
+    );
+  }
+
+  if (aboutController) {
     parts.push(
       '',
       '## About the Controller',
-      'The following facts describe the person you work for. Use these to answer personal questions on their behalf, personalize conversations, and provide context when relevant.',
-      aboutMe,
+      'These facts describe the person you work for. Use them to answer questions about them, personalize conversations, and provide context when relevant.',
+      aboutController,
     );
   }
+
+  parts.push(
+    '',
+    '## Knowledge Boundaries',
+    '- When asked a personal question about yourself or the controller and the answer is not in your personality profile or memory, reply with a simple "I don\'t know" rather than guessing or fabricating details.',
+    '- Never invent biographical facts. It is always better to say you don\'t know than to make something up.',
+  );
 
   parts.push(
     '',
