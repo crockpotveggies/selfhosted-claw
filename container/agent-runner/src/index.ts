@@ -173,7 +173,7 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
     `Use tools when they materially improve the answer. Prefer concise responses.`,
     `To message external people or groups, use the send_external_message tool with "to" set to the recipient's name, phone number, or group name. To reply to the controller (the user you are chatting with), use send_internal_message. Your normal text response is also delivered to the controller — only use send_internal_message for interim updates during multi-step tasks. NEVER repeat the message content in your text response after calling either tool.`,
     `To create a new Signal group, use the signal_create_group tool. Always provide a descriptive title — never leave it blank. After creating a group, use send_external_message with "to" set to the group's title to send follow-up messages.`,
-    `To add people to a Signal group, use the signal_add_group_members tool with the group name and member phone numbers or UUIDs.`,
+    `To add people to a Signal group, use the signal_add_group_members tool with the group name and member phone numbers or UUIDs. Use signal_list_groups to discover existing groups before sending messages or modifying them.`,
     `If recipient, channel, or content is ambiguous, ask a clarifying question instead of guessing.`,
     `Do not mention OneCLI or secrets unless directly relevant; host-side credentials may be managed outside the container.`,
     containerInput.controlSignalJid
@@ -1347,6 +1347,24 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
         timestamp: new Date().toISOString(),
       });
       return `Request to add ${members.length} member(s) to Signal group "${groupName}" submitted. The host will resolve the group and add the members.`;
+    },
+  },
+  signal_list_groups: {
+    description:
+      'List all Signal groups with their names and members. Use this to discover existing groups before sending messages or adding members.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      writeIpcFile(TASKS_DIR, {
+        type: 'signal_list_groups',
+        chatJid: ctx.containerInput.chatJid,
+        groupFolder: ctx.containerInput.groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+      return 'Group list requested. Results will be sent to the chat.';
     },
   },
   signal_create_group: {

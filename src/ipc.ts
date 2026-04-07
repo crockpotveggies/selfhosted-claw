@@ -52,6 +52,9 @@ export interface IpcDeps {
     members: string[];
     message?: string;
   }) => Promise<{ jid: string; title: string }>;
+  signalListGroups?: () => Promise<
+    { name: string; id: string; members: string[] }[]
+  >;
 }
 
 let ipcWatcherRunning = false;
@@ -109,15 +112,29 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 if (!chatJid && data.to) {
                   try {
                     chatJid = await deps.resolveRecipient(data.to);
-                    logger.info(
-                      { to: data.to, resolvedJid: chatJid },
-                      'IPC message recipient resolved',
-                    );
                   } catch (err) {
                     logger.warn(
                       { to: data.to, sourceGroup, err: String(err) },
                       'IPC message recipient resolution failed',
                     );
+                  }
+                  // Fallback: try Signal group lookup via RPC if standard resolution failed
+                  if (!chatJid && deps.signalFindGroup) {
+                    try {
+                      const group = await deps.signalFindGroup(data.to);
+                      if (group) {
+                        chatJid = `signal:group:${group.id}`;
+                        logger.info(
+                          { to: data.to, resolvedJid: chatJid },
+                          'IPC message recipient resolved via Signal group RPC',
+                        );
+                      }
+                    } catch (err) {
+                      logger.warn(
+                        { to: data.to, err: String(err) },
+                        'Signal group RPC fallback failed',
+                      );
+                    }
                   }
                 }
                 if (!chatJid) {
@@ -579,6 +596,44 @@ export async function processTaskIpc(
           await deps.sendMessage(
             data.chatJid,
             `Failed to add members to group "${data.groupName}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      break;
+
+    case 'signal_list_groups':
+      if (!deps.signalListGroups) {
+        logger.warn(
+          { sourceGroup },
+          'signal_list_groups: Signal channel not available',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            'Signal is not configured — cannot list groups.',
+          );
+        }
+        break;
+      }
+      try {
+        const groups = await deps.signalListGroups();
+        const summary = groups.length === 0
+          ? 'No Signal groups found.'
+          : groups
+              .map(
+                (g) =>
+                  `• ${g.name} (${g.members.length} members: ${g.members.join(', ')})`,
+              )
+              .join('\n');
+        if (data.chatJid) {
+          await deps.sendMessage(data.chatJid, `Signal groups:\n${summary}`);
+        }
+      } catch (err) {
+        logger.error({ err }, 'Failed to list Signal groups');
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to list groups: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }

@@ -1243,6 +1243,7 @@ async function main(): Promise<void> {
             name: string,
           ) => Promise<{ id: string; name: string; members: string[] } | null>;
           addMembers?: (groupId: string, members: string[]) => Promise<void>;
+          getGroups?: () => Promise<any[]>;
         })
       | undefined;
 
@@ -1293,6 +1294,11 @@ async function main(): Promise<void> {
       const ch = getSignalChannel();
       if (!ch?.createGroup) throw new Error('Signal createGroup not available');
       return ch.createGroup(input);
+    },
+    signalListGroups: async () => {
+      const ch = getSignalChannel();
+      if (!ch?.getGroups) throw new Error('Signal getGroups not available');
+      return ch.getGroups();
     },
   });
   startSessionCleanup();
