@@ -86,6 +86,20 @@ export function resolveLiteralTarget(
     };
   }
 
+  // Bare digits (no + prefix) — normalize and resolve as Signal phone number
+  if (channel === 'signal' && /^\d{7,15}$/.test(trimmed)) {
+    const phone = `+${trimmed}`;
+    const resolved = resolveSignalTarget(phone);
+    return {
+      channel,
+      query,
+      resolvedTarget: resolved.jid,
+      displayName: phone,
+      source: 'literal',
+      existingConversation: resolved.existingConversation,
+    };
+  }
+
   return null;
 }
 

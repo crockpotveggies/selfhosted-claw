@@ -57,6 +57,41 @@ export interface IpcDeps {
   >;
 }
 
+/** Resolve a list of member identifiers (names, phone numbers, JIDs) to Signal-ready targets. */
+async function resolveMembers(
+  members: string[],
+  resolveRecipient: (name: string) => Promise<string>,
+): Promise<string[]> {
+  const resolved: string[] = [];
+  for (const member of members) {
+    const trimmed = member.trim();
+    if (!trimmed) continue;
+    // Already a phone number or JID — pass through
+    if (trimmed.startsWith('+') || trimmed.startsWith('signal:')) {
+      resolved.push(trimmed);
+      continue;
+    }
+    // Bare digits (e.g. "15551234567") — normalize with + prefix
+    if (/^\d{7,15}$/.test(trimmed)) {
+      resolved.push(`+${trimmed}`);
+      continue;
+    }
+    // Name — resolve via contact resolution chain
+    try {
+      const jid = await resolveRecipient(trimmed);
+      // Extract phone number from signal:user:+15551234567 format
+      const phoneMatch = jid.match(/^signal:user:(\+\d+)$/);
+      resolved.push(phoneMatch ? phoneMatch[1] : jid);
+    } catch (err) {
+      logger.warn(
+        { member: trimmed, err: String(err) },
+        'Failed to resolve member — skipping',
+      );
+    }
+  }
+  return resolved;
+}
+
 let ipcWatcherRunning = false;
 
 export function startIpcWatcher(deps: IpcDeps): void {
@@ -576,7 +611,24 @@ export async function processTaskIpc(
           }
           break;
         }
-        await deps.signalAddMembers(group.id, data.members);
+        const resolvedAddMembers = await resolveMembers(
+          data.members,
+          deps.resolveRecipient,
+        );
+        if (resolvedAddMembers.length === 0) {
+          logger.warn(
+            { members: data.members },
+            'signal_add_group_members: no members resolved',
+          );
+          if (data.chatJid) {
+            await deps.sendMessage(
+              data.chatJid,
+              `Could not resolve any of the specified members.`,
+            );
+          }
+          break;
+        }
+        await deps.signalAddMembers(group.id, resolvedAddMembers);
         logger.info(
           { groupName: group.name, groupId: group.id, members: data.members },
           'Members added to Signal group via IPC',
@@ -617,14 +669,15 @@ export async function processTaskIpc(
       }
       try {
         const groups = await deps.signalListGroups();
-        const summary = groups.length === 0
-          ? 'No Signal groups found.'
-          : groups
-              .map(
-                (g) =>
-                  `• ${g.name} (${g.members.length} members: ${g.members.join(', ')})`,
-              )
-              .join('\n');
+        const summary =
+          groups.length === 0
+            ? 'No Signal groups found.'
+            : groups
+                .map(
+                  (g) =>
+                    `• ${g.name} (${g.members.length} members: ${g.members.join(', ')})`,
+                )
+                .join('\n');
         if (data.chatJid) {
           await deps.sendMessage(data.chatJid, `Signal groups:\n${summary}`);
         }
@@ -661,15 +714,49 @@ export async function processTaskIpc(
         break;
       }
       try {
+        const resolvedCreateMembers = await resolveMembers(
+          data.members,
+          deps.resolveRecipient,
+        );
+        if (resolvedCreateMembers.length === 0) {
+          logger.warn(
+            { members: data.members },
+            'signal_create_group: no members resolved',
+          );
+          if (data.chatJid) {
+            await deps.sendMessage(
+              data.chatJid,
+              `Could not resolve any of the specified members for group "${data.title}".`,
+            );
+          }
+          break;
+        }
         const result = await deps.signalCreateGroup({
           title: data.title,
-          members: data.members,
+          members: resolvedCreateMembers,
           message: data.message,
         });
         logger.info(
           { title: result.title, jid: result.jid, members: data.members },
           'Signal group created via IPC',
         );
+
+        // Auto-register the new group so inbound messages get routed to the agent
+        const groupJid = result.jid.startsWith('signal:group:')
+          ? result.jid
+          : `signal:group:${result.jid}`;
+        deps.registerGroup(groupJid, {
+          name: result.title,
+          folder: sourceGroup,
+          trigger: '',
+          added_at: new Date().toISOString(),
+          requiresTrigger: false,
+        });
+        logger.info(
+          { jid: groupJid, folder: sourceGroup },
+          'Auto-registered Signal group created via IPC',
+        );
+
         if (data.chatJid) {
           await deps.sendMessage(
             data.chatJid,
