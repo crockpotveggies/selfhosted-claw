@@ -173,7 +173,7 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
     `Use tools when they materially improve the answer. Prefer concise responses.`,
     `If the user explicitly asks you to reach out, contact, message, email, or text someone, you may emit a send directive in this exact format: <send_message channel="signal|sms|email" to="recipient name or address">message to send</send_message>.`,
     `If the user explicitly asks you to start a new Signal group conversation, you may emit a directive in this exact format: <create_group channel="signal" members="recipient one, recipient two" title="optional group title">first message to send to the new group</create_group>.`,
-    `If the user asks you to add or remove someone from an existing Signal group, emit: <update_group channel="signal" group_name="Group Name" action="add_member" members="person name"></update_group> or action="remove_member". To rename a group: <update_group channel="signal" group_name="Group Name" action="rename" new_name="New Name"></update_group>. Adding/removing members and renaming require user confirmation.`,
+    `To add people to a Signal group, use the signal_add_group_members tool with the group name and member phone numbers or UUIDs.`,
     `If the user asks you to list their Signal groups or check who is in a group, emit: <inspect_group channel="signal"></inspect_group> (lists all groups) or <inspect_group channel="signal" group_name="Group Name"></inspect_group> (shows members of that group). This does not require confirmation.`,
     `If the user explicitly asks you to delete or remove an email, calendar item, or outbound thread, you may emit a directive in this exact format: <delete_resource channel="email|calendar|signal|sms" target="identifier or short label">short reason</delete_resource>.`,
     `Only emit send directives for explicit outbound requests. If recipient, channel, or message content is ambiguous, ask a short clarifying question instead of guessing.`,
@@ -1271,6 +1271,43 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
         timestamp: new Date().toISOString(),
       });
       return `Group "${String(args.name)}" registration requested.`;
+    },
+  },
+  signal_add_group_members: {
+    description:
+      'Add one or more people to an existing Signal group. Members can be phone numbers (e.g. +15551234567) or Signal UUIDs.',
+    parameters: {
+      type: 'object',
+      properties: {
+        group_name: {
+          type: 'string',
+          description: 'The name of the Signal group to add members to.',
+        },
+        members: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'List of members to add. Each can be a phone number (with country code, e.g. +15551234567) or a Signal UUID.',
+        },
+      },
+      required: ['group_name', 'members'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const groupName = String(args.group_name || '').trim();
+      if (!groupName) throw new Error('group_name is required');
+      const members = Array.isArray(args.members) ? args.members : [];
+      if (members.length === 0) throw new Error('At least one member is required');
+      writeIpcFile(TASKS_DIR, {
+        type: 'signal_add_group_members',
+        groupName,
+        members: members.map((m: unknown) => String(m).trim()),
+        chatJid: ctx.containerInput.chatJid,
+        groupFolder: ctx.containerInput.groupFolder,
+        isMain: ctx.containerInput.isMain,
+        timestamp: new Date().toISOString(),
+      });
+      return `Request to add ${members.length} member(s) to Signal group "${groupName}" submitted. The host will resolve the group and add the members.`;
     },
   },
   delegate_task: {

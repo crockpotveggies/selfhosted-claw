@@ -1213,6 +1213,16 @@ async function main(): Promise<void> {
       queue.registerProcess(groupJid, proc, containerName, groupFolder),
     sendMessage: (jid, rawText) => sendHostMessage(jid, rawText),
   });
+  const getSignalChannel = () =>
+    channels.find((c) => c.name === 'signal') as
+      | (Channel & {
+          findGroupByName?: (
+            name: string,
+          ) => Promise<{ id: string; name: string; members: string[] } | null>;
+          addMembers?: (groupId: string, members: string[]) => Promise<void>;
+        })
+      | undefined;
+
   startIpcWatcher({
     sendMessage: (jid, text) => sendHostMessage(jid, text),
     registeredGroups: () => registeredGroups,
@@ -1242,6 +1252,15 @@ async function main(): Promise<void> {
       for (const group of Object.values(registeredGroups)) {
         writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
       }
+    },
+    signalFindGroup: async (name) => {
+      const ch = getSignalChannel();
+      return ch?.findGroupByName ? ch.findGroupByName(name) : null;
+    },
+    signalAddMembers: async (groupId, members) => {
+      const ch = getSignalChannel();
+      if (!ch?.addMembers) throw new Error('Signal addMembers not available');
+      await ch.addMembers(groupId, members);
     },
   });
   startSessionCleanup();

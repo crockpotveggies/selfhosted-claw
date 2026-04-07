@@ -23,6 +23,10 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   onTasksChanged: () => void;
+  signalFindGroup?: (
+    name: string,
+  ) => Promise<{ id: string; name: string; members: string[] } | null>;
+  signalAddMembers?: (groupId: string, members: string[]) => Promise<void>;
 }
 
 let ipcWatcherRunning = false;
@@ -173,6 +177,9 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For signal_add_group_members
+    groupName?: string;
+    members?: string[];
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -459,6 +466,67 @@ export async function processTaskIpc(
           { data },
           'Invalid register_group request - missing required fields',
         );
+      }
+      break;
+
+    case 'signal_add_group_members':
+      if (!data.groupName || !data.members || data.members.length === 0) {
+        logger.warn(
+          { data },
+          'Invalid signal_add_group_members request - missing groupName or members',
+        );
+        break;
+      }
+      if (!deps.signalFindGroup || !deps.signalAddMembers) {
+        logger.warn(
+          { sourceGroup },
+          'signal_add_group_members: Signal channel not available',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            'Signal is not configured — cannot add group members.',
+          );
+        }
+        break;
+      }
+      try {
+        const group = await deps.signalFindGroup(data.groupName);
+        if (!group) {
+          logger.warn(
+            { groupName: data.groupName },
+            'signal_add_group_members: group not found',
+          );
+          if (data.chatJid) {
+            await deps.sendMessage(
+              data.chatJid,
+              `No Signal group found matching "${data.groupName}".`,
+            );
+          }
+          break;
+        }
+        await deps.signalAddMembers(group.id, data.members);
+        logger.info(
+          { groupName: group.name, groupId: group.id, members: data.members },
+          'Members added to Signal group via IPC',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Added ${data.members.length} member(s) to Signal group "${group.name}".`,
+          );
+        }
+      } catch (err) {
+        logger.error(
+          { err, groupName: data.groupName },
+          'Failed to add members to Signal group',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to add members to group "${data.groupName}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
       break;
 
