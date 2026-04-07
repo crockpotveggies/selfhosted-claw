@@ -856,13 +856,22 @@ export async function processTaskIpc(
         break;
       }
       try {
-        const result = await deps.calendarListEvents({
+        const result = (await deps.calendarListEvents({
           calendarId: data.calendarId || 'primary',
           timeMin: data.timeMin || '',
           timeMax: data.timeMax || '',
           maxResults: data.maxResults || 25,
           query: data.query,
-        });
+        })) as { items?: { start?: unknown; end?: unknown; summary?: string; status?: string }[] };
+        // Privacy: non-main groups only see free/busy, not event details
+        if (!isMain && result && Array.isArray(result.items)) {
+          result.items = result.items.map((item) => ({
+            start: item.start,
+            end: item.end,
+            status: item.status || 'confirmed',
+            summary: '(busy)',
+          }));
+        }
         writeIpcResponse(sourceGroup, data.requestId, result);
       } catch (err) {
         writeIpcResponse(sourceGroup, data.requestId, {
@@ -897,6 +906,14 @@ export async function processTaskIpc(
 
     case 'calendar_get_event': {
       if (!data.requestId) break;
+      // Only main group can view full event details
+      if (!isMain) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error:
+            'Calendar event details are only available from the control chat.',
+        });
+        break;
+      }
       if (!deps.calendarGetEvent) {
         writeIpcResponse(sourceGroup, data.requestId, {
           error: 'Google Calendar is not configured.',
@@ -919,6 +936,17 @@ export async function processTaskIpc(
 
     case 'calendar_create_event': {
       if (!data.requestId) break;
+      if (!isMain) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error:
+            'Calendar events can only be created from the control chat.',
+        });
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized calendar_create_event attempt blocked',
+        );
+        break;
+      }
       if (!deps.calendarCreateEvent) {
         writeIpcResponse(sourceGroup, data.requestId, {
           error: 'Google Calendar is not configured.',
@@ -950,6 +978,17 @@ export async function processTaskIpc(
 
     case 'calendar_update_event': {
       if (!data.requestId) break;
+      if (!isMain) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error:
+            'Calendar events can only be modified from the control chat.',
+        });
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized calendar_update_event attempt blocked',
+        );
+        break;
+      }
       if (!deps.calendarUpdateEvent) {
         writeIpcResponse(sourceGroup, data.requestId, {
           error: 'Google Calendar is not configured.',
@@ -982,6 +1021,17 @@ export async function processTaskIpc(
 
     case 'calendar_delete_event': {
       if (!data.requestId) break;
+      if (!isMain) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error:
+            'Calendar events can only be deleted from the control chat.',
+        });
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized calendar_delete_event attempt blocked',
+        );
+        break;
+      }
       if (!deps.calendarDeleteEvent) {
         writeIpcResponse(sourceGroup, data.requestId, {
           error: 'Google Calendar is not configured.',

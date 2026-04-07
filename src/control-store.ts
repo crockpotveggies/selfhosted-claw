@@ -7,6 +7,7 @@ import {
   ADMIN_PENDING_ACTION_TTL_MS,
 } from './config.js';
 import {
+  CalendarAvailabilitySettings,
   ControlAuditRecord,
   ControlContact,
   ControlPolicy,
@@ -110,6 +111,19 @@ export class ControlStore {
 
   savePolicy(policy: ControlPolicy): void {
     writeJsonFile(this.policyFile, policy);
+  }
+
+  getCalendarAvailability(): CalendarAvailabilitySettings | undefined {
+    return this.getPolicy().calendarAvailability;
+  }
+
+  saveCalendarAvailability(
+    availability: CalendarAvailabilitySettings,
+  ): void {
+    const policy = this.getPolicy();
+    policy.calendarAvailability = availability;
+    policy.updatedAt = new Date().toISOString();
+    this.savePolicy(policy);
   }
 
   getSettings(): ControlSettings {

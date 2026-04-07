@@ -52,8 +52,29 @@ export interface PersonalityProfile {
   updatedAt: string;
 }
 
+/** A recurring weekly time window (e.g. "Mon–Fri 9am–5pm"). */
+export interface AvailabilityWindow {
+  /** Days of the week (0=Sun … 6=Sat). */
+  days: number[];
+  /** Start time in HH:MM 24h format (e.g. "09:00"). */
+  startTime: string;
+  /** End time in HH:MM 24h format (e.g. "17:00"). */
+  endTime: string;
+}
+
+export interface CalendarAvailabilitySettings {
+  /** IANA timezone (e.g. "America/New_York"). */
+  timezone: string;
+  /** Weekly availability windows. Events should only be scheduled within these. */
+  windows: AvailabilityWindow[];
+  /** Free-text notes the agent should consider (e.g. "No meetings before 10am on Mondays"). */
+  notes: string;
+  updatedAt: string;
+}
+
 export interface ControlPolicy {
   pausedProviders: string[];
+  calendarAvailability?: CalendarAvailabilitySettings;
   updatedAt: string;
 }
 

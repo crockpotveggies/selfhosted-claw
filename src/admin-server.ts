@@ -502,6 +502,36 @@ export function startAdminServer(
         return;
       }
 
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/policy/calendar-availability'
+      ) {
+        sendJson(res, 200, {
+          calendarAvailability:
+            options.service.getCalendarAvailability() || null,
+        });
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname === '/api/admin/policy/calendar-availability'
+      ) {
+        const body = JSON.parse((await readBody(req)) || '{}') as {
+          timezone?: string;
+          windows?: { days: number[]; startTime: string; endTime: string }[];
+          notes?: string;
+        };
+        options.service.saveCalendarAvailability({
+          timezone: body.timezone || 'UTC',
+          windows: body.windows || [],
+          notes: body.notes || '',
+          updatedAt: new Date().toISOString(),
+        });
+        sendJson(res, 200, { message: 'Calendar availability saved.' });
+        return;
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/admin/settings') {
         sendJson(res, 200, { settings: options.service.getSettings() });
         return;

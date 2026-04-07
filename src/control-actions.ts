@@ -36,6 +36,7 @@ import {
   ControlContact,
   ControlPolicy,
   ControlSettings,
+  CalendarAvailabilitySettings,
   GoogleCalendarOAuthState,
   GoogleContactsOAuthState,
   PendingControlAction,
@@ -1399,6 +1400,14 @@ export class ControlActionService {
 
   isProviderPaused(provider: string): boolean {
     return this.getPolicy().pausedProviders.includes(provider.toLowerCase());
+  }
+
+  getCalendarAvailability() {
+    return this.store.getCalendarAvailability();
+  }
+
+  saveCalendarAvailability(availability: CalendarAvailabilitySettings) {
+    this.store.saveCalendarAvailability(availability);
   }
 
   isVerifiedIdentity(identity: string): boolean {

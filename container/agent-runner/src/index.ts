@@ -19,6 +19,11 @@ interface ContainerInput {
   assistantName?: string;
   script?: string;
   controlSignalJid?: string;
+  calendarAvailability?: {
+    timezone: string;
+    windows: { days: number[]; startTime: string; endTime: string }[];
+    notes: string;
+  };
 }
 
 interface ContainerOutput {
@@ -178,7 +183,9 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
     `To message external people or groups, use the send_external_message tool with "to" set to the recipient's name, phone number, or group name. To reply to the controller (the user you are chatting with), use send_internal_message. Your normal text response is also delivered to the controller — only use send_internal_message for interim updates during multi-step tasks. NEVER repeat the message content in your text response after calling either tool.`,
     `To create a new Signal group, use the signal_create_group tool. Always provide a descriptive title — never leave it blank. After creating a group, use send_external_message with "to" set to the group's title to send follow-up messages.`,
     `To add people to a Signal group, use the signal_add_group_members tool with the group name and member phone numbers or UUIDs. Use signal_list_groups to discover existing groups before sending messages or modifying them.`,
-    `To interact with Google Calendar, use the calendar_* tools. Check availability with calendar_list_events or calendar_check_availability before proposing meeting times. Use ISO 8601 timestamps with timezone offsets (e.g. "2026-04-07T12:30:00-04:00"). When creating events with attendees, use their email addresses.`,
+    `To interact with Google Calendar, use the calendar_* tools. Use ISO 8601 timestamps with timezone offsets (e.g. "2026-04-07T12:30:00-04:00"). When creating events with attendees, use their email addresses. If an attendee's email is unavailable, ask them for it via send_external_message.`,
+    // Calendar scheduling policy
+    `CALENDAR SCHEDULING POLICY: Before creating any calendar event you MUST: (1) check the controller's calendar for conflicts using calendar_list_events or calendar_check_availability, (2) confirm availability with all external participants via conversation, (3) present the full event details (title, date, time, duration, location, attendees) to the controller for approval using send_internal_message, and (4) only call calendar_create_event AFTER the controller explicitly confirms. The same confirmation flow applies to calendar_update_event and calendar_delete_event. Always confirm in the control chat, never in external group chats. After creating/updating/deleting an event, notify the external participants via send_external_message.`,
     `If recipient, channel, or content is ambiguous, ask a clarifying question instead of guessing.`,
     `Do not mention OneCLI or secrets unless directly relevant; host-side credentials may be managed outside the container.`,
     containerInput.controlSignalJid
@@ -190,6 +197,30 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
     .filter(Boolean)
     .join(' ');
   sections.push(baseline);
+
+  // Inject calendar availability policy if configured
+  if (containerInput.calendarAvailability) {
+    const avail = containerInput.calendarAvailability;
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const windowsText = avail.windows.length > 0
+      ? avail.windows
+          .map(
+            (w) =>
+              `${w.days.map((d) => dayNames[d] || d).join('/')} ${w.startTime}–${w.endTime}`,
+          )
+          .join('; ')
+      : 'no specific windows set';
+    const parts = [
+      `GENERAL AVAILABILITY (timezone: ${avail.timezone}): ${windowsText}.`,
+    ];
+    if (avail.notes) {
+      parts.push(`Additional scheduling notes: ${avail.notes}`);
+    }
+    parts.push(
+      'Only propose meeting times that fall within these availability windows. If a requested time is outside these windows, inform the controller and suggest alternatives.',
+    );
+    sections.push(parts.join(' '));
+  }
 
   const groupMemory = readCompatibleMemoryFile(GROUP_DIR);
   if (groupMemory) {

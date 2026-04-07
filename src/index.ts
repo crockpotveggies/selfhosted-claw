@@ -96,6 +96,7 @@ let executeAgentDirective: (
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+let controlServiceRef: ControlActionService | null = null;
 
 const onecli = new OneCLI({ url: ONECLI_URL });
 
@@ -435,6 +436,8 @@ async function runAgent(
         isMain,
         assistantName: ASSISTANT_NAME,
         controlSignalJid: CONTROL_SIGNAL_JID || undefined,
+        calendarAvailability:
+          controlServiceRef?.getCalendarAvailability() || undefined,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -600,6 +603,7 @@ async function main(): Promise<void> {
 
   restoreRemoteControl();
   const controlService = new ControlActionService();
+  controlServiceRef = controlService;
   controlService.setApprovalReplyClassifier(
     async ({ reply, pendingSummary }) => {
       const response = await fetch(

@@ -1274,6 +1274,18 @@ export function App() {
   const [signalCaptchaRequired, setSignalCaptchaRequired] = useState(false);
   const [signalCaptchaToken, setSignalCaptchaToken] = useState('');
   const [signalExistingAccounts, setSignalExistingAccounts] = useState<string[]>([]);
+  // Calendar availability state
+  interface AvailabilityWindow {
+    days: number[];
+    startTime: string;
+    endTime: string;
+  }
+  const [calAvailTimezone, setCalAvailTimezone] = useState('America/New_York');
+  const [calAvailWindows, setCalAvailWindows] = useState<AvailabilityWindow[]>([
+    { days: [1, 2, 3, 4, 5], startTime: '09:00', endTime: '17:00' },
+  ]);
+  const [calAvailNotes, setCalAvailNotes] = useState('');
+  const [calAvailLoaded, setCalAvailLoaded] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [tokenDraft, setTokenDraft] = useState(
     window.localStorage.getItem('admin-ui-token') || '',
@@ -1370,6 +1382,21 @@ export function App() {
   useEffect(() => {
     setColorMode('dark');
   }, [setColorMode]);
+
+  // Load calendar availability settings
+  useEffect(() => {
+    if (calAvailLoaded) return;
+    apiFetch<{ calendarAvailability: { timezone: string; windows: AvailabilityWindow[]; notes: string } | null }>(
+      '/api/admin/policy/calendar-availability',
+    ).then((res) => {
+      if (res.calendarAvailability) {
+        setCalAvailTimezone(res.calendarAvailability.timezone);
+        setCalAvailWindows(res.calendarAvailability.windows.length > 0 ? res.calendarAvailability.windows : [{ days: [1, 2, 3, 4, 5], startTime: '09:00', endTime: '17:00' }]);
+        setCalAvailNotes(res.calendarAvailability.notes);
+      }
+      setCalAvailLoaded(true);
+    }).catch(() => setCalAvailLoaded(true));
+  }, [calAvailLoaded]);
 
   useEffect(() => {
     if (settingsState.data?.settings) {
@@ -2400,6 +2427,124 @@ export function App() {
                 </li>
               ))}
             </ul>
+          </div>
+
+          <div className="panel">
+            <h2>Calendar Availability</h2>
+            <p className="mutedNote">
+              Set your general availability. The agent will only propose meeting times within these windows.
+            </p>
+            <label>
+              Timezone
+              <input
+                value={calAvailTimezone}
+                onChange={(e) => setCalAvailTimezone(e.target.value)}
+                placeholder="America/New_York"
+              />
+            </label>
+
+            <h3>Availability Windows</h3>
+            {calAvailWindows.map((w, idx) => {
+              const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+              return (
+                <div key={idx} style={{ marginBottom: '0.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  {dayNames.map((name, dayIdx) => (
+                    <label key={dayIdx} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.85rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={w.days.includes(dayIdx)}
+                        onChange={(e) => {
+                          const updated = [...calAvailWindows];
+                          updated[idx] = {
+                            ...w,
+                            days: e.target.checked
+                              ? [...w.days, dayIdx].sort()
+                              : w.days.filter((d) => d !== dayIdx),
+                          };
+                          setCalAvailWindows(updated);
+                        }}
+                      />
+                      {name}
+                    </label>
+                  ))}
+                  <input
+                    type="time"
+                    value={w.startTime}
+                    onChange={(e) => {
+                      const updated = [...calAvailWindows];
+                      updated[idx] = { ...w, startTime: e.target.value };
+                      setCalAvailWindows(updated);
+                    }}
+                    style={{ width: '7rem' }}
+                  />
+                  <span>to</span>
+                  <input
+                    type="time"
+                    value={w.endTime}
+                    onChange={(e) => {
+                      const updated = [...calAvailWindows];
+                      updated[idx] = { ...w, endTime: e.target.value };
+                      setCalAvailWindows(updated);
+                    }}
+                    style={{ width: '7rem' }}
+                  />
+                  <button
+                    onClick={() =>
+                      setCalAvailWindows(calAvailWindows.filter((_, i) => i !== idx))
+                    }
+                  >
+                    Remove
+                  </button>
+                </div>
+              );
+            })}
+            <div className="buttonRow">
+              <button
+                onClick={() =>
+                  setCalAvailWindows([
+                    ...calAvailWindows,
+                    { days: [1, 2, 3, 4, 5], startTime: '09:00', endTime: '17:00' },
+                  ])
+                }
+              >
+                Add window
+              </button>
+            </div>
+
+            <label>
+              Additional notes
+              <textarea
+                value={calAvailNotes}
+                onChange={(e) => setCalAvailNotes(e.target.value)}
+                placeholder="e.g. No meetings before 10am on Mondays. Prefer afternoons."
+                rows={3}
+                style={{ width: '100%' }}
+              />
+            </label>
+            <button
+              onClick={() => {
+                apiFetch('/api/admin/policy/calendar-availability', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    timezone: calAvailTimezone,
+                    windows: calAvailWindows,
+                    notes: calAvailNotes,
+                  }),
+                })
+                  .then(() =>
+                    setToast({ color: 'success', message: 'Calendar availability saved.' }),
+                  )
+                  .catch((err) =>
+                    setToast({
+                      color: 'danger',
+                      message: `Save failed: ${err instanceof Error ? err.message : String(err)}`,
+                    }),
+                  );
+              }}
+            >
+              Save availability
+            </button>
           </div>
 
           <div className="panel">

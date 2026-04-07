@@ -50,6 +50,12 @@ export interface ContainerInput {
   assistantName?: string;
   script?: string;
   controlSignalJid?: string;
+  /** Calendar availability policy injected from admin settings. */
+  calendarAvailability?: {
+    timezone: string;
+    windows: { days: number[]; startTime: string; endTime: string }[];
+    notes: string;
+  };
 }
 
 export interface ContainerOutput {
