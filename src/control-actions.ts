@@ -156,6 +156,8 @@ interface OutboundHandlers {
   }) => Promise<{ jid: string; title: string }>;
   updateSignalGroup?: (input: OutboundUpdateGroupInput) => Promise<void>;
   deleteResource?: (input: OutboundDeleteInput) => Promise<string>;
+  /** Called after a successful outbound send so the host can auto-register the target. */
+  onOutboundSend?: (input: OutboundSendInput) => void;
 }
 
 export type ApprovalReplyDecision = 'approve' | 'reject' | 'revise' | 'unclear';
@@ -948,6 +950,8 @@ export class ControlActionService {
             input.resolvedSignalJid,
             input.message,
           );
+          // Notify host so it can auto-register the target for inbound monitoring
+          this.outboundHandlers.onOutboundSend?.(input);
           return {
             result: { status: 'sent' },
             beforeState,

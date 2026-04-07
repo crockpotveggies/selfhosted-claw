@@ -59,7 +59,7 @@ import type {
   OutboundUpdateGroupInput,
 } from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
-import { resolveGroupFolderPath } from './group-folder.js';
+import { isValidGroupFolder, resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { sanitizeInboundMessage } from './inbound-guard.js';
 import { parseAgentOutput } from './outbound-directives.js';
@@ -99,6 +99,32 @@ const queue = new GroupQueue();
 let controlServiceRef: ControlActionService | null = null;
 
 const onecli = new OneCLI({ url: ONECLI_URL });
+
+/**
+ * Derive a valid group folder name from a display name.
+ * Sanitizes to [A-Za-z0-9_-], lowercases, and truncates to 64 chars.
+ */
+function deriveGroupFolder(displayName: string): string {
+  let folder = displayName
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9_-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  // Must start with alphanumeric
+  folder = folder.replace(/^[^a-z0-9]+/, '');
+  if (!folder || !isValidGroupFolder(folder)) {
+    // Fallback: use a hash-based name
+    const hash = Array.from(displayName).reduce(
+      (acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0,
+      0,
+    );
+    folder = `group-${Math.abs(hash).toString(36)}`;
+  }
+  return folder;
+}
 
 function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   if (group.isMain) return;
@@ -737,6 +763,29 @@ async function main(): Promise<void> {
         throw new Error('Signal group creation is not available.');
       }
       return signalChannel.createGroup({ title, members, message });
+    },
+    onOutboundSend: (input) => {
+      // Auto-register the target so inbound replies get monitored
+      const jid = input.resolvedSignalJid || input.resolvedTarget;
+      if (!jid || registeredGroups[jid]) return;
+      const folder = deriveGroupFolder(
+        input.resolvedDisplayName || input.target,
+      );
+      const folderInUse = Object.values(registeredGroups).some(
+        (g) => g.folder === folder,
+      );
+      if (folderInUse) return;
+      registerGroup(jid, {
+        name: input.resolvedDisplayName || input.target,
+        folder,
+        trigger: '',
+        added_at: new Date().toISOString(),
+        requiresTrigger: false,
+      });
+      logger.info(
+        { jid, folder, displayName: input.resolvedDisplayName },
+        'Auto-registered target after outbound send',
+      );
     },
     updateSignalGroup: async (input) => {
       const signalChannel = channels.find((c) => c.name === 'signal') as
