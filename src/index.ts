@@ -1241,31 +1241,51 @@ async function main(): Promise<void> {
         return;
       }
 
-      controlService
-        .handleNaturalApprovalReply(chatJid, trimmed, {
-          actorIdentity: msg.sender,
-          source: 'signal_control',
-        })
-        .then(({ handled, message }) => {
-          if (handled) {
-            if (message) {
-              sendHostMessage(chatJid, message, { bypassPause: true }).catch(
-                (err) =>
+      // Natural approval replies only apply to the control chat (main group).
+      // Non-main chats skip this entirely and go straight to storage.
+      const isControlChat = registeredGroups[chatJid]?.isMain === true;
+      if (isControlChat) {
+        controlService
+          .handleNaturalApprovalReply(chatJid, trimmed, {
+            actorIdentity: msg.sender,
+            source: 'signal_control',
+          })
+          .then(({ handled, message }) => {
+            if (handled) {
+              if (message) {
+                sendHostMessage(chatJid, message, {
+                  bypassPause: true,
+                }).catch((err) =>
                   logger.error(
                     { err, chatJid },
                     'Natural approval response send failed',
                   ),
-              );
+                );
+              }
+              return;
             }
-            return;
-          }
-          storeInboundMessage(chatJid, msg).catch((err) =>
-            logger.error({ err, chatJid }, 'Inbound message guard error'),
-          );
-        })
-        .catch((err) =>
-          logger.error({ err, chatJid }, 'Natural approval handling error'),
+            storeInboundMessage(chatJid, msg).catch((err) =>
+              logger.error({ err, chatJid }, 'Inbound message guard error'),
+            );
+          })
+          .catch((err) => {
+            logger.error(
+              { err, chatJid },
+              'Natural approval handling error',
+            );
+            // Still store the message even if approval handling fails
+            storeInboundMessage(chatJid, msg).catch((storeErr) =>
+              logger.error(
+                { err: storeErr, chatJid },
+                'Inbound message guard error after approval failure',
+              ),
+            );
+          });
+      } else {
+        storeInboundMessage(chatJid, msg).catch((err) =>
+          logger.error({ err, chatJid }, 'Inbound message guard error'),
         );
+      }
       return;
     },
     onChatMetadata: (
