@@ -1547,6 +1547,7 @@ export function App() {
     policyState.error,
     verifiedState.error,
     settingsState.error,
+    toolsState.error,
     signalProfileState.error,
     googleContactsSetupState.error,
     providerState.error,
@@ -2677,7 +2678,16 @@ export function App() {
             </p>
           </section>
 
-          {groupedTools.length === 0 ? (
+          {toolsState.loading ? (
+            <section className="panel">
+              <p>Loading tool registry…</p>
+            </section>
+          ) : toolsState.error ? (
+            <section className="panel">
+              <p>Tool registry could not be loaded.</p>
+              <p className="mutedNote">{toolsState.error}</p>
+            </section>
+          ) : groupedTools.length === 0 ? (
             <section className="panel">
               <p>No tools are registered yet.</p>
             </section>

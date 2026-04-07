@@ -209,6 +209,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Container skills (read-only behavioral instructions loaded into system prompt)
+  const skillsDir = path.join(projectRoot, 'container', 'skills');
+  if (fs.existsSync(skillsDir)) {
+    mounts.push({
+      hostPath: skillsDir,
+      containerPath: '/workspace/skills',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(

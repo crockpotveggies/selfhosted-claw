@@ -97,6 +97,7 @@ const HISTORY_FILE = path.join(STATE_DIR, 'history.jsonl');
 const SUMMARY_FILE = path.join(STATE_DIR, 'summary.md');
 
 const AGENT_MEMORY_FILENAMES = ['AGENT.md', 'CLAUDE.md'];
+const SKILLS_DIR = '/workspace/skills';
 const OPENAI_BASE_URL = (
   process.env.OPENAI_BASE_URL || 'http://127.0.0.1:8000/v1'
 ).replace(/\/$/, '');
@@ -172,6 +173,37 @@ function readCompatibleMemoryFile(dirPath: string): string | null {
     }
   }
   return null;
+}
+
+function loadContainerSkills(): string[] {
+  const skills: string[] = [];
+  if (!fs.existsSync(SKILLS_DIR)) return skills;
+  try {
+    const entries = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const skillFile = path.join(SKILLS_DIR, entry.name, 'SKILL.md');
+      if (!fs.existsSync(skillFile)) continue;
+      try {
+        let content = fs.readFileSync(skillFile, 'utf-8').trim();
+        // Strip YAML frontmatter if present
+        if (content.startsWith('---')) {
+          const endIdx = content.indexOf('---', 3);
+          if (endIdx !== -1) {
+            content = content.slice(endIdx + 3).trim();
+          }
+        }
+        if (content) {
+          skills.push(content);
+        }
+      } catch {
+        log(`Warning: failed to read skill file ${skillFile}`);
+      }
+    }
+  } catch {
+    log('Warning: failed to read skills directory');
+  }
+  return skills;
 }
 
 function buildSystemPrompt(containerInput: ContainerInput): string {
@@ -255,6 +287,12 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
       );
       break;
     }
+  }
+
+  // Load container skills (behavioral instructions, conversation patterns, etc.)
+  const skills = loadContainerSkills();
+  for (const skill of skills) {
+    sections.push(skill);
   }
 
   return sections.join('\n\n');

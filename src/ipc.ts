@@ -862,7 +862,14 @@ export async function processTaskIpc(
           timeMax: data.timeMax || '',
           maxResults: data.maxResults || 25,
           query: data.query,
-        })) as { items?: { start?: unknown; end?: unknown; summary?: string; status?: string }[] };
+        })) as {
+          items?: {
+            start?: unknown;
+            end?: unknown;
+            summary?: string;
+            status?: string;
+          }[];
+        };
         // Privacy: non-main groups only see free/busy, not event details
         if (!isMain && result && Array.isArray(result.items)) {
           result.items = result.items.map((item) => ({
@@ -938,8 +945,7 @@ export async function processTaskIpc(
       if (!data.requestId) break;
       if (!isMain) {
         writeIpcResponse(sourceGroup, data.requestId, {
-          error:
-            'Calendar events can only be created from the control chat.',
+          error: 'Calendar events can only be created from the control chat.',
         });
         logger.warn(
           { sourceGroup },
@@ -980,8 +986,7 @@ export async function processTaskIpc(
       if (!data.requestId) break;
       if (!isMain) {
         writeIpcResponse(sourceGroup, data.requestId, {
-          error:
-            'Calendar events can only be modified from the control chat.',
+          error: 'Calendar events can only be modified from the control chat.',
         });
         logger.warn(
           { sourceGroup },
@@ -1023,8 +1028,7 @@ export async function processTaskIpc(
       if (!data.requestId) break;
       if (!isMain) {
         writeIpcResponse(sourceGroup, data.requestId, {
-          error:
-            'Calendar events can only be deleted from the control chat.',
+          error: 'Calendar events can only be deleted from the control chat.',
         });
         logger.warn(
           { sourceGroup },
