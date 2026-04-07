@@ -103,17 +103,6 @@ export interface GoogleContactsOAuthState {
   oauthStateCreatedAt: string;
 }
 
-export interface GoogleCalendarOAuthState {
-  accessToken: string;
-  refreshToken: string;
-  expiryDate: string;
-  scope: string;
-  tokenType: string;
-  connectedAt: string;
-  oauthState: string;
-  oauthStateCreatedAt: string;
-}
-
 export interface PendingControlAction {
   id: string;
   actionName: string;

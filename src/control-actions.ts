@@ -37,7 +37,6 @@ import {
   ControlPolicy,
   ControlSettings,
   CalendarAvailabilitySettings,
-  GoogleCalendarOAuthState,
   GoogleContactsOAuthState,
   PendingControlAction,
   PersonalityProfile,
@@ -179,7 +178,6 @@ const GOOGLE_CONTACT_TOKEN_KEYS = [
 ] as const;
 const GOOGLE_CONTACTS_SCOPE =
   'https://www.googleapis.com/auth/contacts.readonly';
-const GOOGLE_CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar';
 const GOOGLE_CALENDAR_TOKEN_KEYS = [
   'GOOGLE_CALENDAR_ACCESS_TOKEN',
   'GOOGLE_OAUTH_ACCESS_TOKEN',
@@ -1789,191 +1787,27 @@ export class ControlActionService {
     return next;
   }
 
-  // ── Google Calendar OAuth ──────────────────────────────────────────
-
-  getGoogleCalendarOAuth(): GoogleCalendarOAuthState {
-    return this.store.getGoogleCalendarOAuth();
-  }
-
-  async startGoogleCalendarOAuth(origin: string): Promise<{ url: string }> {
-    const env = this.getSetupEnvironment();
-    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
-      throw new Error(
-        'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required before connecting Google Calendar.',
-      );
-    }
-
-    const current = this.store.getGoogleCalendarOAuth();
-    const oauthState = randomBytes(18).toString('base64url');
-    this.store.saveGoogleCalendarOAuth({
-      ...current,
-      oauthState,
-      oauthStateCreatedAt: nowIso(),
-    });
-
-    const callbackUri = `${origin.replace(/\/$/, '')}/api/admin/google/calendar/oauth/callback`;
-    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    authUrl.searchParams.set('client_id', env.GOOGLE_CLIENT_ID);
-    authUrl.searchParams.set('redirect_uri', callbackUri);
-    authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('scope', GOOGLE_CALENDAR_SCOPE);
-    authUrl.searchParams.set('access_type', 'offline');
-    authUrl.searchParams.set('prompt', 'consent');
-    authUrl.searchParams.set('include_granted_scopes', 'true');
-    authUrl.searchParams.set('state', oauthState);
-
-    return { url: authUrl.toString() };
-  }
-
-  async completeGoogleCalendarOAuth(input: {
-    origin: string;
-    state: string;
-    code: string;
-  }): Promise<{ message: string }> {
-    const env = this.getSetupEnvironment();
-    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
-      throw new Error(
-        'Google OAuth client settings are missing. Save the client ID and secret first.',
-      );
-    }
-
-    const stored = this.store.getGoogleCalendarOAuth();
-    if (!stored.oauthState || stored.oauthState !== input.state) {
-      throw new Error(
-        'Google OAuth state did not match the active login request.',
-      );
-    }
-
-    const callbackUri = `${input.origin.replace(/\/$/, '')}/api/admin/google/calendar/oauth/callback`;
-    const body = new URLSearchParams({
-      code: input.code,
-      client_id: env.GOOGLE_CLIENT_ID,
-      client_secret: env.GOOGLE_CLIENT_SECRET,
-      redirect_uri: callbackUri,
-      grant_type: 'authorization_code',
-    });
-
-    const response = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
-    });
-    const payload = (await response.json().catch(() => ({}))) as {
-      access_token?: string;
-      refresh_token?: string;
-      expires_in?: number;
-      scope?: string;
-      token_type?: string;
-      error?: string;
-      error_description?: string;
-    };
-    if (!response.ok || !payload.access_token) {
-      throw new Error(
-        payload.error_description ||
-          payload.error ||
-          `Google token exchange failed with ${response.status}`,
-      );
-    }
-
-    this.store.saveGoogleCalendarOAuth({
-      accessToken: payload.access_token,
-      refreshToken: payload.refresh_token || stored.refreshToken,
-      expiryDate: new Date(
-        Date.now() + Math.max(60, payload.expires_in || 3600) * 1000,
-      ).toISOString(),
-      scope: payload.scope || GOOGLE_CALENDAR_SCOPE,
-      tokenType: payload.token_type || 'Bearer',
-      connectedAt: nowIso(),
-      oauthState: '',
-      oauthStateCreatedAt: '',
-    });
-
-    return { message: 'Google Calendar connected.' };
-  }
+  // ── Google Calendar token (via OneCLI / env) ───────────────────────
 
   async ensureGoogleCalendarAccessToken(): Promise<string> {
     const env = this.getSetupEnvironment();
     const providerEnv = await this.loadProviderEnvironment(env);
 
-    // Check direct env / OneCLI token
+    // OneCLI injects tokens at the gateway level. Check env / OneCLI keys.
     for (const key of GOOGLE_CALENDAR_TOKEN_KEYS) {
       const value = providerEnv[key];
       if (value?.trim()) return value.trim();
     }
 
-    const stored = this.store.getGoogleCalendarOAuth();
-    if (!stored.accessToken && !stored.refreshToken) return '';
-
-    const expiresAt = new Date(stored.expiryDate).getTime();
-    if (stored.accessToken && expiresAt > Date.now() + 60_000) {
-      return stored.accessToken;
-    }
-
-    if (
-      !stored.refreshToken ||
-      !env.GOOGLE_CLIENT_ID ||
-      !env.GOOGLE_CLIENT_SECRET
-    ) {
-      return stored.accessToken || '';
-    }
-
-    const refreshed = await this.refreshGoogleCalendarAccessToken(
-      stored.refreshToken,
-      env.GOOGLE_CLIENT_ID,
-      env.GOOGLE_CLIENT_SECRET,
-      stored,
+    // Fall back to Google Contacts token — if the user granted calendar
+    // scope via include_granted_scopes, the same token works for both.
+    const contactsToken = await this.ensureGoogleContactsAccessToken(
+      providerEnv,
+      env,
     );
-    return refreshed.accessToken;
-  }
+    if (contactsToken) return contactsToken;
 
-  private async refreshGoogleCalendarAccessToken(
-    refreshToken: string,
-    clientId: string,
-    clientSecret: string,
-    current: GoogleCalendarOAuthState,
-  ): Promise<GoogleCalendarOAuthState> {
-    const body = new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-    });
-    const response = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
-    });
-    const payload = (await response.json().catch(() => ({}))) as {
-      access_token?: string;
-      expires_in?: number;
-      scope?: string;
-      token_type?: string;
-      error?: string;
-      error_description?: string;
-    };
-    if (!response.ok || !payload.access_token) {
-      throw new Error(
-        payload.error_description ||
-          payload.error ||
-          `Google Calendar token refresh failed with ${response.status}`,
-      );
-    }
-
-    const next: GoogleCalendarOAuthState = {
-      ...current,
-      accessToken: payload.access_token,
-      refreshToken,
-      expiryDate: new Date(
-        Date.now() + Math.max(60, payload.expires_in || 3600) * 1000,
-      ).toISOString(),
-      scope: payload.scope || current.scope || GOOGLE_CALENDAR_SCOPE,
-      tokenType: payload.token_type || current.tokenType || 'Bearer',
-      connectedAt: current.connectedAt || nowIso(),
-      oauthState: '',
-      oauthStateCreatedAt: '',
-    };
-    this.store.saveGoogleCalendarOAuth(next);
-    return next;
+    return '';
   }
 
   // ── Google Calendar API ───────────────────────────────────────────
