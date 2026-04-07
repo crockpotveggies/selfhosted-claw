@@ -289,6 +289,65 @@ export function startAdminServer(
         return;
       }
 
+      // ── Google Calendar OAuth ─────────────────────────────────────
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/google/calendar/oauth/start'
+      ) {
+        const host = req.headers.host || `${ADMIN_BIND_HOST}:${ADMIN_PORT}`;
+        const origin = `http://${host}`;
+        const result = await options.service.startGoogleCalendarOAuth(origin);
+        sendJson(res, 200, result);
+        return;
+      }
+
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/google/calendar/oauth/callback'
+      ) {
+        const host = req.headers.host || `${ADMIN_BIND_HOST}:${ADMIN_PORT}`;
+        const origin = `http://${host}`;
+        const code = url.searchParams.get('code') || '';
+        const state = url.searchParams.get('state') || '';
+        const error = url.searchParams.get('error') || '';
+
+        if (error) {
+          res.writeHead(302, {
+            Location: `/?tab=contacts&google_calendar=error&message=${encodeURIComponent(error)}`,
+          });
+          res.end();
+          return;
+        }
+        if (!code || !state) {
+          res.writeHead(302, {
+            Location:
+              '/?tab=contacts&google_calendar=error&message=missing_code_or_state',
+          });
+          res.end();
+          return;
+        }
+
+        try {
+          await options.service.completeGoogleCalendarOAuth({
+            origin,
+            code,
+            state,
+          });
+          res.writeHead(302, {
+            Location:
+              '/?tab=contacts&google_calendar=connected&message=Google%20Calendar%20connected',
+          });
+          res.end();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          res.writeHead(302, {
+            Location: `/?tab=contacts&google_calendar=error&message=${encodeURIComponent(message)}`,
+          });
+          res.end();
+        }
+        return;
+      }
+
       if (
         req.method === 'GET' &&
         url.pathname === '/api/admin/resolve-contact'

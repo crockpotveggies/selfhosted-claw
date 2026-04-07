@@ -11,6 +11,7 @@ import {
   ControlContact,
   ControlPolicy,
   ControlSettings,
+  GoogleCalendarOAuthState,
   GoogleContactsOAuthState,
   PendingControlAction,
   PersonalityProfile,
@@ -45,6 +46,7 @@ export class ControlStore {
   private readonly settingsFile: string;
   private readonly signalProfileFile: string;
   private readonly googleContactsOAuthFile: string;
+  private readonly googleCalendarOAuthFile: string;
   private readonly pendingFile: string;
   private readonly auditFile: string;
 
@@ -63,6 +65,10 @@ export class ControlStore {
     this.googleContactsOAuthFile = path.join(
       configDir,
       'google-contacts-oauth.json',
+    );
+    this.googleCalendarOAuthFile = path.join(
+      configDir,
+      'google-calendar-oauth.json',
     );
     this.pendingFile = path.join(dataDir, 'pending-actions.json');
     this.auditFile = path.join(dataDir, 'audit-log.jsonl');
@@ -150,6 +156,26 @@ export class ControlStore {
 
   saveGoogleContactsOAuth(state: GoogleContactsOAuthState): void {
     writeJsonFile(this.googleContactsOAuthFile, state);
+  }
+
+  getGoogleCalendarOAuth(): GoogleCalendarOAuthState {
+    return readJsonFile<GoogleCalendarOAuthState>(
+      this.googleCalendarOAuthFile,
+      {
+        accessToken: '',
+        refreshToken: '',
+        expiryDate: new Date(0).toISOString(),
+        scope: '',
+        tokenType: '',
+        connectedAt: '',
+        oauthState: '',
+        oauthStateCreatedAt: '',
+      },
+    );
+  }
+
+  saveGoogleCalendarOAuth(state: GoogleCalendarOAuthState): void {
+    writeJsonFile(this.googleCalendarOAuthFile, state);
   }
 
   getPendingActions(): PendingControlAction[] {

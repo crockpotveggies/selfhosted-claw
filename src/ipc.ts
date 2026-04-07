@@ -55,6 +55,45 @@ export interface IpcDeps {
   signalListGroups?: () => Promise<
     { name: string; id: string; members: string[] }[]
   >;
+  calendarListEvents?: (params: {
+    calendarId: string;
+    timeMin: string;
+    timeMax: string;
+    maxResults: number;
+    query?: string;
+  }) => Promise<unknown>;
+  calendarCheckAvailability?: (params: {
+    timeMin: string;
+    timeMax: string;
+    calendarIds: string[];
+  }) => Promise<unknown>;
+  calendarGetEvent?: (params: {
+    calendarId: string;
+    eventId: string;
+  }) => Promise<unknown>;
+  calendarCreateEvent?: (params: {
+    calendarId: string;
+    summary: string;
+    start: string;
+    end: string;
+    description?: string;
+    location?: string;
+    attendees?: string[];
+  }) => Promise<unknown>;
+  calendarUpdateEvent?: (params: {
+    calendarId: string;
+    eventId: string;
+    summary?: string;
+    start?: string;
+    end?: string;
+    description?: string;
+    location?: string;
+    attendees?: string[];
+  }) => Promise<unknown>;
+  calendarDeleteEvent?: (params: {
+    calendarId: string;
+    eventId: string;
+  }) => Promise<unknown>;
 }
 
 /** Resolve a list of member identifiers (names, phone numbers, JIDs) to Signal-ready targets. */
@@ -90,6 +129,20 @@ async function resolveMembers(
     }
   }
   return resolved;
+}
+
+/** Write a response file for request-response IPC (calendar tools, etc.). */
+function writeIpcResponse(
+  sourceGroup: string,
+  requestId: string,
+  data: unknown,
+): void {
+  const responsesDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'responses');
+  fs.mkdirSync(responsesDir, { recursive: true });
+  const filepath = path.join(responsesDir, `${requestId}.json`);
+  const tempPath = `${filepath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
+  fs.renameSync(tempPath, filepath);
 }
 
 let ipcWatcherRunning = false;
@@ -286,6 +339,22 @@ export async function processTaskIpc(
     members?: string[];
     title?: string;
     message?: string;
+    // For request-response IPC (calendar tools, etc.)
+    requestId?: string;
+    // For calendar tools
+    calendarId?: string;
+    timeMin?: string;
+    timeMax?: string;
+    maxResults?: number;
+    query?: string;
+    calendarIds?: string[];
+    eventId?: string;
+    summary?: string;
+    start?: string;
+    end?: string;
+    description?: string;
+    location?: string;
+    attendees?: string[];
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -776,6 +845,166 @@ export async function processTaskIpc(
         }
       }
       break;
+
+    // ── Google Calendar tools (request-response IPC) ──────────────
+    case 'calendar_list_events': {
+      if (!data.requestId) break;
+      if (!deps.calendarListEvents) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'Google Calendar is not configured.',
+        });
+        break;
+      }
+      try {
+        const result = await deps.calendarListEvents({
+          calendarId: data.calendarId || 'primary',
+          timeMin: data.timeMin || '',
+          timeMax: data.timeMax || '',
+          maxResults: data.maxResults || 25,
+          query: data.query,
+        });
+        writeIpcResponse(sourceGroup, data.requestId, result);
+      } catch (err) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      break;
+    }
+
+    case 'calendar_check_availability': {
+      if (!data.requestId) break;
+      if (!deps.calendarCheckAvailability) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'Google Calendar is not configured.',
+        });
+        break;
+      }
+      try {
+        const result = await deps.calendarCheckAvailability({
+          timeMin: data.timeMin || '',
+          timeMax: data.timeMax || '',
+          calendarIds: data.calendarIds || ['primary'],
+        });
+        writeIpcResponse(sourceGroup, data.requestId, result);
+      } catch (err) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      break;
+    }
+
+    case 'calendar_get_event': {
+      if (!data.requestId) break;
+      if (!deps.calendarGetEvent) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'Google Calendar is not configured.',
+        });
+        break;
+      }
+      try {
+        const result = await deps.calendarGetEvent({
+          calendarId: data.calendarId || 'primary',
+          eventId: data.eventId || '',
+        });
+        writeIpcResponse(sourceGroup, data.requestId, result);
+      } catch (err) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      break;
+    }
+
+    case 'calendar_create_event': {
+      if (!data.requestId) break;
+      if (!deps.calendarCreateEvent) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'Google Calendar is not configured.',
+        });
+        break;
+      }
+      try {
+        const result = await deps.calendarCreateEvent({
+          calendarId: data.calendarId || 'primary',
+          summary: data.summary || '',
+          start: data.start || '',
+          end: data.end || '',
+          description: data.description,
+          location: data.location,
+          attendees: data.attendees,
+        });
+        writeIpcResponse(sourceGroup, data.requestId, result);
+        logger.info(
+          { summary: data.summary, sourceGroup },
+          'Calendar event created via IPC',
+        );
+      } catch (err) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      break;
+    }
+
+    case 'calendar_update_event': {
+      if (!data.requestId) break;
+      if (!deps.calendarUpdateEvent) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'Google Calendar is not configured.',
+        });
+        break;
+      }
+      try {
+        const result = await deps.calendarUpdateEvent({
+          calendarId: data.calendarId || 'primary',
+          eventId: data.eventId || '',
+          summary: data.summary,
+          start: data.start,
+          end: data.end,
+          description: data.description,
+          location: data.location,
+          attendees: data.attendees,
+        });
+        writeIpcResponse(sourceGroup, data.requestId, result);
+        logger.info(
+          { eventId: data.eventId, sourceGroup },
+          'Calendar event updated via IPC',
+        );
+      } catch (err) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      break;
+    }
+
+    case 'calendar_delete_event': {
+      if (!data.requestId) break;
+      if (!deps.calendarDeleteEvent) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'Google Calendar is not configured.',
+        });
+        break;
+      }
+      try {
+        const result = await deps.calendarDeleteEvent({
+          calendarId: data.calendarId || 'primary',
+          eventId: data.eventId || '',
+        });
+        writeIpcResponse(sourceGroup, data.requestId, result);
+        logger.info(
+          { eventId: data.eventId, sourceGroup },
+          'Calendar event deleted via IPC',
+        );
+      } catch (err) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');

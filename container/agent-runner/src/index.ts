@@ -86,6 +86,7 @@ const IPC_INPUT_DIR = path.join(IPC_DIR, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const RESPONSES_DIR = path.join(IPC_DIR, 'responses');
 const CONVERSATIONS_DIR = path.join(GROUP_DIR, 'conversations');
 const HISTORY_FILE = path.join(STATE_DIR, 'history.jsonl');
 const SUMMARY_FILE = path.join(STATE_DIR, 'summary.md');
@@ -107,6 +108,8 @@ const OPENAI_CONTEXT_WINDOW = Math.max(
   OPENAI_MAX_TOKENS,
   parseInt(process.env.OPENAI_CONTEXT_WINDOW || '24000', 10) || 24000,
 );
+const IPC_RESPONSE_POLL_INTERVAL = 300; // ms
+const IPC_RESPONSE_TIMEOUT = 30_000; // 30s
 const SCRIPT_TIMEOUT_MS = 30_000;
 const MAX_TOOL_ROUNDS = 8;
 const MAX_TOOL_OUTPUT_CHARS = 16_000;
@@ -152,6 +155,7 @@ function ensureRuntimeDirs(): void {
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
   fs.mkdirSync(MESSAGES_DIR, { recursive: true });
   fs.mkdirSync(TASKS_DIR, { recursive: true });
+  fs.mkdirSync(RESPONSES_DIR, { recursive: true });
   fs.mkdirSync(CONVERSATIONS_DIR, { recursive: true });
 }
 
@@ -174,6 +178,7 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
     `To message external people or groups, use the send_external_message tool with "to" set to the recipient's name, phone number, or group name. To reply to the controller (the user you are chatting with), use send_internal_message. Your normal text response is also delivered to the controller — only use send_internal_message for interim updates during multi-step tasks. NEVER repeat the message content in your text response after calling either tool.`,
     `To create a new Signal group, use the signal_create_group tool. Always provide a descriptive title — never leave it blank. After creating a group, use send_external_message with "to" set to the group's title to send follow-up messages.`,
     `To add people to a Signal group, use the signal_add_group_members tool with the group name and member phone numbers or UUIDs. Use signal_list_groups to discover existing groups before sending messages or modifying them.`,
+    `To interact with Google Calendar, use the calendar_* tools. Check availability with calendar_list_events or calendar_check_availability before proposing meeting times. Use ISO 8601 timestamps with timezone offsets (e.g. "2026-04-07T12:30:00-04:00"). When creating events with attendees, use their email addresses.`,
     `If recipient, channel, or content is ambiguous, ask a clarifying question instead of guessing.`,
     `Do not mention OneCLI or secrets unless directly relevant; host-side credentials may be managed outside the container.`,
     containerInput.controlSignalJid
@@ -670,6 +675,47 @@ function writeIpcFile(dir: string, data: object): string {
   fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
   fs.renameSync(tempPath, filepath);
   return filename;
+}
+
+/**
+ * Write an IPC task and poll for a response file from the host.
+ * Used by calendar tools and other request-response IPC patterns.
+ */
+async function writeIpcTaskAndWaitForResponse(
+  taskData: Record<string, unknown>,
+  requestId: string,
+): Promise<Record<string, unknown>> {
+  writeIpcFile(TASKS_DIR, { ...taskData, requestId });
+
+  const responseFile = path.join(RESPONSES_DIR, `${requestId}.json`);
+  const deadline = Date.now() + IPC_RESPONSE_TIMEOUT;
+
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      if (Date.now() > deadline) {
+        reject(new Error('Request timed out waiting for host response'));
+        return;
+      }
+      try {
+        if (fs.existsSync(responseFile)) {
+          const raw = fs.readFileSync(responseFile, 'utf-8');
+          try { fs.unlinkSync(responseFile); } catch { /* ignore */ }
+          const data = JSON.parse(raw) as Record<string, unknown>;
+          if (data.error) {
+            reject(new Error(String(data.error)));
+          } else {
+            resolve(data);
+          }
+          return;
+        }
+      } catch (err) {
+        reject(err);
+        return;
+      }
+      setTimeout(poll, IPC_RESPONSE_POLL_INTERVAL);
+    };
+    poll();
+  });
 }
 
 function shouldClose(): boolean {
@@ -1407,6 +1453,281 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
         timestamp: new Date().toISOString(),
       });
       return `Request to create Signal group "${title}" submitted.`;
+    },
+  },
+  // ── Google Calendar tools (request-response IPC) ─────────────────
+  calendar_list_events: {
+    description:
+      'List Google Calendar events in a time range. Returns event summaries, times, and attendees.',
+    parameters: {
+      type: 'object',
+      properties: {
+        time_min: {
+          type: 'string',
+          description: 'Start of time range (ISO 8601, e.g. "2026-04-07T09:00:00-04:00")',
+        },
+        time_max: {
+          type: 'string',
+          description: 'End of time range (ISO 8601)',
+        },
+        calendar_id: {
+          type: 'string',
+          description: 'Calendar ID (default: "primary")',
+        },
+        max_results: {
+          type: 'integer',
+          description: 'Maximum number of events to return (default: 25)',
+        },
+        query: {
+          type: 'string',
+          description: 'Free-text search filter',
+        },
+      },
+      required: ['time_min', 'time_max'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await writeIpcTaskAndWaitForResponse(
+        {
+          type: 'calendar_list_events',
+          calendarId: String(args.calendar_id || 'primary'),
+          timeMin: String(args.time_min),
+          timeMax: String(args.time_max),
+          maxResults: Number(args.max_results) || 25,
+          query: args.query ? String(args.query) : undefined,
+          groupFolder: ctx.containerInput.groupFolder,
+        },
+        requestId,
+      );
+      return truncate(JSON.stringify(result, null, 2));
+    },
+  },
+  calendar_check_availability: {
+    description:
+      'Check free/busy availability on one or more Google Calendars for a time range. Returns busy time blocks.',
+    parameters: {
+      type: 'object',
+      properties: {
+        time_min: {
+          type: 'string',
+          description: 'Start of time range (ISO 8601)',
+        },
+        time_max: {
+          type: 'string',
+          description: 'End of time range (ISO 8601)',
+        },
+        calendar_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Calendar IDs to check (default: ["primary"])',
+        },
+      },
+      required: ['time_min', 'time_max'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await writeIpcTaskAndWaitForResponse(
+        {
+          type: 'calendar_check_availability',
+          timeMin: String(args.time_min),
+          timeMax: String(args.time_max),
+          calendarIds: Array.isArray(args.calendar_ids)
+            ? args.calendar_ids.map((id: unknown) => String(id))
+            : ['primary'],
+          groupFolder: ctx.containerInput.groupFolder,
+        },
+        requestId,
+      );
+      return truncate(JSON.stringify(result, null, 2));
+    },
+  },
+  calendar_get_event: {
+    description: 'Get details of a specific Google Calendar event by its ID.',
+    parameters: {
+      type: 'object',
+      properties: {
+        event_id: {
+          type: 'string',
+          description: 'The event ID',
+        },
+        calendar_id: {
+          type: 'string',
+          description: 'Calendar ID (default: "primary")',
+        },
+      },
+      required: ['event_id'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await writeIpcTaskAndWaitForResponse(
+        {
+          type: 'calendar_get_event',
+          calendarId: String(args.calendar_id || 'primary'),
+          eventId: String(args.event_id),
+          groupFolder: ctx.containerInput.groupFolder,
+        },
+        requestId,
+      );
+      return truncate(JSON.stringify(result, null, 2));
+    },
+  },
+  calendar_create_event: {
+    description:
+      'Create a Google Calendar event. Attendees receive email invites automatically.',
+    parameters: {
+      type: 'object',
+      properties: {
+        summary: {
+          type: 'string',
+          description: 'Event title (e.g. "Lunch with Elyssa")',
+        },
+        start: {
+          type: 'string',
+          description: 'Start time (ISO 8601, e.g. "2026-04-07T12:30:00-04:00")',
+        },
+        end: {
+          type: 'string',
+          description: 'End time (ISO 8601)',
+        },
+        description: {
+          type: 'string',
+          description: 'Event description / notes',
+        },
+        location: {
+          type: 'string',
+          description: 'Event location',
+        },
+        attendees: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Email addresses of attendees',
+        },
+        calendar_id: {
+          type: 'string',
+          description: 'Calendar ID (default: "primary")',
+        },
+      },
+      required: ['summary', 'start', 'end'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await writeIpcTaskAndWaitForResponse(
+        {
+          type: 'calendar_create_event',
+          calendarId: String(args.calendar_id || 'primary'),
+          summary: String(args.summary),
+          start: String(args.start),
+          end: String(args.end),
+          description: args.description ? String(args.description) : undefined,
+          location: args.location ? String(args.location) : undefined,
+          attendees: Array.isArray(args.attendees)
+            ? args.attendees.map((e: unknown) => String(e))
+            : undefined,
+          groupFolder: ctx.containerInput.groupFolder,
+        },
+        requestId,
+      );
+      return truncate(JSON.stringify(result, null, 2));
+    },
+  },
+  calendar_update_event: {
+    description:
+      'Update an existing Google Calendar event. Only specify fields you want to change.',
+    parameters: {
+      type: 'object',
+      properties: {
+        event_id: {
+          type: 'string',
+          description: 'The event ID to update',
+        },
+        summary: {
+          type: 'string',
+          description: 'New event title',
+        },
+        start: {
+          type: 'string',
+          description: 'New start time (ISO 8601)',
+        },
+        end: {
+          type: 'string',
+          description: 'New end time (ISO 8601)',
+        },
+        description: {
+          type: 'string',
+          description: 'New event description',
+        },
+        location: {
+          type: 'string',
+          description: 'New event location',
+        },
+        attendees: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Updated list of attendee email addresses (replaces existing list)',
+        },
+        calendar_id: {
+          type: 'string',
+          description: 'Calendar ID (default: "primary")',
+        },
+      },
+      required: ['event_id'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await writeIpcTaskAndWaitForResponse(
+        {
+          type: 'calendar_update_event',
+          calendarId: String(args.calendar_id || 'primary'),
+          eventId: String(args.event_id),
+          summary: args.summary ? String(args.summary) : undefined,
+          start: args.start ? String(args.start) : undefined,
+          end: args.end ? String(args.end) : undefined,
+          description: args.description !== undefined ? String(args.description) : undefined,
+          location: args.location !== undefined ? String(args.location) : undefined,
+          attendees: Array.isArray(args.attendees)
+            ? args.attendees.map((e: unknown) => String(e))
+            : undefined,
+          groupFolder: ctx.containerInput.groupFolder,
+        },
+        requestId,
+      );
+      return truncate(JSON.stringify(result, null, 2));
+    },
+  },
+  calendar_delete_event: {
+    description: 'Delete (cancel) a Google Calendar event.',
+    parameters: {
+      type: 'object',
+      properties: {
+        event_id: {
+          type: 'string',
+          description: 'The event ID to delete',
+        },
+        calendar_id: {
+          type: 'string',
+          description: 'Calendar ID (default: "primary")',
+        },
+      },
+      required: ['event_id'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await writeIpcTaskAndWaitForResponse(
+        {
+          type: 'calendar_delete_event',
+          calendarId: String(args.calendar_id || 'primary'),
+          eventId: String(args.event_id),
+          groupFolder: ctx.containerInput.groupFolder,
+        },
+        requestId,
+      );
+      return truncate(JSON.stringify(result, null, 2));
     },
   },
   delegate_task: {

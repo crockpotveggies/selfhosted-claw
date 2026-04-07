@@ -1300,6 +1300,17 @@ async function main(): Promise<void> {
       if (!ch?.getGroups) throw new Error('Signal getGroups not available');
       return ch.getGroups();
     },
+    calendarListEvents: (params) =>
+      controlService.calendarListEvents(params),
+    calendarCheckAvailability: (params) =>
+      controlService.calendarCheckAvailability(params),
+    calendarGetEvent: (params) => controlService.calendarGetEvent(params),
+    calendarCreateEvent: (params) =>
+      controlService.calendarCreateEvent(params),
+    calendarUpdateEvent: (params) =>
+      controlService.calendarUpdateEvent(params),
+    calendarDeleteEvent: (params) =>
+      controlService.calendarDeleteEvent(params),
   });
   startSessionCleanup();
   queue.setProcessMessagesFn(processGroupMessages);
