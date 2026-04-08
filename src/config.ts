@@ -156,7 +156,13 @@ function escapeRegex(str: string): string {
 }
 
 export function buildTriggerPattern(trigger: string): RegExp {
-  return new RegExp(`^${escapeRegex(trigger.trim())}\\b`, 'i');
+  const trimmed = trigger.trim();
+  // If the trigger starts with '@', make the '@' optional so bare name also matches
+  if (trimmed.startsWith('@')) {
+    const name = escapeRegex(trimmed.slice(1));
+    return new RegExp(`^@?${name}\\b`, 'i');
+  }
+  return new RegExp(`^${escapeRegex(trimmed)}\\b`, 'i');
 }
 
 export const DEFAULT_TRIGGER = `@${ASSISTANT_NAME}`;
