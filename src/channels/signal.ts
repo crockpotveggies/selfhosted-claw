@@ -458,6 +458,49 @@ export class SignalChannel implements Channel {
     return Array.isArray(payload) ? payload : [];
   }
 
+  /** Send a read receipt to the message sender via signal-cli JSON-RPC. */
+  private async sendReadReceipt(
+    recipient: string,
+    timestamp: number,
+  ): Promise<void> {
+    try {
+      const url = new URL(
+        `/v1/receipt/${encodeURIComponent(this.account)}`,
+        this.rpcUrl,
+      );
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipient: formatUuidLike(recipient),
+          timestamp,
+          type: 'read',
+        }),
+      });
+      if (!response.ok) {
+        // Fallback: try the v2 JSON-RPC approach
+        const rpcUrl = new URL('/api/v1/rpc', this.rpcUrl);
+        await fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'sendReceipt',
+            id: `receipt-${timestamp}`,
+            params: {
+              account: this.account,
+              recipient: formatUuidLike(recipient),
+              targetTimestamp: timestamp,
+              type: 'read',
+            },
+          }),
+        });
+      }
+    } catch {
+      // Best-effort — never break message flow for a receipt failure
+    }
+  }
+
   private async fetchWithContext(
     url: URL,
     init: RequestInit,
@@ -535,6 +578,7 @@ export class SignalChannel implements Channel {
         : [payload];
 
     for (const rawEnvelope of envelopes) {
+      const envelope = (rawEnvelope as SignalEnvelope).envelope || rawEnvelope;
       const parsed = this.parseEnvelope(rawEnvelope as SignalEnvelope);
       if (!parsed) continue;
       if (this.seenMessageIds.has(parsed.message.id)) continue;
@@ -547,6 +591,18 @@ export class SignalChannel implements Channel {
         parsed.isGroup,
       );
       this.opts.onMessage(parsed.chatJid, parsed.message);
+
+      // Send read receipt back to the sender (best-effort, fire-and-forget)
+      if (!parsed.message.is_from_me) {
+        const env = envelope as SignalEnvelope;
+        const senderIdentifier =
+          env.sourceNumber?.trim() || env.sourceUuid?.trim() || env.source?.trim();
+        const rawTs =
+          env.dataMessage?.timestamp || env.timestamp;
+        if (senderIdentifier && rawTs) {
+          this.sendReadReceipt(senderIdentifier, Number(rawTs)).catch(() => {});
+        }
+      }
     }
   }
 }
