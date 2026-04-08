@@ -1677,9 +1677,8 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
     },
   },
   calendar_check_availability: {
-    controllerOnly: true,
     description:
-      'Check free/busy availability on one or more Google Calendars for a time range. Returns busy time blocks.',
+      'Check free/busy availability on one or more Google Calendars for a time range. Returns busy time blocks (no event details).',
     parameters: {
       type: 'object',
       properties: {
