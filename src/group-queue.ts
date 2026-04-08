@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import { stopContainer } from './container-runtime.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -344,12 +345,20 @@ export class GroupQueue {
     }
   }
 
-  async shutdown(_gracePeriodMs: number): Promise<void> {
+  /** Return the names of all containers currently tracked by the queue. */
+  getActiveContainerNames(): Set<string> {
+    const names = new Set<string>();
+    for (const [_jid, state] of this.groups) {
+      if (state.containerName && state.active) {
+        names.add(state.containerName);
+      }
+    }
+    return names;
+  }
+
+  async shutdown(gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 
-    // Count active containers but don't kill them — they'll finish on their own
-    // via idle timeout or container timeout. The --rm flag cleans them up on exit.
-    // This prevents WhatsApp reconnection restarts from killing working agents.
     const activeContainers: string[] = [];
     for (const [_jid, state] of this.groups) {
       if (state.process && !state.process.killed && state.containerName) {
@@ -357,9 +366,33 @@ export class GroupQueue {
       }
     }
 
+    if (activeContainers.length === 0) {
+      logger.info('GroupQueue shutting down (no active containers)');
+      return;
+    }
+
     logger.info(
-      { activeCount: this.activeCount, detachedContainers: activeContainers },
-      'GroupQueue shutting down (containers detached, not killed)',
+      { activeCount: this.activeCount, containers: activeContainers },
+      'GroupQueue shutting down, stopping active containers',
     );
+
+    // Stop all active containers gracefully, then force-kill stragglers
+    const stopPromises = activeContainers.map(async (name) => {
+      try {
+        stopContainer(name);
+        logger.debug({ containerName: name }, 'Container stopped on shutdown');
+      } catch {
+        logger.warn(
+          { containerName: name },
+          'Container stop failed on shutdown, will be cleaned up by --rm on exit',
+        );
+      }
+    });
+
+    // Wait up to gracePeriodMs for all stops to complete
+    await Promise.race([
+      Promise.allSettled(stopPromises),
+      new Promise((resolve) => setTimeout(resolve, gracePeriodMs)),
+    ]);
   }
 }

@@ -34,6 +34,8 @@ import {
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
+  startContainerReaper,
+  stopContainerReaper,
 } from './container-runtime.js';
 import {
   getAllChats,
@@ -1106,6 +1108,7 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    stopContainerReaper();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -1439,6 +1442,7 @@ async function main(): Promise<void> {
     calendarDeleteEvent: (params) => controlService.calendarDeleteEvent(params),
   });
   startSessionCleanup();
+  startContainerReaper(() => queue.getActiveContainerNames());
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
   startMessageLoop().catch((err) => {

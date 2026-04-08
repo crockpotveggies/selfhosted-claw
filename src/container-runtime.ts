@@ -75,14 +75,16 @@ export function ensureContainerRuntimeRunning(): void {
   }
 }
 
-/** Kill orphaned NanoClaw containers from previous runs. */
+/** Kill orphaned NanoClaw containers from previous runs and remove dead ones. */
 export function cleanupOrphans(): void {
+  // Stop any running nanoclaw containers
   try {
     const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,
+      `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format {{.Names}}`,
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
-    const orphans = output.trim().split('\n').filter(Boolean);
+    // Strip any stray quotes that Windows cmd may inject from the format string
+    const orphans = output.trim().split('\n').filter(Boolean).map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
     for (const name of orphans) {
       try {
         stopContainer(name);
@@ -98,5 +100,131 @@ export function cleanupOrphans(): void {
     }
   } catch (err) {
     logger.warn({ err }, 'Failed to clean up orphaned containers');
+  }
+
+  // Remove any dead/exited nanoclaw containers that --rm missed (e.g. after daemon crash)
+  try {
+    const dead = execSync(
+      `${CONTAINER_RUNTIME_BIN} ps -a --filter name=nanoclaw- --filter status=exited --filter status=dead --format {{.Names}}`,
+      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
+    );
+    const deadNames = dead.trim().split('\n').filter(Boolean).map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
+    for (const name of deadNames) {
+      try {
+        execSync(`${CONTAINER_RUNTIME_BIN} rm ${name}`, { stdio: 'pipe' });
+      } catch {
+        /* already removed */
+      }
+    }
+    if (deadNames.length > 0) {
+      logger.info(
+        { count: deadNames.length, names: deadNames },
+        'Removed dead containers',
+      );
+    }
+  } catch {
+    /* non-critical */
+  }
+}
+
+/**
+ * Kill containers that have been running longer than the given max age.
+ * Uses `docker ps` with a format that includes creation time so we can
+ * detect stale containers even if the Node process lost track of them.
+ * @param knownContainers - names of containers currently tracked by GroupQueue (skip these)
+ * @param maxAgeMs - maximum allowed container lifetime in milliseconds (default 45 min)
+ */
+export function reapStaleContainers(
+  knownContainers: Set<string>,
+  maxAgeMs: number = 45 * 60 * 1000,
+): void {
+  try {
+    const output = execSync(
+      `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format {{.Names}}\t{{.RunningFor}}`,
+      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
+    );
+    const lines = output.trim().split('\n').filter(Boolean);
+    for (const line of lines) {
+      const [rawName, runningFor] = line.split('\t');
+      const name = rawName?.replace(/['"]/g, '').trim();
+      if (!name) continue;
+
+      // Skip containers the queue is actively tracking
+      if (knownContainers.has(name)) continue;
+
+      // Parse Docker's "RunningFor" string (e.g. "5 minutes", "2 hours", "About an hour")
+      const ageMs = parseDockerRunningFor(runningFor || '');
+      if (ageMs > maxAgeMs) {
+        logger.warn(
+          { containerName: name, runningFor, ageMs },
+          'Reaping stale zombie container',
+        );
+        try {
+          stopContainer(name);
+        } catch {
+          // Force kill if stop fails
+          try {
+            execSync(`${CONTAINER_RUNTIME_BIN} kill ${name}`, {
+              stdio: 'pipe',
+            });
+          } catch {
+            /* already gone */
+          }
+        }
+      }
+    }
+  } catch (err) {
+    logger.debug({ err }, 'Failed to check for stale containers');
+  }
+}
+
+/** Parse Docker's human-readable "RunningFor" into milliseconds. */
+function parseDockerRunningFor(s: string): number {
+  let ms = 0;
+  // Match patterns like "2 hours", "5 minutes", "30 seconds", "About an hour"
+  const hourMatch = s.match(/(\d+)\s*hour/);
+  const minMatch = s.match(/(\d+)\s*minute/);
+  const secMatch = s.match(/(\d+)\s*second/);
+
+  if (hourMatch) ms += parseInt(hourMatch[1], 10) * 3600_000;
+  if (minMatch) ms += parseInt(minMatch[1], 10) * 60_000;
+  if (secMatch) ms += parseInt(secMatch[1], 10) * 1000;
+
+  // "About an hour" / "About a minute"
+  if (/about an? hour/i.test(s)) ms = Math.max(ms, 3600_000);
+  if (/about an? minute/i.test(s)) ms = Math.max(ms, 60_000);
+
+  return ms;
+}
+
+let reapInterval: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Start periodic reaping of zombie containers.
+ * @param getKnownContainers - callback that returns names of actively-tracked containers
+ * @param intervalMs - how often to check (default 5 minutes)
+ * @param maxAgeMs - max container lifetime before reaping (default 45 minutes)
+ */
+export function startContainerReaper(
+  getKnownContainers: () => Set<string>,
+  intervalMs: number = 5 * 60 * 1000,
+  maxAgeMs: number = 45 * 60 * 1000,
+): void {
+  if (reapInterval) return;
+  reapInterval = setInterval(() => {
+    reapStaleContainers(getKnownContainers(), maxAgeMs);
+  }, intervalMs);
+  // Don't keep the process alive just for the reaper
+  reapInterval.unref();
+  logger.info(
+    { intervalMs, maxAgeMs },
+    'Container reaper started',
+  );
+}
+
+export function stopContainerReaper(): void {
+  if (reapInterval) {
+    clearInterval(reapInterval);
+    reapInterval = null;
   }
 }
