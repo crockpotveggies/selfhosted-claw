@@ -1,4 +1,5 @@
 import {
+  ASSISTANT_NAME,
   SIGNAL_ACCOUNT,
   SIGNAL_RECEIVE_TIMEOUT_SEC,
   SIGNAL_RPC_URL,
@@ -64,12 +65,18 @@ function normalizeIdentifier(value: string): string {
  * Signal replaces @-mentions with U+FFFC (Object Replacement Character) in the
  * message body, with the actual mention data in a separate `mentions` array.
  * This function splices the mention names back into the text as `@Name`.
+ *
+ * When a mention targets the agent's own account, it uses the configured
+ * ASSISTANT_NAME (e.g. "Lena") so that trigger patterns like `@Lena` match.
  */
 function resolveMentions(
   text: string,
   mentions?: SignalMention[],
+  selfAccount?: string,
 ): string {
   if (!mentions || mentions.length === 0) return text;
+
+  const selfNorm = selfAccount ? normalizeIdentifier(selfAccount) : '';
 
   // Sort mentions by start position descending so replacements don't shift indices
   const sorted = [...mentions]
@@ -80,10 +87,23 @@ function resolveMentions(
   for (const mention of sorted) {
     const start = mention.start ?? 0;
     const len = mention.length ?? 1;
-    const name = mention.name || mention.number || mention.uuid || 'Unknown';
+
+    // Check if this mention targets the agent itself
+    let name: string;
+    const mentionId =
+      mention.number || mention.uuid || '';
+    if (
+      selfNorm &&
+      mentionId &&
+      normalizeIdentifier(mentionId) === selfNorm
+    ) {
+      name = ASSISTANT_NAME;
+    } else {
+      name = mention.name || mention.number || mention.uuid || 'Unknown';
+    }
+
     // Replace the mention placeholder (U+FFFC or whatever signal put there) with @Name
-    result =
-      result.slice(0, start) + `@${name}` + result.slice(start + len);
+    result = result.slice(0, start) + `@${name}` + result.slice(start + len);
   }
   return result;
 }
@@ -417,7 +437,7 @@ export class SignalChannel implements Channel {
 
     // Resolve Signal mentions (U+FFFC placeholders) back into @Name text
     const mentions = (dataMessage as { mentions?: SignalMention[] })?.mentions;
-    const content = resolveMentions(rawContent, mentions);
+    const content = resolveMentions(rawContent, mentions, this.account);
 
     const groupId =
       dataMessage?.groupInfo?.groupId ||

@@ -32,7 +32,7 @@ export function stopContainer(name: string): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) {
     throw new Error(`Invalid container name: ${name}`);
   }
-  execSync(`${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`, { stdio: 'pipe' });
+  execSync(`${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`, { stdio: 'pipe', windowsHide: true });
 }
 
 /** Ensure the container runtime is running, starting it if needed. */
@@ -41,6 +41,7 @@ export function ensureContainerRuntimeRunning(): void {
     execSync(`${CONTAINER_RUNTIME_BIN} info`, {
       stdio: 'pipe',
       timeout: 10000,
+      windowsHide: true,
     });
     logger.debug('Container runtime already running');
   } catch (err) {
@@ -81,10 +82,15 @@ export function cleanupOrphans(): void {
   try {
     const output = execSync(
       `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format {{.Names}}`,
-      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
+      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8', windowsHide: true },
     );
     // Strip any stray quotes that Windows cmd may inject from the format string
-    const orphans = output.trim().split('\n').filter(Boolean).map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
+    const orphans = output
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((n) => n.replace(/['"]/g, '').trim())
+      .filter(Boolean);
     for (const name of orphans) {
       try {
         stopContainer(name);
@@ -106,12 +112,17 @@ export function cleanupOrphans(): void {
   try {
     const dead = execSync(
       `${CONTAINER_RUNTIME_BIN} ps -a --filter name=nanoclaw- --filter status=exited --filter status=dead --format {{.Names}}`,
-      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
+      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8', windowsHide: true },
     );
-    const deadNames = dead.trim().split('\n').filter(Boolean).map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
+    const deadNames = dead
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((n) => n.replace(/['"]/g, '').trim())
+      .filter(Boolean);
     for (const name of deadNames) {
       try {
-        execSync(`${CONTAINER_RUNTIME_BIN} rm ${name}`, { stdio: 'pipe' });
+        execSync(`${CONTAINER_RUNTIME_BIN} rm ${name}`, { stdio: 'pipe', windowsHide: true });
       } catch {
         /* already removed */
       }
@@ -141,7 +152,7 @@ export function reapStaleContainers(
   try {
     const output = execSync(
       `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format {{.Names}}\t{{.RunningFor}}`,
-      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
+      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8', windowsHide: true },
     );
     const lines = output.trim().split('\n').filter(Boolean);
     for (const line of lines) {
@@ -166,6 +177,7 @@ export function reapStaleContainers(
           try {
             execSync(`${CONTAINER_RUNTIME_BIN} kill ${name}`, {
               stdio: 'pipe',
+              windowsHide: true,
             });
           } catch {
             /* already gone */
@@ -216,10 +228,7 @@ export function startContainerReaper(
   }, intervalMs);
   // Don't keep the process alive just for the reaper
   reapInterval.unref();
-  logger.info(
-    { intervalMs, maxAgeMs },
-    'Container reaper started',
-  );
+  logger.info({ intervalMs, maxAgeMs }, 'Container reaper started');
 }
 
 export function stopContainerReaper(): void {
