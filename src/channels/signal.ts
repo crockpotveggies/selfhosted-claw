@@ -7,6 +7,14 @@ import { logger } from '../logger.js';
 import { Channel, NewMessage } from '../types.js';
 import { ChannelOpts, registerChannel } from './registry.js';
 
+interface SignalMention {
+  start?: number;
+  length?: number;
+  uuid?: string;
+  number?: string;
+  name?: string;
+}
+
 interface SignalEnvelope {
   envelope?: SignalEnvelope;
   timestamp?: number | string;
@@ -17,6 +25,7 @@ interface SignalEnvelope {
   dataMessage?: {
     message?: string;
     timestamp?: number | string;
+    mentions?: SignalMention[];
     groupInfo?: {
       groupId?: string;
       id?: string;
@@ -29,6 +38,7 @@ interface SignalEnvelope {
       destination?: string;
       message?: string;
       timestamp?: number | string;
+      mentions?: SignalMention[];
       groupInfo?: {
         groupId?: string;
         id?: string;
@@ -47,6 +57,35 @@ interface SignalEnvelope {
 
 function normalizeIdentifier(value: string): string {
   return value.replace(/[^\dA-Za-z:+-]/g, '').toLowerCase();
+}
+
+/**
+ * Resolve Signal mentions in message text.
+ * Signal replaces @-mentions with U+FFFC (Object Replacement Character) in the
+ * message body, with the actual mention data in a separate `mentions` array.
+ * This function splices the mention names back into the text as `@Name`.
+ */
+function resolveMentions(
+  text: string,
+  mentions?: SignalMention[],
+): string {
+  if (!mentions || mentions.length === 0) return text;
+
+  // Sort mentions by start position descending so replacements don't shift indices
+  const sorted = [...mentions]
+    .filter((m) => m.start !== undefined && m.length !== undefined)
+    .sort((a, b) => (b.start ?? 0) - (a.start ?? 0));
+
+  let result = text;
+  for (const mention of sorted) {
+    const start = mention.start ?? 0;
+    const len = mention.length ?? 1;
+    const name = mention.name || mention.number || mention.uuid || 'Unknown';
+    // Replace the mention placeholder (U+FFFC or whatever signal put there) with @Name
+    result =
+      result.slice(0, start) + `@${name}` + result.slice(start + len);
+  }
+  return result;
 }
 
 function formatUuidLike(value: string): string {
@@ -373,8 +412,12 @@ export class SignalChannel implements Channel {
     const envelope = rawEnvelope.envelope || rawEnvelope;
     const sentMessage = envelope.syncMessage?.sentMessage;
     const dataMessage = sentMessage || envelope.dataMessage;
-    const content = dataMessage?.message?.trim();
-    if (!content) return null;
+    const rawContent = dataMessage?.message?.trim();
+    if (!rawContent) return null;
+
+    // Resolve Signal mentions (U+FFFC placeholders) back into @Name text
+    const mentions = (dataMessage as { mentions?: SignalMention[] })?.mentions;
+    const content = resolveMentions(rawContent, mentions);
 
     const groupId =
       dataMessage?.groupInfo?.groupId ||
@@ -596,9 +639,10 @@ export class SignalChannel implements Channel {
       if (!parsed.message.is_from_me) {
         const env = envelope as SignalEnvelope;
         const senderIdentifier =
-          env.sourceNumber?.trim() || env.sourceUuid?.trim() || env.source?.trim();
-        const rawTs =
-          env.dataMessage?.timestamp || env.timestamp;
+          env.sourceNumber?.trim() ||
+          env.sourceUuid?.trim() ||
+          env.source?.trim();
+        const rawTs = env.dataMessage?.timestamp || env.timestamp;
         if (senderIdentifier && rawTs) {
           this.sendReadReceipt(senderIdentifier, Number(rawTs)).catch(() => {});
         }

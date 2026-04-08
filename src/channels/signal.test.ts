@@ -267,7 +267,7 @@ describe('SignalChannel', () => {
 
     await channel.connect();
     expect(MockWebSocket.instances[0]?.url).toBe(
-      'ws://127.0.0.1:8080/v1/receive/%2B15555550123',
+      'ws://127.0.0.1:8080/v1/receive/%2B15555550123?send_read_receipts=true',
     );
 
     MockWebSocket.instances[0].emitMessage(
