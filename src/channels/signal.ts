@@ -179,11 +179,17 @@ export class SignalChannel implements Channel {
   }
 
   async setTyping(jid: string, isTyping: boolean): Promise<void> {
-    const recipient = jid.startsWith('signal:group:')
-      ? jid.slice('signal:group:'.length)
-      : jid.startsWith('signal:user:')
-        ? formatUuidLike(jid.slice('signal:user:'.length))
-        : null;
+    let recipient: string | null;
+    if (jid.startsWith('signal:group:')) {
+      const rawGroupId = jid.slice('signal:group:'.length);
+      recipient = rawGroupId.startsWith('group.')
+        ? rawGroupId
+        : `group.${Buffer.from(rawGroupId).toString('base64')}`;
+    } else if (jid.startsWith('signal:user:')) {
+      recipient = formatUuidLike(jid.slice('signal:user:'.length));
+    } else {
+      recipient = null;
+    }
     if (!recipient) return;
     const url = new URL(
       `/v1/typing-indicator/${encodeURIComponent(this.account)}`,
