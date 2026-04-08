@@ -110,7 +110,7 @@ describe('SignalChannel', () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body || '{}'));
       if (body.members) {
-        return makeJsonResponse({ id: 'group-123' }, 201);
+        return makeJsonResponse({ id: 'group.Z3JvdXAtMTIz' }, 201);
       }
       return makeJsonResponse({}, 201);
     });
@@ -129,7 +129,7 @@ describe('SignalChannel', () => {
     });
 
     expect(created).toEqual({
-      jid: 'signal:group:group-123',
+      jid: 'signal:group:group.Z3JvdXAtMTIz',
       title: 'Lunch plans',
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -141,14 +141,14 @@ describe('SignalChannel', () => {
       members: ['+15551234567'],
     });
     expect(onChatMetadata).toHaveBeenCalledWith(
-      'signal:group:group-123',
+      'signal:group:group.Z3JvdXAtMTIz',
       expect.any(String),
       'Lunch plans',
       'signal',
       true,
     );
     expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({
-      recipients: ['group-123'],
+      recipients: ['group.Z3JvdXAtMTIz'],
       message: 'Can we do lunch next Monday?',
     });
   });

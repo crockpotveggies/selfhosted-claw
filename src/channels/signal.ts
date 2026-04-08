@@ -206,11 +206,21 @@ export class SignalChannel implements Channel {
 
   async sendMessage(jid: string, text: string): Promise<void> {
     if (!text.trim()) return;
-    const recipients = jid.startsWith('signal:group:')
-      ? [jid.slice('signal:group:'.length)]
-      : jid.startsWith('signal:user:')
-        ? [formatUuidLike(jid.slice('signal:user:'.length))]
-        : null;
+    let recipients: string[] | null;
+    if (jid.startsWith('signal:group:')) {
+      const rawGroupId = jid.slice('signal:group:'.length);
+      // signal-cli /v2/send expects the "group.<base64>" form.
+      // Inbound envelopes provide the internal_id (raw base64 bytes),
+      // so convert when the id doesn't already carry the prefix.
+      const groupRecipient = rawGroupId.startsWith('group.')
+        ? rawGroupId
+        : `group.${Buffer.from(rawGroupId).toString('base64')}`;
+      recipients = [groupRecipient];
+    } else if (jid.startsWith('signal:user:')) {
+      recipients = [formatUuidLike(jid.slice('signal:user:'.length))];
+    } else {
+      recipients = null;
+    }
     if (!recipients) throw new Error(`Unsupported Signal JID: ${jid}`);
 
     const url = new URL('/v2/send', this.rpcUrl);
