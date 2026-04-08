@@ -90,13 +90,8 @@ function resolveMentions(
 
     // Check if this mention targets the agent itself
     let name: string;
-    const mentionId =
-      mention.number || mention.uuid || '';
-    if (
-      selfNorm &&
-      mentionId &&
-      normalizeIdentifier(mentionId) === selfNorm
-    ) {
+    const mentionId = mention.number || mention.uuid || '';
+    if (selfNorm && mentionId && normalizeIdentifier(mentionId) === selfNorm) {
       name = ASSISTANT_NAME;
     } else {
       name = mention.name || mention.number || mention.uuid || 'Unknown';
@@ -521,44 +516,33 @@ export class SignalChannel implements Channel {
     return Array.isArray(payload) ? payload : [];
   }
 
-  /** Send a read receipt to the message sender via signal-cli JSON-RPC. */
-  private async sendReadReceipt(
+  /**
+   * Send a read receipt to the message sender.
+   * In json-rpc mode, signal-cli has no REST endpoints — commands must be sent
+   * over the same WebSocket used for receiving messages.
+   */
+  private sendReadReceipt(
     recipient: string,
     timestamp: number,
-  ): Promise<void> {
+  ): void {
     try {
-      const url = new URL(
-        `/v1/receipt/${encodeURIComponent(this.account)}`,
-        this.rpcUrl,
-      );
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          recipient: formatUuidLike(recipient),
-          timestamp,
-          type: 'read',
+      const socket = this.receiveSocket;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+      socket.send(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'sendReceipt',
+          id: `receipt-${timestamp}`,
+          params: {
+            account: this.account,
+            recipient: formatUuidLike(recipient),
+            // signal-cli expects targetTimestamp as an array
+            targetTimestamp: [timestamp],
+            type: 'read',
+          },
         }),
-      });
-      if (!response.ok) {
-        // Fallback: try the v2 JSON-RPC approach
-        const rpcUrl = new URL('/api/v1/rpc', this.rpcUrl);
-        await fetch(rpcUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'sendReceipt',
-            id: `receipt-${timestamp}`,
-            params: {
-              account: this.account,
-              recipient: formatUuidLike(recipient),
-              targetTimestamp: timestamp,
-              type: 'read',
-            },
-          }),
-        });
-      }
+      );
     } catch {
       // Best-effort — never break message flow for a receipt failure
     }
@@ -633,7 +617,11 @@ export class SignalChannel implements Channel {
           : Buffer.from(raw as ArrayBufferLike).toString('utf-8');
     if (!text.trim()) return;
 
-    const payload = JSON.parse(text) as unknown;
+    const payload = JSON.parse(text) as Record<string, unknown>;
+
+    // Ignore JSON-RPC responses (e.g. from sendReceipt calls sent over this socket)
+    if (payload && typeof payload === 'object' && 'jsonrpc' in payload) return;
+
     const envelopes = Array.isArray(payload)
       ? payload
       : Array.isArray((payload as { envelopes?: unknown[] })?.envelopes)
@@ -664,7 +652,7 @@ export class SignalChannel implements Channel {
           env.source?.trim();
         const rawTs = env.dataMessage?.timestamp || env.timestamp;
         if (senderIdentifier && rawTs) {
-          this.sendReadReceipt(senderIdentifier, Number(rawTs)).catch(() => {});
+          this.sendReadReceipt(senderIdentifier, Number(rawTs));
         }
       }
     }
