@@ -17,9 +17,11 @@ for i in $(seq 1 60); do
   if [ -f "$CONF" ]; then
     if ! grep -q "send-read-receipts" "$CONF" 2>/dev/null; then
       sed -i 's|daemon |daemon --send-read-receipts |' "$CONF"
-      # Wait for supervisor to be up before restarting
+      # Wait for supervisor to be up, then reread + update + restart
       sleep 3
+      supervisorctl reread 2>/dev/null || true
       supervisorctl update 2>/dev/null || true
+      sleep 1
       supervisorctl restart signal-cli-json-rpc-1 2>/dev/null || true
       echo "[read-receipts] Patched signal-cli config with --send-read-receipts"
     else
