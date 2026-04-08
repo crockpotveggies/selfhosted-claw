@@ -1940,9 +1940,8 @@ export class ControlActionService {
     if (params.attendees !== undefined) {
       patch.attendees = params.attendees.map((email) => ({ email }));
     }
-    const sendNotifications = params.attendees !== undefined
-      ? '?sendNotifications=true'
-      : '';
+    const sendNotifications =
+      params.attendees !== undefined ? '?sendNotifications=true' : '';
     return this.calendarFetch(
       `/calendar/v3/calendars/${encodeURIComponent(params.calendarId)}/events/${encodeURIComponent(params.eventId)}${sendNotifications}`,
       { method: 'PATCH', body: JSON.stringify(patch) },

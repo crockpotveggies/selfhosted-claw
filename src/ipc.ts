@@ -147,6 +147,27 @@ function writeIpcResponse(
 
 let ipcWatcherRunning = false;
 
+/**
+ * Track groups that have performed mutating IPC side effects (calendar writes,
+ * group creation, sends, etc.) during the current container run.  The
+ * orchestrator checks this before rolling back the message cursor so that
+ * retries don't duplicate side effects.
+ */
+const groupsWithSideEffects = new Set<string>();
+
+/** Mark a group as having performed a mutating IPC side effect. */
+export function markIpcSideEffect(group: string): void {
+  groupsWithSideEffects.add(group);
+}
+
+/** Check and clear the side-effect flag for a group. Returns true if
+ *  the group performed at least one mutating action since the last clear. */
+export function consumeIpcSideEffect(group: string): boolean {
+  const had = groupsWithSideEffects.has(group);
+  groupsWithSideEffects.delete(group);
+  return had;
+}
+
 export function startIpcWatcher(deps: IpcDeps): void {
   if (ipcWatcherRunning) {
     logger.debug('IPC watcher already running, skipping duplicate start');
@@ -451,6 +472,7 @@ export async function processTaskIpc(
           status: 'active',
           created_at: new Date().toISOString(),
         });
+        markIpcSideEffect(sourceGroup);
         logger.info(
           { taskId, sourceGroup, targetFolder, contextMode },
           'Task created via IPC',
@@ -805,6 +827,7 @@ export async function processTaskIpc(
           members: resolvedCreateMembers,
           message: data.message,
         });
+        markIpcSideEffect(sourceGroup);
         logger.info(
           { title: result.title, jid: result.jid, members: data.members },
           'Signal group created via IPC',
@@ -970,6 +993,7 @@ export async function processTaskIpc(
           attendees: data.attendees,
         });
         writeIpcResponse(sourceGroup, data.requestId, result);
+        markIpcSideEffect(sourceGroup);
         logger.info(
           { summary: data.summary, sourceGroup },
           'Calendar event created via IPC',
@@ -1012,6 +1036,7 @@ export async function processTaskIpc(
           attendees: data.attendees,
         });
         writeIpcResponse(sourceGroup, data.requestId, result);
+        markIpcSideEffect(sourceGroup);
         logger.info(
           { eventId: data.eventId, sourceGroup },
           'Calendar event updated via IPC',
@@ -1048,6 +1073,7 @@ export async function processTaskIpc(
           eventId: data.eventId || '',
         });
         writeIpcResponse(sourceGroup, data.requestId, result);
+        markIpcSideEffect(sourceGroup);
         logger.info(
           { eventId: data.eventId, sourceGroup },
           'Calendar event deleted via IPC',

@@ -60,7 +60,7 @@ import type {
 } from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
 import { isValidGroupFolder, resolveGroupFolderPath } from './group-folder.js';
-import { startIpcWatcher } from './ipc.js';
+import { consumeIpcSideEffect, startIpcWatcher } from './ipc.js';
 import { sanitizeInboundMessage } from './inbound-guard.js';
 import { parseAgentOutput } from './outbound-directives.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
@@ -420,6 +420,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       logger.warn(
         { group: group.name },
         'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
+      );
+      consumeIpcSideEffect(group.folder);
+      return true;
+    }
+    // If the agent performed mutating IPC side effects (calendar writes,
+    // group creation, etc.) before crashing, don't retry — retrying would
+    // duplicate the side effects.
+    if (consumeIpcSideEffect(group.folder)) {
+      logger.warn(
+        { group: group.name },
+        'Agent error after IPC side effects, skipping cursor rollback to prevent duplicate actions',
       );
       return true;
     }
