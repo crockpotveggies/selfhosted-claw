@@ -3,6 +3,13 @@ import { useAdminDashboardContext } from '../admin/context';
 export function PolicyPage() {
   const dashboard = useAdminDashboardContext();
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const pauseKey = 'policy-pause';
+  const resumeKey = 'policy-resume';
+  const resolveKey = 'contact-resolve';
+  const addVerifiedKey = 'verified-add';
+  const saveCalendarKey = 'calendar-availability-save';
+  const saveSettingsKey = 'settings-save';
+  const saveSignalProfileKey = 'signal-profile-save';
 
   return (
     <section className="panelGrid">
@@ -21,22 +28,28 @@ export function PolicyPage() {
             placeholder="signal, sms, email"
           />
           <button
+            disabled={dashboard.isPending(pauseKey)}
             onClick={() =>
-              void dashboard.mutate('policy.pauseProvider', {
-                provider: dashboard.providerInput,
-              })
+              void dashboard.runWithUiState(pauseKey, () =>
+                dashboard.mutate('policy.pauseProvider', {
+                  provider: dashboard.providerInput,
+                }),
+              )
             }
           >
-            Pause
+            {dashboard.isPending(pauseKey) ? 'Pausing...' : 'Pause'}
           </button>
           <button
+            disabled={dashboard.isPending(resumeKey)}
             onClick={() =>
-              void dashboard.mutate('policy.resumeProvider', {
-                provider: dashboard.providerInput,
-              })
+              void dashboard.runWithUiState(resumeKey, () =>
+                dashboard.mutate('policy.resumeProvider', {
+                  provider: dashboard.providerInput,
+                }),
+              )
             }
           >
-            Resume
+            {dashboard.isPending(resumeKey) ? 'Resuming...' : 'Resume'}
           </button>
         </div>
 
@@ -92,7 +105,16 @@ export function PolicyPage() {
             onChange={(event) => dashboard.setResolutionQuery(event.target.value)}
             placeholder="Sam, sam@example.com, +15555550123"
           />
-          <button onClick={() => void dashboard.previewResolution()}>Resolve</button>
+          <button
+            disabled={dashboard.isPending(resolveKey)}
+            onClick={() =>
+              void dashboard.runWithUiState(resolveKey, () =>
+                dashboard.previewResolution(),
+              )
+            }
+          >
+            {dashboard.isPending(resolveKey) ? 'Resolving...' : 'Resolve'}
+          </button>
         </div>
         {dashboard.resolutionPreview ? (
           <p>
@@ -119,7 +141,16 @@ export function PolicyPage() {
             onChange={(event) => dashboard.setVerifiedLabelInput(event.target.value)}
             placeholder="Label"
           />
-          <button onClick={() => void dashboard.addVerifiedIdentity()}>Add</button>
+          <button
+            disabled={dashboard.isPending(addVerifiedKey)}
+            onClick={() =>
+              void dashboard.runWithUiState(addVerifiedKey, () =>
+                dashboard.addVerifiedIdentity(),
+              )
+            }
+          >
+            {dashboard.isPending(addVerifiedKey) ? 'Adding...' : 'Add'}
+          </button>
         </div>
         <ul className="plainList">
           {dashboard.verifiedIdentities.map((item) => (
@@ -128,11 +159,23 @@ export function PolicyPage() {
                 {item.label}: {item.identity}
               </span>
               <button
-                onClick={() =>
-                  void dashboard.mutate('verified.remove', { identity: item.identity })
-                }
+                disabled={dashboard.isPending(`verified-remove:${item.identity}`)}
+                onClick={() => {
+                  if (
+                    !window.confirm(
+                      `Remove verified identity "${item.label}" from the trust list?`,
+                    )
+                  ) {
+                    return;
+                  }
+                  void dashboard.runWithUiState(`verified-remove:${item.identity}`, () =>
+                    dashboard.mutate('verified.remove', { identity: item.identity }),
+                  );
+                }}
               >
-                Remove
+                {dashboard.isPending(`verified-remove:${item.identity}`)
+                  ? 'Removing...'
+                  : 'Remove'}
               </button>
             </li>
           ))}
@@ -215,10 +258,14 @@ export function PolicyPage() {
               style={{ width: '7rem' }}
             />
             <button
+              disabled={dashboard.isPending(`calendar-window-remove:${idx}`)}
               onClick={() =>
-                dashboard.setCalAvailWindows(
-                  dashboard.calAvailWindows.filter((_, index) => index !== idx),
-                )
+                {
+                  if (!window.confirm('Remove this availability window?')) return;
+                  dashboard.setCalAvailWindows(
+                    dashboard.calAvailWindows.filter((_, index) => index !== idx),
+                  );
+                }
               }
             >
               Remove
@@ -248,8 +295,17 @@ export function PolicyPage() {
             style={{ width: '100%' }}
           />
         </label>
-        <button onClick={() => void dashboard.saveCalendarAvailability()}>
-          Save availability
+        <button
+          disabled={dashboard.isPending(saveCalendarKey)}
+          onClick={() =>
+            void dashboard.runWithUiState(saveCalendarKey, () =>
+              dashboard.saveCalendarAvailability(),
+            )
+          }
+        >
+          {dashboard.isPending(saveCalendarKey)
+            ? 'Saving availability...'
+            : 'Save availability'}
         </button>
       </div>
 
@@ -279,8 +335,15 @@ export function PolicyPage() {
             }
           />
         </label>
-        <button onClick={() => void dashboard.saveSettings(dashboard.settingsDraft)}>
-          Save settings
+        <button
+          disabled={dashboard.isPending(saveSettingsKey)}
+          onClick={() =>
+            void dashboard.runWithUiState(saveSettingsKey, () =>
+              dashboard.saveSettings(dashboard.settingsDraft),
+            )
+          }
+        >
+          {dashboard.isPending(saveSettingsKey) ? 'Saving settings...' : 'Save settings'}
         </button>
 
         <h2>Signal Profile</h2>
@@ -351,11 +414,17 @@ export function PolicyPage() {
             <div className="buttonRow">
               <button
                 type="button"
+                disabled={dashboard.isPending('signal-avatar-remove')}
                 onClick={() =>
-                  dashboard.setSignalProfileDraft((current) => ({
-                    ...current,
-                    avatarDataUrl: '',
-                  }))
+                  {
+                    if (!window.confirm('Remove the current Signal avatar preview?')) {
+                      return;
+                    }
+                    dashboard.setSignalProfileDraft((current) => ({
+                      ...current,
+                      avatarDataUrl: '',
+                    }));
+                  }
                 }
               >
                 Remove avatar
@@ -363,8 +432,17 @@ export function PolicyPage() {
             </div>
           </div>
         ) : null}
-        <button onClick={() => void dashboard.saveSignalProfile()}>
-          Save Signal profile
+        <button
+          disabled={dashboard.isPending(saveSignalProfileKey)}
+          onClick={() =>
+            void dashboard.runWithUiState(saveSignalProfileKey, () =>
+              dashboard.saveSignalProfile(),
+            )
+          }
+        >
+          {dashboard.isPending(saveSignalProfileKey)
+            ? 'Saving profile...'
+            : 'Save Signal profile'}
         </button>
       </div>
     </section>

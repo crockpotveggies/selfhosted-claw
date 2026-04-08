@@ -2,6 +2,12 @@ import { useAdminDashboardContext } from '../admin/context';
 
 export function ContactsPage() {
   const dashboard = useAdminDashboardContext();
+  const trustKey = 'contact-trust';
+  const abuseKey = 'contact-abuse';
+  const resetKey = 'contact-reset';
+  const reclassifyKey = 'contact-reclassify';
+  const googleSaveKey = 'google-contacts-save';
+  const googleConnectKey = 'google-contacts-connect';
 
   return (
     <>
@@ -42,40 +48,56 @@ export function ContactsPage() {
             {dashboard.selectedContact ? (
               <div className="buttonRow">
                 <button
+                  disabled={dashboard.isPending(trustKey)}
                   onClick={() =>
-                    void dashboard.mutate('contact.trust', {
-                      identity: dashboard.selectedContact?.identity,
-                    })
+                    void dashboard.runWithUiState(trustKey, () =>
+                      dashboard.mutate('contact.trust', {
+                        identity: dashboard.selectedContact?.identity,
+                      }),
+                    )
                   }
                 >
-                  Trust
+                  {dashboard.isPending(trustKey) ? 'Trusting...' : 'Trust'}
                 </button>
                 <button
-                  onClick={() =>
-                    void dashboard.mutate('contact.abuse', {
-                      identity: dashboard.selectedContact?.identity,
-                    })
-                  }
+                  disabled={dashboard.isPending(abuseKey)}
+                  onClick={() => {
+                    if (!window.confirm('Mark this contact as abuse?')) return;
+                    void dashboard.runWithUiState(abuseKey, () =>
+                      dashboard.mutate('contact.abuse', {
+                        identity: dashboard.selectedContact?.identity,
+                      }),
+                    );
+                  }}
                 >
-                  Abuse
+                  {dashboard.isPending(abuseKey) ? 'Saving...' : 'Abuse'}
                 </button>
                 <button
-                  onClick={() =>
-                    void dashboard.mutate('contact.reset', {
-                      identity: dashboard.selectedContact?.identity,
-                    })
-                  }
+                  disabled={dashboard.isPending(resetKey)}
+                  onClick={() => {
+                    if (!window.confirm('Reset this contact back to unknown?')) return;
+                    void dashboard.runWithUiState(resetKey, () =>
+                      dashboard.mutate('contact.reset', {
+                        identity: dashboard.selectedContact?.identity,
+                      }),
+                    );
+                  }}
                 >
-                  Reset
+                  {dashboard.isPending(resetKey) ? 'Resetting...' : 'Reset'}
                 </button>
                 <button
+                  disabled={dashboard.isPending(reclassifyKey)}
                   onClick={() =>
-                    void dashboard.mutate('contact.reclassify', {
-                      identity: dashboard.selectedContact?.identity,
-                    })
+                    void dashboard.runWithUiState(reclassifyKey, () =>
+                      dashboard.mutate('contact.reclassify', {
+                        identity: dashboard.selectedContact?.identity,
+                      }),
+                    )
                   }
                 >
-                  Re-classify
+                  {dashboard.isPending(reclassifyKey)
+                    ? 'Re-classifying...'
+                    : 'Re-classify'}
                 </button>
               </div>
             ) : null}
@@ -173,17 +195,33 @@ export function ContactsPage() {
           </label>
         </div>
         <div className="buttonRow">
-          <button onClick={() => void dashboard.saveGoogleContactsCredentials()}>
-            Save Google OAuth settings
+          <button
+            disabled={dashboard.isPending(googleSaveKey)}
+            onClick={() =>
+              void dashboard.runWithUiState(googleSaveKey, () =>
+                dashboard.saveGoogleContactsCredentials(),
+              )
+            }
+          >
+            {dashboard.isPending(googleSaveKey)
+              ? 'Saving OAuth settings...'
+              : 'Save Google OAuth settings'}
           </button>
           <button
-            onClick={() => void dashboard.connectGoogleContacts()}
             disabled={
+              dashboard.isPending(googleConnectKey) ||
               !dashboard.googleContactsSetup.configured.clientId ||
               !dashboard.googleContactsSetup.configured.clientSecret
             }
+            onClick={() =>
+              void dashboard.runWithUiState(googleConnectKey, () =>
+                dashboard.connectGoogleContacts(),
+              )
+            }
           >
-            Connect Google Contacts
+            {dashboard.isPending(googleConnectKey)
+              ? 'Connecting...'
+              : 'Connect Google Contacts'}
           </button>
         </div>
         <p className="mutedNote">

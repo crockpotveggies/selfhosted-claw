@@ -31,6 +31,9 @@ import type {
 
 export function useAdminDashboard() {
   const [actionError, setActionError] = useState('');
+  const [pendingOperations, setPendingOperations] = useState<
+    Record<string, boolean>
+  >({});
   const [contactStatusFilter, setContactStatusFilter] = useState('');
   const [selectedContactId, setSelectedContactId] = useState('');
   const [scope, setScope] = useState<PersonalityScope>('global');
@@ -364,6 +367,24 @@ export function useAdminDashboard() {
     .filter(Boolean)
     .join(' | ');
 
+  const runWithUiState = async <T,>(
+    key: string,
+    task: () => Promise<T>,
+  ): Promise<T> => {
+    setPendingOperations((current) => ({ ...current, [key]: true }));
+    try {
+      return await task();
+    } finally {
+      setPendingOperations((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    }
+  };
+
+  const isPending = (key: string) => Boolean(pendingOperations[key]);
+
   const refreshAll = async () => {
     await Promise.all([
       setupState.refresh(),
@@ -695,7 +716,9 @@ export function useAdminDashboard() {
     groupedTools,
     handleSignalAvatarSelected,
     mutate,
+    isPending,
     pendingActions,
+    pendingOperations,
     pendingState,
     personalityForm,
     personalityState,
@@ -712,6 +735,7 @@ export function useAdminDashboard() {
     resolutionChannel,
     resolutionPreview,
     resolutionQuery,
+    runWithUiState,
     saveCalendarAvailability,
     saveEnvironment,
     saveGoogleContactsCredentials,

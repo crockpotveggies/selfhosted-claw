@@ -3,6 +3,8 @@ import { useAdminDashboardContext } from '../admin/context';
 
 export function PersonalityPage() {
   const dashboard = useAdminDashboardContext();
+  const saveKey = 'personality-save';
+  const resetKey = 'personality-reset';
 
   return (
     <section className="panelGrid">
@@ -128,23 +130,36 @@ export function PersonalityPage() {
         </label>
         <div className="buttonRow">
           <button
+            disabled={dashboard.isPending(saveKey)}
             onClick={() =>
-              void dashboard.mutate('personality.upsert', {
-                ...dashboard.personalityForm,
-                scope: dashboard.scope,
-              })
+              void dashboard.runWithUiState(saveKey, () =>
+                dashboard.mutate('personality.upsert', {
+                  ...dashboard.personalityForm,
+                  scope: dashboard.scope,
+                }),
+              )
             }
           >
-            Save
+            {dashboard.isPending(saveKey) ? 'Saving...' : 'Save'}
           </button>
           <button
-            onClick={() =>
-              void dashboard.mutate('personality.reset', {
-                scope: dashboard.scope,
-              })
-            }
+            disabled={dashboard.isPending(resetKey)}
+            onClick={() => {
+              if (
+                !window.confirm(
+                  `Reset the personality settings for "${dashboard.scope}"?`,
+                )
+              ) {
+                return;
+              }
+              void dashboard.runWithUiState(resetKey, () =>
+                dashboard.mutate('personality.reset', {
+                  scope: dashboard.scope,
+                }),
+              );
+            }}
           >
-            Reset scope
+            {dashboard.isPending(resetKey) ? 'Resetting...' : 'Reset scope'}
           </button>
         </div>
       </div>

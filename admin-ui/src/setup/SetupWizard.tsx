@@ -9,6 +9,8 @@ function WizardFrame(props: {
   lead: string;
   children: ReactNode;
   primaryLabel?: string;
+  primaryPendingLabel?: string;
+  primaryPendingKey?: string;
   onPrimary?: () => void | Promise<void>;
   secondaryLabel?: string;
   onSecondary?: () => void;
@@ -16,6 +18,10 @@ function WizardFrame(props: {
 }) {
   const { nextStep, previousStep, activeStep, stepCount, isLastStep } =
     useWizard();
+  const dashboard = useAdminDashboardContext();
+  const isPrimaryPending = props.primaryPendingKey
+    ? dashboard.isPending(props.primaryPendingKey)
+    : false;
 
   const handlePrimary = async () => {
     if (props.onPrimary) await props.onPrimary();
@@ -45,8 +51,15 @@ function WizardFrame(props: {
         )}
         <div className="buttonRow noMargin">
           {props.tertiary}
-          <CButton type="button" color="primary" onClick={() => void handlePrimary()}>
-            {props.primaryLabel || (isLastStep ? 'Finish' : 'Save and continue')}
+          <CButton
+            type="button"
+            color="primary"
+            disabled={isPrimaryPending}
+            onClick={() => void handlePrimary()}
+          >
+            {isPrimaryPending
+              ? props.primaryPendingLabel || 'Working...'
+              : props.primaryLabel || (isLastStep ? 'Finish' : 'Save and continue')}
           </CButton>
         </div>
       </div>
@@ -77,7 +90,9 @@ function SecurityStep() {
     <WizardFrame
       title="Secure local admin access"
       lead="The admin UI should stay on localhost and use an admin token if you want browser-level protection on top of local-only binding."
-      onPrimary={save}
+      primaryPendingKey="setup-security-save"
+      primaryPendingLabel="Saving..."
+      onPrimary={() => dashboard.runWithUiState('setup-security-save', save)}
       tertiary={
         <CButton
           type="button"
@@ -168,18 +183,22 @@ function ModelStep() {
     <WizardFrame
       title="Model backend"
       lead="Point Self-Hosted Claw at an OpenAI-compatible backend. For local models this is typically vLLM or another chat-completions-compatible endpoint."
+      primaryPendingKey="setup-model-save"
+      primaryPendingLabel="Saving..."
       onPrimary={() =>
-        dashboard.saveEnvironment({
-          ASSISTANT_NAME: dashboard.setupDraft.ASSISTANT_NAME,
-          OPENAI_BASE_URL: dashboard.setupDraft.OPENAI_BASE_URL,
-          OPENAI_MODEL: dashboard.setupDraft.OPENAI_MODEL,
-          OPENAI_MAX_TOKENS: dashboard.setupDraft.OPENAI_MAX_TOKENS,
-          OPENAI_TEMPERATURE: dashboard.setupDraft.OPENAI_TEMPERATURE,
-          ONECLI_URL: dashboard.setupDraft.ONECLI_URL,
-          ...(dashboard.setupDraft.OPENAI_API_KEY.trim()
-            ? { OPENAI_API_KEY: dashboard.setupDraft.OPENAI_API_KEY.trim() }
-            : {}),
-        })
+        dashboard.runWithUiState('setup-model-save', () =>
+          dashboard.saveEnvironment({
+            ASSISTANT_NAME: dashboard.setupDraft.ASSISTANT_NAME,
+            OPENAI_BASE_URL: dashboard.setupDraft.OPENAI_BASE_URL,
+            OPENAI_MODEL: dashboard.setupDraft.OPENAI_MODEL,
+            OPENAI_MAX_TOKENS: dashboard.setupDraft.OPENAI_MAX_TOKENS,
+            OPENAI_TEMPERATURE: dashboard.setupDraft.OPENAI_TEMPERATURE,
+            ONECLI_URL: dashboard.setupDraft.ONECLI_URL,
+            ...(dashboard.setupDraft.OPENAI_API_KEY.trim()
+              ? { OPENAI_API_KEY: dashboard.setupDraft.OPENAI_API_KEY.trim() }
+              : {}),
+          }),
+        )
       }
     >
       <label>
@@ -300,19 +319,23 @@ function SignalStep() {
     <WizardFrame
       title="Signal bridge and control chat"
       lead="Capture the assistant Signal identity, then let the wizard launch the managed localhost-only Signal bridge from `scripts/signal-cli/docker-compose.yml`."
-      onPrimary={async () => {
-        await dashboard.saveEnvironment({
-          SIGNAL_ACCOUNT: dashboard.setupDraft.SIGNAL_ACCOUNT,
-          SIGNAL_RPC_URL: dashboard.setupDraft.SIGNAL_RPC_URL,
-          SIGNAL_RECEIVE_TIMEOUT_SEC: dashboard.setupDraft.SIGNAL_RECEIVE_TIMEOUT_SEC,
-          CONTROL_SIGNAL_JID: dashboard.setupDraft.CONTROL_SIGNAL_JID,
-        });
-        await dashboard.saveSettings({
-          controlSignalJid: dashboard.setupDraft.CONTROL_SIGNAL_JID,
-          assistantSignalIdentity: dashboard.setupDraft.assistantSignalIdentity,
-        });
-        await dashboard.startSignalCompose();
-      }}
+      primaryPendingKey="setup-signal-save"
+      primaryPendingLabel="Starting bridge..."
+      onPrimary={() =>
+        dashboard.runWithUiState('setup-signal-save', async () => {
+          await dashboard.saveEnvironment({
+            SIGNAL_ACCOUNT: dashboard.setupDraft.SIGNAL_ACCOUNT,
+            SIGNAL_RPC_URL: dashboard.setupDraft.SIGNAL_RPC_URL,
+            SIGNAL_RECEIVE_TIMEOUT_SEC: dashboard.setupDraft.SIGNAL_RECEIVE_TIMEOUT_SEC,
+            CONTROL_SIGNAL_JID: dashboard.setupDraft.CONTROL_SIGNAL_JID,
+          });
+          await dashboard.saveSettings({
+            controlSignalJid: dashboard.setupDraft.CONTROL_SIGNAL_JID,
+            assistantSignalIdentity: dashboard.setupDraft.assistantSignalIdentity,
+          });
+          await dashboard.startSignalCompose();
+        })
+      }
       primaryLabel="Save and start Signal bridge"
     >
       <label>
@@ -414,16 +437,24 @@ function SignalProvisionStep() {
     <WizardFrame
       title="Link or register the assistant account"
       lead="Use QR linking if this Signal account already exists on a phone. Use SMS or voice verification only if you are registering a brand-new Signal account for the assistant."
-      onPrimary={dashboard.setupState.refresh}
+      primaryPendingKey="setup-signal-refresh"
+      primaryPendingLabel="Refreshing..."
+      onPrimary={() =>
+        dashboard.runWithUiState('setup-signal-refresh', () =>
+          dashboard.setupState.refresh(),
+        )
+      }
       primaryLabel="Refresh Signal status"
       tertiary={
         <div className="buttonRow noMargin">
           <button
             type="button"
+            disabled={dashboard.isPending('setup-signal-refresh')}
             onClick={() =>
               void dashboard
-                .setupState
-                .refresh()
+                .runWithUiState('setup-signal-refresh', () =>
+                  dashboard.setupState.refresh(),
+                )
                 .then(() => {
                   dashboard.setSignalProvisionMessage(
                     'Signal status refreshed. The readiness result is shown above.',
@@ -432,7 +463,9 @@ function SignalProvisionStep() {
                 .catch(() => undefined)
             }
           >
-            Re-check readiness
+            {dashboard.isPending('setup-signal-refresh')
+              ? 'Refreshing...'
+              : 'Re-check readiness'}
           </button>
         </div>
       }
@@ -450,13 +483,18 @@ function SignalProvisionStep() {
         <div className="buttonRow noMargin">
           <button
             type="button"
+            disabled={dashboard.isPending('setup-signal-existing')}
             onClick={() =>
-              void dashboard.fetchSignalExistingAccounts(
-                dashboard.setupDraft.SIGNAL_RPC_URL,
+              void dashboard.runWithUiState('setup-signal-existing', () =>
+                dashboard.fetchSignalExistingAccounts(
+                  dashboard.setupDraft.SIGNAL_RPC_URL,
+                ),
               )
             }
           >
-            Check for existing Signal identity
+            {dashboard.isPending('setup-signal-existing')
+              ? 'Checking...'
+              : 'Check for existing Signal identity'}
           </button>
         </div>
       )}
@@ -491,9 +529,12 @@ function SignalProvisionStep() {
           <div className="buttonRow noMargin">
             <button
               type="button"
+              disabled={dashboard.isPending('setup-signal-qr')}
               onClick={() =>
                 void dashboard
-                  .requestSignalLinkQr(dashboard.signalDeviceName)
+                  .runWithUiState('setup-signal-qr', () =>
+                    dashboard.requestSignalLinkQr(dashboard.signalDeviceName),
+                  )
                   .then((dataUrl) => {
                     dashboard.setSignalQrDataUrl(dataUrl);
                     dashboard.setSignalProvisionMessage(
@@ -503,7 +544,9 @@ function SignalProvisionStep() {
                   .catch(() => undefined)
               }
             >
-              Generate QR code
+              {dashboard.isPending('setup-signal-qr')
+                ? 'Generating...'
+                : 'Generate QR code'}
             </button>
           </div>
           {dashboard.signalQrDataUrl ? (
@@ -529,17 +572,22 @@ function SignalProvisionStep() {
           <div className="buttonRow noMargin">
             <button
               type="button"
+              disabled={dashboard.isPending('setup-signal-register')}
               onClick={() =>
                 void dashboard
-                  .startSignalRegistration(
-                    dashboard.signalUseVoice,
-                    dashboard.signalCaptchaToken || undefined,
+                  .runWithUiState('setup-signal-register', () =>
+                    dashboard.startSignalRegistration(
+                      dashboard.signalUseVoice,
+                      dashboard.signalCaptchaToken || undefined,
+                    ),
                   )
                   .then((message) => dashboard.setSignalProvisionMessage(message))
                   .catch(() => undefined)
               }
             >
-              Start registration
+              {dashboard.isPending('setup-signal-register')
+                ? 'Starting...'
+                : 'Start registration'}
             </button>
           </div>
           <label>
@@ -584,14 +632,21 @@ function SignalProvisionStep() {
           <div className="buttonRow noMargin">
             <button
               type="button"
+              disabled={dashboard.isPending('setup-signal-verify')}
               onClick={() =>
                 void dashboard
-                  .verifySignalRegistration(dashboard.signalVerificationCode)
+                  .runWithUiState('setup-signal-verify', () =>
+                    dashboard.verifySignalRegistration(
+                      dashboard.signalVerificationCode,
+                    ),
+                  )
                   .then((message) => dashboard.setSignalProvisionMessage(message))
                   .catch(() => undefined)
               }
             >
-              Verify code
+              {dashboard.isPending('setup-signal-verify')
+                ? 'Verifying...'
+                : 'Verify code'}
             </button>
           </div>
         </div>
@@ -621,10 +676,24 @@ function OwnershipStep() {
       title="Verified owner identities"
       lead="Only owner-verified identities can use the full Signal control plane. Add at least your primary Signal identity before completing setup."
       primaryLabel="Save and continue"
-      onPrimary={dashboard.addVerifiedIdentity}
+      primaryPendingKey="setup-verified-add"
+      primaryPendingLabel="Adding..."
+      onPrimary={() =>
+        dashboard.runWithUiState('setup-verified-add', () =>
+          dashboard.addVerifiedIdentity(),
+        )
+      }
       tertiary={
-        <button type="button" onClick={() => void dashboard.addVerifiedIdentity()}>
-          Add identity
+        <button
+          type="button"
+          disabled={dashboard.isPending('setup-verified-add')}
+          onClick={() =>
+            void dashboard.runWithUiState('setup-verified-add', () =>
+              dashboard.addVerifiedIdentity(),
+            )
+          }
+        >
+          {dashboard.isPending('setup-verified-add') ? 'Adding...' : 'Add identity'}
         </button>
       }
     >

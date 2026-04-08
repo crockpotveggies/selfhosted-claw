@@ -22,6 +22,7 @@ function buildConnectionStatus(ok: boolean, pendingLabel: string) {
 export function ConnectionsPage() {
   const dashboard = useAdminDashboardContext();
   const { providers, setupChecks } = dashboard;
+  const refreshKey = 'connections-refresh';
 
   const widgets = [
     {
@@ -99,7 +100,14 @@ export function ConnectionsPage() {
       <section className="panel">
         <div className="panelHeader">
           <h2>Connections</h2>
-          <button onClick={() => void dashboard.refreshAll()}>Refresh</button>
+          <button
+            disabled={dashboard.isPending(refreshKey)}
+            onClick={() =>
+              void dashboard.runWithUiState(refreshKey, () => dashboard.refreshAll())
+            }
+          >
+            {dashboard.isPending(refreshKey) ? 'Refreshing...' : 'Refresh'}
+          </button>
         </div>
         <p className="mutedNote">
           Integration and service health now lives here instead of in the shared

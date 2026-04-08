@@ -10,13 +10,23 @@ import {
 
 export function ToolsPage() {
   const dashboard = useAdminDashboardContext();
+  const refreshKey = 'tools-refresh';
 
   return (
     <>
       <section className="panel">
         <div className="panelHeader">
           <h2>Tool Registry</h2>
-          <button onClick={() => void dashboard.toolsState.refresh()}>Refresh</button>
+          <button
+            disabled={dashboard.isPending(refreshKey)}
+            onClick={() =>
+              void dashboard.runWithUiState(refreshKey, () =>
+                dashboard.toolsState.refresh(),
+              )
+            }
+          >
+            {dashboard.isPending(refreshKey) ? 'Refreshing...' : 'Refresh'}
+          </button>
         </div>
         <p className="mutedNote">
           These cards come directly from the registered control-action definitions on

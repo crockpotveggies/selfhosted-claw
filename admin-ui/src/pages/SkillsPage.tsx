@@ -4,6 +4,11 @@ export function SkillsPage() {
   const dashboard = useAdminDashboardContext();
   const skills = dashboard.skillsState.data?.skills || [];
   const isNew = dashboard.selectedSkillName === null;
+  const refreshKey = 'skills-refresh';
+  const saveKey = isNew
+    ? 'skills-create'
+    : `skills-save:${dashboard.selectedSkillName || 'new'}`;
+  const deleteKey = `skills-delete:${dashboard.selectedSkillName || 'none'}`;
 
   const handleNew = () => {
     dashboard.setSelectedSkillName(null);
@@ -17,13 +22,17 @@ export function SkillsPage() {
   const handleSave = () => {
     const { name, description, content } = dashboard.skillEditorForm;
     if (!name.trim()) return;
-    void dashboard.saveSkill(name.trim(), description.trim(), content);
+    void dashboard.runWithUiState(saveKey, () =>
+      dashboard.saveSkill(name.trim(), description.trim(), content),
+    );
   };
 
   const handleDelete = () => {
     if (!dashboard.selectedSkillName) return;
     if (!window.confirm(`Delete skill "${dashboard.selectedSkillName}"?`)) return;
-    void dashboard.deleteSkill(dashboard.selectedSkillName);
+    void dashboard.runWithUiState(deleteKey, () =>
+      dashboard.deleteSkill(dashboard.selectedSkillName!),
+    );
   };
 
   return (
@@ -33,8 +42,15 @@ export function SkillsPage() {
         <div className="panelHeader">
           <h2>Container Skills</h2>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button onClick={() => void dashboard.skillsState.refresh()}>
-              Refresh
+            <button
+              disabled={dashboard.isPending(refreshKey)}
+              onClick={() =>
+                void dashboard.runWithUiState(refreshKey, () =>
+                  dashboard.skillsState.refresh(),
+                )
+              }
+            >
+              {dashboard.isPending(refreshKey) ? 'Refreshing...' : 'Refresh'}
             </button>
             <button className="btnPrimary" onClick={handleNew}>
               + New
@@ -76,12 +92,26 @@ export function SkillsPage() {
           <h2>{isNew ? 'New Skill' : `Edit: ${dashboard.selectedSkillName}`}</h2>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             {!isNew && (
-              <button className="btnDanger" onClick={handleDelete}>
-                Delete
-              </button>
-            )}
-            <button className="btnPrimary" onClick={handleSave}>
-              {isNew ? 'Create' : 'Save'}
+            <button
+              className="btnDanger"
+              disabled={dashboard.isPending(deleteKey)}
+              onClick={handleDelete}
+            >
+              {dashboard.isPending(deleteKey) ? 'Deleting...' : 'Delete'}
+            </button>
+          )}
+            <button
+              className="btnPrimary"
+              disabled={dashboard.isPending(saveKey)}
+              onClick={handleSave}
+            >
+              {dashboard.isPending(saveKey)
+                ? isNew
+                  ? 'Creating...'
+                  : 'Saving...'
+                : isNew
+                  ? 'Create'
+                  : 'Save'}
             </button>
           </div>
         </div>
