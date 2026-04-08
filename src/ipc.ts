@@ -216,9 +216,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
       // Check for controller-access flag written by the host when spawning the container
       if (
         !folderCalendarAccess.has(sourceGroup) &&
-        fs.existsSync(
-          path.join(ipcBaseDir, sourceGroup, 'controller_access'),
-        )
+        fs.existsSync(path.join(ipcBaseDir, sourceGroup, 'controller_access'))
       ) {
         folderCalendarAccess.set(sourceGroup, true);
       }

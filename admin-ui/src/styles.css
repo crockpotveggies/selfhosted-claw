@@ -166,6 +166,7 @@ body {
 
 .heroChip,
 .setupBadge,
+.statusSummaryBadge,
 .wizardProgress,
 .status {
   border-radius: 999px;
@@ -176,6 +177,7 @@ body {
 
 .heroChip,
 .setupBadge,
+.statusSummaryBadge,
 .wizardProgress {
   background: rgba(140, 150, 167, 0.16) !important;
   color: #dce3ee !important;
@@ -193,6 +195,23 @@ body {
   color: #ffd982 !important;
 }
 
+.statusSummaryBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 0;
+}
+
+.statusSummaryBadge.ok {
+  background: rgba(45, 183, 93, 0.16) !important;
+  color: #7fe0a6 !important;
+}
+
+.statusSummaryBadge.error {
+  background: rgba(229, 83, 83, 0.16) !important;
+  color: #ff9e9e !important;
+}
+
 .adminBody {
   padding-bottom: 2rem;
 }
@@ -201,20 +220,44 @@ body {
   display: inline-flex;
 }
 
-.headerRouteLink {
-  color: inherit;
+.adminStatusNav {
+  align-items: center;
+  gap: 0.55rem;
 }
 
-.headerRouteLink.active {
-  color: var(--cui-body-color);
+.healthPopover {
+  --cui-popover-bg: #1a2230;
+  --cui-popover-border-color: rgba(255, 255, 255, 0.08);
+  --cui-popover-header-bg: transparent;
+  --cui-popover-body-color: #ecf1f8;
+  --cui-popover-max-width: 18rem;
 }
 
-.headerIconWrap {
+.healthPopoverContent {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.15rem;
+}
+
+.healthPopoverRow {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.82rem;
+}
+
+.healthCheckIcon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0.5rem 0.75rem;
-  color: inherit;
+}
+
+.healthCheckIcon.ok {
+  color: #7fe0a6;
+}
+
+.healthCheckIcon.error {
+  color: #ff9e9e;
 }
 
 .metricCard,
@@ -299,6 +342,22 @@ body {
   background: rgba(255, 255, 255, 0.04);
   border-radius: 0.65rem;
   padding: 0.55rem 0.7rem;
+}
+
+.connectionWidget {
+  height: 100%;
+}
+
+.connectionWidgetTitle {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.connectionWidgetTitle small {
+  font-size: 0.75rem;
+  font-weight: 500;
+  opacity: 0.85;
+  text-transform: none;
 }
 
 .toolCapabilityRow,

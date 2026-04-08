@@ -378,68 +378,76 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, controllerTriggered, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      const cleaned = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      const parsed = parseAgentOutput(cleaned);
-      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-      const statusLines: string[] = [];
-      for (const directive of parsed.directives) {
-        try {
-          statusLines.push(await executeAgentDirective(directive, chatJid));
-        } catch (err) {
-          statusLines.push(
-            err instanceof Error
-              ? `Send failed: ${err.message}`
-              : `Send failed: ${String(err)}`,
-          );
+  const output = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    controllerTriggered,
+    async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        const cleaned = raw
+          .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+          .trim();
+        const parsed = parseAgentOutput(cleaned);
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+        const statusLines: string[] = [];
+        for (const directive of parsed.directives) {
+          try {
+            statusLines.push(await executeAgentDirective(directive, chatJid));
+          } catch (err) {
+            statusLines.push(
+              err instanceof Error
+                ? `Send failed: ${err.message}`
+                : `Send failed: ${String(err)}`,
+            );
+          }
         }
-      }
-      // For non-main (external) chats, route directive status messages
-      // (approval requests, send confirmations) to the controller, not the
-      // external contact.
-      const isExternalChat = !group.isMain;
-      const statusText = statusLines.filter(Boolean).join('\n\n').trim();
-      if (isExternalChat && statusText && CONTROL_SIGNAL_JID) {
-        const controlChannel = findChannel(channels, CONTROL_SIGNAL_JID);
-        if (controlChannel) {
-          await controlChannel.sendMessage(
-            CONTROL_SIGNAL_JID,
-            `[${group.name}] ${statusText}`,
-          );
+        // For non-main (external) chats, route directive status messages
+        // (approval requests, send confirmations) to the controller, not the
+        // external contact.
+        const isExternalChat = !group.isMain;
+        const statusText = statusLines.filter(Boolean).join('\n\n').trim();
+        if (isExternalChat && statusText && CONTROL_SIGNAL_JID) {
+          const controlChannel = findChannel(channels, CONTROL_SIGNAL_JID);
+          if (controlChannel) {
+            await controlChannel.sendMessage(
+              CONTROL_SIGNAL_JID,
+              `[${group.name}] ${statusText}`,
+            );
+          }
         }
+
+        const text = isExternalChat
+          ? (parsed.visibleText || '').trim()
+          : [parsed.visibleText, ...statusLines]
+              .filter(Boolean)
+              .join('\n\n')
+              .trim();
+        if (text) {
+          // Brief typing indicator so the reply feels natural
+          await channel.setTyping?.(chatJid, true);
+          await new Promise((r) => setTimeout(r, 1000));
+          await channel.sendMessage(chatJid, text);
+          outputSentToUser = true;
+        }
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
       }
 
-      const text = isExternalChat
-        ? (parsed.visibleText || '').trim()
-        : [parsed.visibleText, ...statusLines]
-            .filter(Boolean)
-            .join('\n\n')
-            .trim();
-      if (text) {
-        // Brief typing indicator so the reply feels natural
-        await channel.setTyping?.(chatJid, true);
-        await new Promise((r) => setTimeout(r, 1000));
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    }
 
-    if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
-    }
-
-    if (result.status === 'error') {
-      hadError = true;
-    }
-  });
+      if (result.status === 'error') {
+        hadError = true;
+      }
+    },
+  );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);

@@ -1,6 +1,7 @@
 import {
   cilCheckCircle,
   cilCode,
+  cilCloudDownload,
   cilDescription,
   cilNotes,
   cilPeople,
@@ -14,6 +15,7 @@ export const ADMIN_PATHS = {
   contacts: '/contacts',
   personality: '/personality',
   policy: '/policy',
+  connections: '/connections',
   tools: '/tools',
   skills: '/skills',
   approvals: '/approvals',
@@ -48,6 +50,13 @@ export const ADMIN_TABS: Array<{
     label: 'Policy',
     description: 'Provider switches and trust settings',
     icon: cilShieldAlt,
+  },
+  {
+    id: 'connections',
+    path: ADMIN_PATHS.connections,
+    label: 'Connections',
+    description: 'Integration health and service reachability',
+    icon: cilCloudDownload,
   },
   {
     id: 'tools',

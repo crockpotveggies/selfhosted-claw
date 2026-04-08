@@ -11,6 +11,7 @@ import {
   CHeaderBrand,
   CHeaderNav,
   CHeaderToggler,
+  CPopover,
   CNavItem,
   CRow,
   CSidebar,
@@ -24,12 +25,13 @@ import {
 } from '@coreui/react';
 import CIcon from '@coreui/icons-react';
 import {
-  cilBell,
-  cilList,
   cilMenu,
-  cilSettings,
   cilSpeech,
 } from '@coreui/icons';
+import {
+  CheckSquareFill,
+  ExclamationSquareFill,
+} from 'react-bootstrap-icons';
 import {
   Navigate,
   NavLink,
@@ -67,6 +69,8 @@ function AdminDashboardLayout() {
     ['Control chat', dashboard.setupChecks.controlChatConfigured],
     ['Verified identities', dashboard.setupChecks.verifiedIdentityCount > 0],
   ] as const;
+  const healthyCheckCount = systemChecks.filter(([, ok]) => ok).length;
+  const allChecksHealthy = healthyCheckCount === systemChecks.length;
 
   useEffect(() => {
     setColorMode('dark');
@@ -199,38 +203,48 @@ function AdminDashboardLayout() {
             <CHeaderBrand className="d-md-none" href="#">
               Claw Admin
             </CHeaderBrand>
-            <CHeaderNav className="d-none d-md-flex">
+            <CHeaderNav className="ms-auto adminStatusNav">
+              {dashboard.setupBlocked ? (
+                <CNavItem>
+                  <NavLink to={ADMIN_PATHS.setup} className="setupLink">
+                    <CBadge className="setupBadge warn">Setup incomplete</CBadge>
+                  </NavLink>
+                </CNavItem>
+              ) : null}
               <CNavItem>
-                <NavLink to={ADMIN_PATHS.contacts} className="headerRouteLink nav-link">
-                  Dashboard
-                </NavLink>
-              </CNavItem>
-              <CNavItem>
-                <NavLink to={ADMIN_PATHS.approvals} className="headerRouteLink nav-link">
-                  Operations
-                </NavLink>
-              </CNavItem>
-              <CNavItem>
-                <NavLink to={ADMIN_PATHS.setup} className="headerRouteLink nav-link">
-                  Setup
-                </NavLink>
-              </CNavItem>
-            </CHeaderNav>
-            <CHeaderNav className="ms-auto">
-              <CNavItem>
-                <span className="headerIconWrap">
-                  <CIcon icon={cilBell} size="lg" />
-                </span>
-              </CNavItem>
-              <CNavItem>
-                <span className="headerIconWrap">
-                  <CIcon icon={cilList} size="lg" />
-                </span>
-              </CNavItem>
-              <CNavItem>
-                <span className="headerIconWrap">
-                  <CIcon icon={cilSettings} size="lg" />
-                </span>
+                <CPopover
+                  trigger="click"
+                  placement="bottom-end"
+                  className="healthPopover"
+                  content={
+                    <div className="healthPopoverContent">
+                      {systemChecks.map(([label, ok]) => (
+                        <div key={label} className="healthPopoverRow">
+                          <span className={`healthCheckIcon ${ok ? 'ok' : 'error'}`}>
+                            {ok ? (
+                              <CheckSquareFill size={14} />
+                            ) : (
+                              <ExclamationSquareFill size={14} />
+                            )}
+                          </span>
+                          <span>{label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  }
+                >
+                  <button
+                    type="button"
+                    className={`statusSummaryBadge ${allChecksHealthy ? 'ok' : 'error'}`}
+                  >
+                    {allChecksHealthy ? (
+                      <CheckSquareFill size={14} />
+                    ) : (
+                      <ExclamationSquareFill size={14} />
+                    )}
+                    {healthyCheckCount}/{systemChecks.length} Status Checks
+                  </button>
+                </CPopover>
               </CNavItem>
             </CHeaderNav>
           </CContainer>
@@ -242,21 +256,6 @@ function AdminDashboardLayout() {
                 The admin UI and Signal control chat call the same host-side actions,
                 so everything here reflects the real control plane.
               </p>
-            </div>
-            <div className="heroChips">
-              <NavLink to={ADMIN_PATHS.setup} className="heroChipLink">
-                <CBadge className={`heroChip ${dashboard.setupBlocked ? 'warn' : 'ok'}`}>
-                  {dashboard.setupBlocked ? 'Setup overlay active' : 'Setup complete'}
-                </CBadge>
-              </NavLink>
-              <CBadge className="heroChip">
-                {dashboard.providers.googleContactsAvailable
-                  ? `Google Contacts ${dashboard.providers.googleContactsSource}`
-                  : 'Google Contacts offline'}
-              </CBadge>
-              <CBadge className="heroChip">
-                {dashboard.providers.onecliReachable ? 'OneCLI reachable' : 'OneCLI pending'}
-              </CBadge>
             </div>
           </CContainer>
         </CHeader>
@@ -313,23 +312,6 @@ function AdminDashboardLayout() {
               </CCol>
 
               <CCol xl={3} className="inspector">
-                <CCard className="sidebarCard">
-                  <CCardHeader className="sidebarCardHeader">
-                    <h2>System checks</h2>
-                    <span className="mutedMeta">
-                      {systemChecks.filter(([, ok]) => ok).length}/{systemChecks.length}
-                    </span>
-                  </CCardHeader>
-                  <CCardBody>
-                    <div className="checklist">
-                      {systemChecks.map(([label, ok]) => (
-                        <div key={label} className={ok ? 'ok' : 'warn'}>
-                          {label}: {ok ? 'ready' : 'needs attention'}
-                        </div>
-                      ))}
-                    </div>
-                  </CCardBody>
-                </CCard>
                 <SidebarInspector activeTab={activeTab} />
               </CCol>
             </CRow>

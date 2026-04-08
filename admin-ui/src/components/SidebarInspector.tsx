@@ -144,6 +144,28 @@ export function SidebarInspector(props: { activeTab: AdminTab }) {
     );
   }
 
+  if (props.activeTab === 'connections') {
+    return (
+      <CCard className="sidebarCard">
+        <CCardHeader className="sidebarCardHeader">
+          <h2>Connection summary</h2>
+        </CCardHeader>
+        <CCardBody>
+          <p className="mutedNote">OneCLI URL: {dashboard.setupDraft.ONECLI_URL || 'Unset'}</p>
+          <p className="mutedNote">
+            Signal RPC: {dashboard.setupDraft.SIGNAL_RPC_URL || 'Unset'}
+          </p>
+          <p className="mutedNote">
+            Google Contacts source:{' '}
+            {dashboard.providers.googleContactsAvailable
+              ? dashboard.providers.googleContactsSource
+              : 'offline'}
+          </p>
+        </CCardBody>
+      </CCard>
+    );
+  }
+
   return (
     <CCard className="sidebarCard">
       <CCardHeader className="sidebarCardHeader">

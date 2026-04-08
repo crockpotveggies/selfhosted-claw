@@ -2,6 +2,7 @@ import type { AdminTab } from '../admin/types';
 import { ContactsPage } from '../pages/ContactsPage';
 import { PersonalityPage } from '../pages/PersonalityPage';
 import { PolicyPage } from '../pages/PolicyPage';
+import { ConnectionsPage } from '../pages/ConnectionsPage';
 import { ToolsPage } from '../pages/ToolsPage';
 import { SkillsPage } from '../pages/SkillsPage';
 import { ApprovalsPage } from '../pages/ApprovalsPage';
@@ -15,6 +16,8 @@ export function PageContent(props: { activeTab: AdminTab }) {
       return <PersonalityPage />;
     case 'policy':
       return <PolicyPage />;
+    case 'connections':
+      return <ConnectionsPage />;
     case 'tools':
       return <ToolsPage />;
     case 'skills':

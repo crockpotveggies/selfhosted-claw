@@ -5,6 +5,7 @@ export type AdminTab =
   | 'contacts'
   | 'personality'
   | 'policy'
+  | 'connections'
   | 'tools'
   | 'skills'
   | 'approvals'
