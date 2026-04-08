@@ -117,7 +117,7 @@ const OPENAI_CONTEXT_WINDOW = Math.max(
 const IPC_RESPONSE_POLL_INTERVAL = 300; // ms
 const IPC_RESPONSE_TIMEOUT = 30_000; // 30s
 const SCRIPT_TIMEOUT_MS = 30_000;
-const MAX_TOOL_ROUNDS = 8;
+const MAX_TOOL_ROUNDS = 15;
 const MAX_TOOL_OUTPUT_CHARS = 16_000;
 const MAX_HISTORY_KEEP_MESSAGES = 16;
 const MAX_GROUP_MEMORY_CHARS = 2_000;
@@ -142,6 +142,34 @@ function truncate(text: string, maxChars: number = MAX_TOOL_OUTPUT_CHARS): strin
 function truncateMemory(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n...[memory truncated: ${text.length - maxChars} more chars]`;
+}
+
+/** Convert HTML to readable plain text by stripping scripts, styles, tags, and collapsing whitespace. */
+function htmlToText(html: string): string {
+  return html
+    // Remove script/style blocks entirely
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    // Remove HTML comments
+    .replace(/<!--[\s\S]*?-->/g, '')
+    // Convert common block elements to newlines
+    .replace(/<\/?(p|div|br|hr|h[1-6]|li|tr|blockquote|section|article|header|footer|nav|aside|main)[^>]*>/gi, '\n')
+    // Strip remaining tags
+    .replace(/<[^>]+>/g, '')
+    // Decode common HTML entities
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#\d+;/g, '')
+    // Collapse whitespace
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /** Normalize a value that should be a string array but may arrive as a
@@ -1174,7 +1202,7 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
     },
   },
   web_fetch: {
-    description: 'Fetch a URL and return the response body as text.',
+    description: 'Fetch a URL and return the response body as readable text. HTML pages are automatically converted to plain text.',
     parameters: {
       type: 'object',
       properties: {
@@ -1189,15 +1217,22 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
       const maxChars = Math.max(500, Math.min(30_000, Number(args.max_chars) || 10_000));
       const response = await fetch(url, {
         headers: {
-          'User-Agent': 'NanoClaw/1.0',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
       });
-      const text = truncate(await response.text(), maxChars);
+      let body = await response.text();
+      const contentType = response.headers.get('content-type') || '';
+      // Extract readable text from HTML
+      if (contentType.includes('html') || body.trimStart().startsWith('<!') || body.trimStart().startsWith('<html')) {
+        body = htmlToText(body);
+      }
+      const text = truncate(body, maxChars);
       return `status: ${response.status}\nurl: ${response.url}\n\n${text}`;
     },
   },
   web_search: {
-    description: 'Search the web and return a short list of results.',
+    description: 'Search the web and return a short list of results with titles, URLs, and snippets.',
     parameters: {
       type: 'object',
       properties: {
@@ -1215,22 +1250,42 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
         `${WEB_SEARCH_ENDPOINT}?q=${encodeURIComponent(query)}`,
         {
           headers: {
-            'User-Agent': 'NanoClaw/1.0',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
           },
         },
       );
       const html = await response.text();
       const results: string[] = [];
+      // Extract result blocks: title link + snippet
       const anchorPattern =
         /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gi;
+      const snippetPattern =
+        /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)<\/a>/gis;
+      // Collect all snippets
+      const snippets: string[] = [];
+      let snippetMatch: RegExpExecArray | null;
+      while ((snippetMatch = snippetPattern.exec(html))) {
+        snippets.push(snippetMatch[1].replace(/<[^>]+>/g, '').trim());
+      }
       let match: RegExpExecArray | null;
+      let idx = 0;
       while ((match = anchorPattern.exec(html)) && results.length < maxResults) {
-        const href = match[1]
-          .replace(/&amp;/g, '&')
-          .replace(/^\/l\/\?kh=-1&uddg=/, '');
+        let href = match[1].replace(/&amp;/g, '&');
+        // Extract real URL from DuckDuckGo redirect
+        const uddgMatch = href.match(/[?&]uddg=([^&]+)/);
+        if (uddgMatch) {
+          href = decodeURIComponent(uddgMatch[1]);
+        } else if (href.startsWith('//')) {
+          href = 'https:' + href;
+        }
         const title = match[2].replace(/<[^>]+>/g, '').trim();
-        if (!title) continue;
-        results.push(`${results.length + 1}. ${title}\n${decodeURIComponent(href)}`);
+        if (!title) { idx++; continue; }
+        const snippet = snippets[idx] || '';
+        const entry = snippet
+          ? `${results.length + 1}. ${title}\n${href}\n${snippet}`
+          : `${results.length + 1}. ${title}\n${href}`;
+        results.push(entry);
+        idx++;
       }
       if (results.length === 0) {
         return truncate(html.replace(/<[^>]+>/g, ' '), 4000);
