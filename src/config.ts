@@ -163,10 +163,15 @@ export const DEFAULT_TRIGGER = `@${ASSISTANT_NAME}`;
 
 export function getTriggerPattern(trigger?: string): RegExp {
   const normalizedTrigger = trigger?.trim();
-  return buildTriggerPattern(normalizedTrigger || DEFAULT_TRIGGER);
+  if (!normalizedTrigger) {
+    // Default trigger: match "@Name" or bare "Name" at the start of message
+    const name = escapeRegex(ASSISTANT_NAME.trim());
+    return new RegExp(`^@?${name}\\b`, 'i');
+  }
+  return buildTriggerPattern(normalizedTrigger);
 }
 
-export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
+export const TRIGGER_PATTERN = getTriggerPattern();
 
 // Timezone for scheduled tasks, message formatting, etc.
 // Validates each candidate is a real IANA identifier before accepting.
