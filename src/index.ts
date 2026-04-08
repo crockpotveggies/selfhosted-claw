@@ -332,16 +332,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     'Processing messages',
   );
 
+  // Determine if the controller triggered this container session.
+  // Used for: (1) IPC calendar access flag, (2) container tool gating.
+  const controllerSender = CONTROL_SIGNAL_JID
+    ? CONTROL_SIGNAL_JID.replace(/^signal:user:/, '').trim()
+    : '';
+  const controllerTriggered =
+    isMainGroup ||
+    (!!controllerSender &&
+      missedMessages.some((m) => m.sender === controllerSender));
+
   // Grant calendar access when the controller is the one who sent messages
   // in this group. The IPC handler checks for this flag file.
   if (!isMainGroup && CONTROL_SIGNAL_JID) {
-    const controllerSender = CONTROL_SIGNAL_JID.replace(
-      /^signal:user:/,
-      '',
-    ).trim();
-    const controllerTriggered =
-      controllerSender &&
-      missedMessages.some((m) => m.sender === controllerSender);
     const flagDir = path.join(DATA_DIR, 'ipc', group.folder);
     const flagPath = path.join(flagDir, 'controller_access');
     try {
@@ -375,7 +378,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, controllerTriggered, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -479,6 +482,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  controllerTriggered: boolean,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
@@ -518,6 +522,7 @@ async function runAgent(
         isMain,
         assistantName: ASSISTANT_NAME,
         controlSignalJid: CONTROL_SIGNAL_JID || undefined,
+        controllerTriggered,
         calendarAvailability:
           controlServiceRef?.getCalendarAvailability() || undefined,
       },

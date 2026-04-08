@@ -50,6 +50,8 @@ export interface ContainerInput {
   assistantName?: string;
   script?: string;
   controlSignalJid?: string;
+  /** True when the controller sent the message(s) that triggered this container. */
+  controllerTriggered?: boolean;
   /** Calendar availability policy injected from admin settings. */
   calendarAvailability?: {
     timezone: string;
