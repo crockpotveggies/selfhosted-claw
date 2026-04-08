@@ -144,6 +144,31 @@ function truncateMemory(text: string, maxChars: number): string {
   return `${text.slice(0, maxChars)}\n...[memory truncated: ${text.length - maxChars} more chars]`;
 }
 
+/** Normalize a value that should be a string array but may arrive as a
+ *  JSON-encoded string (common with local models that stringify arrays
+ *  inside tool call arguments). Returns undefined if the value is falsy. */
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!value) return undefined;
+  if (Array.isArray(value)) return value.map((e: unknown) => String(e));
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return parsed.map((e: unknown) => String(e));
+      } catch {
+        // Not valid JSON array — treat as single-element value
+      }
+    }
+    // Single email or comma-separated list
+    if (trimmed.includes(',')) {
+      return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    if (trimmed.includes('@')) return [trimmed];
+  }
+  return undefined;
+}
+
 async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -1696,9 +1721,7 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
           end: String(args.end),
           description: args.description ? String(args.description) : undefined,
           location: args.location ? String(args.location) : undefined,
-          attendees: Array.isArray(args.attendees)
-            ? args.attendees.map((e: unknown) => String(e))
-            : undefined,
+          attendees: normalizeStringArray(args.attendees),
           groupFolder: ctx.containerInput.groupFolder,
         },
         requestId,
@@ -1761,9 +1784,7 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
           end: args.end ? String(args.end) : undefined,
           description: args.description !== undefined ? String(args.description) : undefined,
           location: args.location !== undefined ? String(args.location) : undefined,
-          attendees: Array.isArray(args.attendees)
-            ? args.attendees.map((e: unknown) => String(e))
-            : undefined,
+          attendees: normalizeStringArray(args.attendees),
           groupFolder: ctx.containerInput.groupFolder,
         },
         requestId,
