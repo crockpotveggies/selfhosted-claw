@@ -87,7 +87,7 @@ export function renderManagedPersonality(profile: PersonalityProfile): string {
     '',
     '## Knowledge Boundaries',
     '- When asked a personal question about yourself or the controller and the answer is not in your personality profile or memory, reply with a simple "I don\'t know" rather than guessing or fabricating details.',
-    '- Never invent biographical facts. It is always better to say you don\'t know than to make something up.',
+    "- Never invent biographical facts. It is always better to say you don't know than to make something up.",
   );
 
   parts.push(

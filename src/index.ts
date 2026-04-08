@@ -369,10 +369,27 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           );
         }
       }
-      const text = [parsed.visibleText, ...statusLines]
-        .filter(Boolean)
-        .join('\n\n')
-        .trim();
+      // For non-main (external) chats, route directive status messages
+      // (approval requests, send confirmations) to the controller, not the
+      // external contact.
+      const isExternalChat = !group.isMain;
+      const statusText = statusLines.filter(Boolean).join('\n\n').trim();
+      if (isExternalChat && statusText && CONTROL_SIGNAL_JID) {
+        const controlChannel = findChannel(channels, CONTROL_SIGNAL_JID);
+        if (controlChannel) {
+          await controlChannel.sendMessage(
+            CONTROL_SIGNAL_JID,
+            `[${group.name}] ${statusText}`,
+          );
+        }
+      }
+
+      const text = isExternalChat
+        ? (parsed.visibleText || '').trim()
+        : [parsed.visibleText, ...statusLines]
+            .filter(Boolean)
+            .join('\n\n')
+            .trim();
       if (text) {
         // Brief typing indicator so the reply feels natural
         await channel.setTyping?.(chatJid, true);
@@ -1269,10 +1286,7 @@ async function main(): Promise<void> {
             );
           })
           .catch((err) => {
-            logger.error(
-              { err, chatJid },
-              'Natural approval handling error',
-            );
+            logger.error({ err, chatJid }, 'Natural approval handling error');
             // Still store the message even if approval handling fails
             storeInboundMessage(chatJid, msg).catch((storeErr) =>
               logger.error(

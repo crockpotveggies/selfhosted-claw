@@ -1,5 +1,6 @@
 import {
   cilCheckCircle,
+  cilCode,
   cilDescription,
   cilNotes,
   cilPeople,
@@ -14,6 +15,7 @@ export const ADMIN_PATHS = {
   personality: '/personality',
   policy: '/policy',
   tools: '/tools',
+  skills: '/skills',
   approvals: '/approvals',
   audit: '/audit',
   setup: '/setup',
@@ -53,6 +55,13 @@ export const ADMIN_TABS: Array<{
     label: 'Tools',
     description: 'Registry-backed control actions and integrations',
     icon: cilNotes,
+  },
+  {
+    id: 'skills',
+    path: ADMIN_PATHS.skills,
+    label: 'Skills',
+    description: 'Container skill definitions',
+    icon: cilCode,
   },
   {
     id: 'approvals',

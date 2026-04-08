@@ -35,7 +35,7 @@ function sendJson(
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers':
       'Content-Type, X-Admin-Token, Authorization',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
   });
   res.end(JSON.stringify(payload));
 }
@@ -70,10 +70,34 @@ function sendUnauthorized(res: http.ServerResponse): void {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers':
       'Content-Type, X-Admin-Token, Authorization',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
     'WWW-Authenticate': 'Basic realm="NanoClaw Admin", charset="UTF-8"',
   });
   res.end(JSON.stringify({ error: 'admin_ui_auth_required' }));
+}
+
+function parseSkillFrontmatter(raw: string): {
+  name: string;
+  description: string;
+  body: string;
+} {
+  let name = '';
+  let description = '';
+  let body = raw;
+  if (raw.startsWith('---')) {
+    const endIdx = raw.indexOf('---', 3);
+    if (endIdx !== -1) {
+      const frontmatter = raw.slice(3, endIdx);
+      body = raw.slice(endIdx + 3).trim();
+      for (const line of frontmatter.split('\n')) {
+        const match = line.match(/^(\w+):\s*(.*)$/);
+        if (!match) continue;
+        if (match[1] === 'name') name = match[2].trim();
+        if (match[1] === 'description') description = match[2].trim();
+      }
+    }
+  }
+  return { name, description, body };
 }
 
 async function readBody(req: http.IncomingMessage): Promise<string> {
@@ -540,6 +564,127 @@ export function startAdminServer(
           { actorIdentity: 'ui:local-admin', source: 'ui' },
         );
         sendJson(res, 200, { result });
+        return;
+      }
+
+      // ── Skills CRUD ──────────────────────────────────────────────
+      const skillsDir = path.resolve(process.cwd(), 'container', 'skills');
+
+      if (req.method === 'GET' && url.pathname === '/api/admin/skills') {
+        const skills: { name: string; description: string }[] = [];
+        if (fs.existsSync(skillsDir)) {
+          for (const entry of fs.readdirSync(skillsDir, {
+            withFileTypes: true,
+          })) {
+            if (!entry.isDirectory()) continue;
+            const skillFile = path.join(skillsDir, entry.name, 'SKILL.md');
+            if (!fs.existsSync(skillFile)) continue;
+            const raw = fs.readFileSync(skillFile, 'utf-8');
+            const { name, description } = parseSkillFrontmatter(raw);
+            skills.push({ name: name || entry.name, description });
+          }
+        }
+        sendJson(res, 200, { skills });
+        return;
+      }
+
+      if (
+        req.method === 'GET' &&
+        url.pathname.startsWith('/api/admin/skills/')
+      ) {
+        const skillName = decodeURIComponent(
+          url.pathname.slice('/api/admin/skills/'.length),
+        );
+        if (
+          !skillName ||
+          skillName.includes('..') ||
+          skillName.includes('/') ||
+          skillName.includes('\\')
+        ) {
+          sendJson(res, 400, { error: 'invalid_skill_name' });
+          return;
+        }
+        const skillFile = path.join(skillsDir, skillName, 'SKILL.md');
+        if (!fs.existsSync(skillFile)) {
+          sendJson(res, 404, { error: 'skill_not_found' });
+          return;
+        }
+        const raw = fs.readFileSync(skillFile, 'utf-8');
+        const { name, description, body } = parseSkillFrontmatter(raw);
+        sendJson(res, 200, {
+          skill: { name: name || skillName, description, content: body },
+        });
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname.startsWith('/api/admin/skills/')
+      ) {
+        const skillName = decodeURIComponent(
+          url.pathname.slice('/api/admin/skills/'.length),
+        );
+        if (
+          !skillName ||
+          skillName.includes('..') ||
+          skillName.includes('/') ||
+          skillName.includes('\\')
+        ) {
+          sendJson(res, 400, { error: 'invalid_skill_name' });
+          return;
+        }
+        const bodyText = await readBody(req);
+        const data = JSON.parse(bodyText) as {
+          description?: string;
+          content?: string;
+        };
+        const desc = (data.description || '').trim();
+        const content = (data.content || '').trim();
+        const fileContent = [
+          '---',
+          `name: ${skillName}`,
+          `description: ${desc}`,
+          '---',
+          '',
+          content,
+          '',
+        ].join('\n');
+        const dir = path.join(skillsDir, skillName);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'SKILL.md'), fileContent);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (
+        req.method === 'DELETE' &&
+        url.pathname.startsWith('/api/admin/skills/')
+      ) {
+        const skillName = decodeURIComponent(
+          url.pathname.slice('/api/admin/skills/'.length),
+        );
+        if (
+          !skillName ||
+          skillName.includes('..') ||
+          skillName.includes('/') ||
+          skillName.includes('\\')
+        ) {
+          sendJson(res, 400, { error: 'invalid_skill_name' });
+          return;
+        }
+        const skillFile = path.join(skillsDir, skillName, 'SKILL.md');
+        if (!fs.existsSync(skillFile)) {
+          sendJson(res, 404, { error: 'skill_not_found' });
+          return;
+        }
+        fs.unlinkSync(skillFile);
+        // Remove directory if empty
+        try {
+          fs.rmdirSync(path.join(skillsDir, skillName));
+        } catch {
+          /* directory not empty, that's fine */
+        }
+        sendJson(res, 200, { ok: true });
         return;
       }
 

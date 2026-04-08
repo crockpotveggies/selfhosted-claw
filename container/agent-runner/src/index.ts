@@ -1907,6 +1907,8 @@ async function runConversationTurn(
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     let response: ChatCompletionResult;
+    let trimAttempts = 0;
+    const MAX_TRIM_ATTEMPTS = 10;
     while (true) {
       const messages = buildConversationMessages(systemPrompt, workingHistory);
       try {
@@ -1917,6 +1919,13 @@ async function runConversationTurn(
         const limit = parseContextLimitError(message);
         if (!limit) throw err;
 
+        trimAttempts++;
+        if (trimAttempts > MAX_TRIM_ATTEMPTS) {
+          log(`Context trimming failed after ${MAX_TRIM_ATTEMPTS} attempts, giving up`);
+          throw err;
+        }
+
+        const prevLength = workingHistory.length;
         const trimmedHistory = trimHistoryToFitContext(
           systemPrompt,
           workingHistory,
@@ -1924,8 +1933,16 @@ async function runConversationTurn(
         );
         if (!trimmedHistory) throw err;
 
+        // If trimming didn't reduce messages, we're stuck — bail out
+        if (trimmedHistory.length >= prevLength) {
+          log(
+            `Context too large (${limit.inputTokens}/${limit.maxContextTokens}) and trimming could not reduce history (${prevLength} messages); system prompt may exceed context limit`,
+          );
+          throw err;
+        }
+
         log(
-          `Context too large (${limit.inputTokens}/${limit.maxContextTokens}); trimming history from ${workingHistory.length} to ${trimmedHistory.length} messages and retrying`,
+          `Context too large (${limit.inputTokens}/${limit.maxContextTokens}); trimming history from ${prevLength} to ${trimmedHistory.length} messages and retrying`,
         );
         workingHistory.splice(0, workingHistory.length, ...trimmedHistory);
       }

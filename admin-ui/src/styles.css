@@ -634,3 +634,75 @@ pre {
     font-size: 1.35rem;
   }
 }
+
+/* ── Skills Page ── */
+
+.skillsLayout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 1.25rem;
+}
+
+@media (max-width: 767.98px) {
+  .skillsLayout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.skillListPanel {
+  align-self: start;
+}
+
+.skillList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.skillListItem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.skillListItem.active {
+  background: rgba(88, 126, 255, 0.15);
+  border-color: rgba(88, 126, 255, 0.35);
+}
+
+.skillEditorPanel {
+  min-height: 420px;
+}
+
+.skillEditorFields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.skillContentEditor {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  min-height: 350px;
+  resize: vertical;
+}
+
+.btnPrimary {
+  background: rgba(88, 126, 255, 0.18);
+  border-color: rgba(88, 126, 255, 0.35);
+  color: #8ab4f8;
+}
+
+.btnDanger {
+  background: rgba(255, 80, 80, 0.14);
+  border-color: rgba(255, 80, 80, 0.3);
+  color: #ff8a8a;
+}

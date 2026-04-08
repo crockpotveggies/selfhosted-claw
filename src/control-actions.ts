@@ -1911,8 +1911,11 @@ export class ControlActionService {
     if (params.attendees?.length) {
       event.attendees = params.attendees.map((email) => ({ email }));
     }
+    const sendNotifications = params.attendees?.length
+      ? '?sendNotifications=true'
+      : '';
     return this.calendarFetch(
-      `/calendar/v3/calendars/${encodeURIComponent(params.calendarId)}/events`,
+      `/calendar/v3/calendars/${encodeURIComponent(params.calendarId)}/events${sendNotifications}`,
       { method: 'POST', body: JSON.stringify(event) },
     );
   }
@@ -1937,8 +1940,11 @@ export class ControlActionService {
     if (params.attendees !== undefined) {
       patch.attendees = params.attendees.map((email) => ({ email }));
     }
+    const sendNotifications = params.attendees !== undefined
+      ? '?sendNotifications=true'
+      : '';
     return this.calendarFetch(
-      `/calendar/v3/calendars/${encodeURIComponent(params.calendarId)}/events/${encodeURIComponent(params.eventId)}`,
+      `/calendar/v3/calendars/${encodeURIComponent(params.calendarId)}/events/${encodeURIComponent(params.eventId)}${sendNotifications}`,
       { method: 'PATCH', body: JSON.stringify(patch) },
     );
   }

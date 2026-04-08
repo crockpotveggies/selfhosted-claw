@@ -22,6 +22,8 @@ import type {
   SetupStatusResponse,
   SignalProfileSettings,
   SignalProvisionMode,
+  SkillDetailView,
+  SkillView,
   ToastMessage,
   ToolRegistryItem,
   VerifiedIdentity,
@@ -101,6 +103,15 @@ export function useAdminDashboard() {
     assistantSignalIdentity: '',
   });
 
+  const [selectedSkillName, setSelectedSkillName] = useState<string | null>(
+    null,
+  );
+  const [skillEditorForm, setSkillEditorForm] = useState({
+    name: '',
+    description: '',
+    content: '',
+  });
+
   const contactsState = useJson(`contacts:${contactStatusFilter}`, async () => {
     const query = contactStatusFilter ? `?status=${contactStatusFilter}` : '';
     return apiFetch<{ contacts: ContactView[] }>(`/api/admin/contacts${query}`);
@@ -158,6 +169,18 @@ export function useAdminDashboard() {
   const auditState = useJson('audit', () =>
     apiFetch<{ audit: AuditRecord[] }>('/api/admin/audit?limit=50'),
   );
+  const skillsState = useJson('skills', () =>
+    apiFetch<{ skills: SkillView[] }>('/api/admin/skills'),
+  );
+  const skillDetailState = useJson(
+    `skill:${selectedSkillName}`,
+    async () =>
+      selectedSkillName
+        ? apiFetch<{ skill: SkillDetailView }>(
+            `/api/admin/skills/${encodeURIComponent(selectedSkillName)}`,
+          )
+        : ({ skill: null } as unknown as { skill: SkillDetailView }),
+  );
 
   useEffect(() => {
     if (contactsState.data?.contacts.length && !selectedContactId) {
@@ -176,6 +199,16 @@ export function useAdminDashboard() {
       });
     }
   }, [personalityState.data?.profile]);
+
+  useEffect(() => {
+    if (skillDetailState.data?.skill) {
+      setSkillEditorForm({
+        name: skillDetailState.data.skill.name,
+        description: skillDetailState.data.skill.description,
+        content: skillDetailState.data.skill.content,
+      });
+    }
+  }, [skillDetailState.data?.skill]);
 
   useEffect(() => {
     if (calAvailLoaded) return;
@@ -326,6 +359,7 @@ export function useAdminDashboard() {
     providerState.error,
     pendingState.error,
     auditState.error,
+    skillsState.error,
   ]
     .filter(Boolean)
     .join(' | ');
@@ -346,6 +380,7 @@ export function useAdminDashboard() {
       providerState.refresh(),
       pendingState.refresh(),
       auditState.refresh(),
+      skillsState.refresh(),
     ]);
   };
 
@@ -580,6 +615,45 @@ export function useAdminDashboard() {
     }
   };
 
+  const saveSkill = async (
+    name: string,
+    description: string,
+    content: string,
+  ) => {
+    setActionError('');
+    try {
+      await apiFetch(`/api/admin/skills/${encodeURIComponent(name)}`, {
+        method: 'POST',
+        body: JSON.stringify({ description, content }),
+      });
+      await skillsState.refresh();
+      setSelectedSkillName(name);
+      await skillDetailState.refresh();
+      setToast({ kind: 'success', text: `Skill "${name}" saved.` });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Save failed';
+      setActionError(message);
+      setToast({ kind: 'error', text: message });
+    }
+  };
+
+  const deleteSkill = async (name: string) => {
+    setActionError('');
+    try {
+      await apiFetch(`/api/admin/skills/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      });
+      setSelectedSkillName(null);
+      setSkillEditorForm({ name: '', description: '', content: '' });
+      await skillsState.refresh();
+      setToast({ kind: 'success', text: `Skill "${name}" deleted.` });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Delete failed';
+      setActionError(message);
+      setToast({ kind: 'error', text: message });
+    }
+  };
+
   const saveCalendarAvailability = async () => {
     try {
       await apiFetch('/api/admin/policy/calendar-availability', {
@@ -700,6 +774,14 @@ export function useAdminDashboard() {
     verifiedState,
     addVerifiedIdentity,
     verifySignalRegistration,
+    deleteSkill,
+    saveSkill,
+    selectedSkillName,
+    setSelectedSkillName,
+    skillDetailState,
+    skillEditorForm,
+    setSkillEditorForm,
+    skillsState,
   };
 }
 

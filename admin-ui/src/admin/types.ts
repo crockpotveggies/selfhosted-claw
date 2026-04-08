@@ -6,8 +6,18 @@ export type AdminTab =
   | 'personality'
   | 'policy'
   | 'tools'
+  | 'skills'
   | 'approvals'
   | 'audit';
+
+export interface SkillView {
+  name: string;
+  description: string;
+}
+
+export interface SkillDetailView extends SkillView {
+  content: string;
+}
 
 export interface ContactView {
   identity: string;
