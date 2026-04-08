@@ -516,38 +516,6 @@ export class SignalChannel implements Channel {
     return Array.isArray(payload) ? payload : [];
   }
 
-  /**
-   * Send a read receipt to the message sender.
-   * In json-rpc mode, signal-cli has no REST endpoints — commands must be sent
-   * over the same WebSocket used for receiving messages.
-   */
-  private sendReadReceipt(
-    recipient: string,
-    timestamp: number,
-  ): void {
-    try {
-      const socket = this.receiveSocket;
-      if (!socket || socket.readyState !== WebSocket.OPEN) return;
-
-      socket.send(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'sendReceipt',
-          id: `receipt-${timestamp}`,
-          params: {
-            account: this.account,
-            recipient: formatUuidLike(recipient),
-            // signal-cli expects targetTimestamp as an array
-            targetTimestamp: [timestamp],
-            type: 'read',
-          },
-        }),
-      );
-    } catch {
-      // Best-effort — never break message flow for a receipt failure
-    }
-  }
-
   private async fetchWithContext(
     url: URL,
     init: RequestInit,
@@ -569,8 +537,8 @@ export class SignalChannel implements Channel {
       this.rpcUrl,
     );
     wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Automatically send read receipts for every received message
-    wsUrl.searchParams.set('send_read_receipts', 'true');
+    // Read receipts are handled at the signal-cli daemon level via
+    // --send-read-receipts flag (see scripts/signal-cli/enable-read-receipts.sh)
 
     await new Promise<void>((resolve, reject) => {
       const socket = new WebSocket(wsUrl);
@@ -642,19 +610,8 @@ export class SignalChannel implements Channel {
         parsed.isGroup,
       );
       this.opts.onMessage(parsed.chatJid, parsed.message);
-
-      // Send read receipt back to the sender (best-effort, fire-and-forget)
-      if (!parsed.message.is_from_me) {
-        const env = envelope as SignalEnvelope;
-        const senderIdentifier =
-          env.sourceNumber?.trim() ||
-          env.sourceUuid?.trim() ||
-          env.source?.trim();
-        const rawTs = env.dataMessage?.timestamp || env.timestamp;
-        if (senderIdentifier && rawTs) {
-          this.sendReadReceipt(senderIdentifier, Number(rawTs));
-        }
-      }
+      // Read receipts are sent automatically by signal-cli daemon
+      // via --send-read-receipts flag.
     }
   }
 }
