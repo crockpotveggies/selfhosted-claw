@@ -6,6 +6,7 @@ import { OneCLI } from '@onecli-sh/sdk';
 import {
   ASSISTANT_NAME,
   CONTROL_SIGNAL_JID,
+  DATA_DIR,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
@@ -330,6 +331,31 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     { group: group.name, messageCount: missedMessages.length },
     'Processing messages',
   );
+
+  // Grant calendar access when the controller is the one who sent messages
+  // in this group. The IPC handler checks for this flag file.
+  if (!isMainGroup && CONTROL_SIGNAL_JID) {
+    const controllerSender = CONTROL_SIGNAL_JID.replace(
+      /^signal:user:/,
+      '',
+    ).trim();
+    const controllerTriggered =
+      controllerSender &&
+      missedMessages.some((m) => m.sender === controllerSender);
+    const flagDir = path.join(DATA_DIR, 'ipc', group.folder);
+    const flagPath = path.join(flagDir, 'controller_access');
+    try {
+      if (controllerTriggered) {
+        fs.mkdirSync(flagDir, { recursive: true });
+        fs.writeFileSync(flagPath, '');
+      } else {
+        // Remove stale flag if controller didn't send the triggering messages
+        if (fs.existsSync(flagPath)) fs.unlinkSync(flagPath);
+      }
+    } catch {
+      // best-effort
+    }
+  }
 
   // Track idle timer for closing stdin when agent is idle
   let idleTimer: ReturnType<typeof setTimeout> | null = null;

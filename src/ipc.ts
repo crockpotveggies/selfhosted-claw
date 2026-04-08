@@ -3,7 +3,12 @@ import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
-import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
+import {
+  CONTROL_SIGNAL_JID,
+  DATA_DIR,
+  IPC_POLL_INTERVAL,
+  TIMEZONE,
+} from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -194,14 +199,29 @@ export function startIpcWatcher(deps: IpcDeps): void {
 
     const registeredGroups = deps.registeredGroups();
 
-    // Build folder→isMain lookup from registered groups
+    // Build folder→isMain and folder→calendarAccess lookups from registered groups.
+    // Calendar access is granted to main groups AND groups where the controller
+    // triggered the current container session (flag file written by host).
     const folderIsMain = new Map<string, boolean>();
+    const folderCalendarAccess = new Map<string, boolean>();
     for (const group of Object.values(registeredGroups)) {
-      if (group.isMain) folderIsMain.set(group.folder, true);
+      if (group.isMain) {
+        folderIsMain.set(group.folder, true);
+        folderCalendarAccess.set(group.folder, true);
+      }
     }
 
     for (const sourceGroup of groupFolders) {
       const isMain = folderIsMain.get(sourceGroup) === true;
+      // Check for controller-access flag written by the host when spawning the container
+      if (
+        !folderCalendarAccess.has(sourceGroup) &&
+        fs.existsSync(
+          path.join(ipcBaseDir, sourceGroup, 'controller_access'),
+        )
+      ) {
+        folderCalendarAccess.set(sourceGroup, true);
+      }
       const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
       const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
 
@@ -308,7 +328,15 @@ export function startIpcWatcher(deps: IpcDeps): void {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               // Pass source group identity to processTaskIpc for authorization
-              await processTaskIpc(data, sourceGroup, isMain, deps);
+              const hasCalendarAccess =
+                folderCalendarAccess.get(sourceGroup) === true;
+              await processTaskIpc(
+                data,
+                sourceGroup,
+                isMain,
+                deps,
+                hasCalendarAccess,
+              );
               fs.unlinkSync(filePath);
             } catch (err) {
               logger.error(
@@ -380,6 +408,7 @@ export async function processTaskIpc(
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
   deps: IpcDeps,
+  calendarAccess: boolean = isMain, // Defaults to isMain; set true when controller triggered
 ): Promise<void> {
   const registeredGroups = deps.registeredGroups();
 
@@ -893,8 +922,8 @@ export async function processTaskIpc(
             status?: string;
           }[];
         };
-        // Privacy: non-main groups only see free/busy, not event details
-        if (!isMain && result && Array.isArray(result.items)) {
+        // Privacy: groups without calendar access only see free/busy, not event details
+        if (!calendarAccess && result && Array.isArray(result.items)) {
           result.items = result.items.map((item) => ({
             start: item.start,
             end: item.end,
@@ -936,8 +965,7 @@ export async function processTaskIpc(
 
     case 'calendar_get_event': {
       if (!data.requestId) break;
-      // Only main group can view full event details
-      if (!isMain) {
+      if (!calendarAccess) {
         writeIpcResponse(sourceGroup, data.requestId, {
           error:
             'Calendar event details are only available from the control chat.',
@@ -966,7 +994,7 @@ export async function processTaskIpc(
 
     case 'calendar_create_event': {
       if (!data.requestId) break;
-      if (!isMain) {
+      if (!calendarAccess) {
         writeIpcResponse(sourceGroup, data.requestId, {
           error: 'Calendar events can only be created from the control chat.',
         });
@@ -1008,7 +1036,7 @@ export async function processTaskIpc(
 
     case 'calendar_update_event': {
       if (!data.requestId) break;
-      if (!isMain) {
+      if (!calendarAccess) {
         writeIpcResponse(sourceGroup, data.requestId, {
           error: 'Calendar events can only be modified from the control chat.',
         });
@@ -1051,7 +1079,7 @@ export async function processTaskIpc(
 
     case 'calendar_delete_event': {
       if (!data.requestId) break;
-      if (!isMain) {
+      if (!calendarAccess) {
         writeIpcResponse(sourceGroup, data.requestId, {
           error: 'Calendar events can only be deleted from the control chat.',
         });
