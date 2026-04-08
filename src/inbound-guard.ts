@@ -26,9 +26,18 @@ function normalise(text: string): string {
   let s = text.replace(/[\u200B-\u200F\u2028-\u202F\uFEFF\u00AD]/g, '');
   // Cyrillic homoglyphs
   const homoglyphs: Record<string, string> = {
-    '\u0430': 'a', '\u0435': 'e', '\u043E': 'o', '\u0440': 'p',
-    '\u0441': 'c', '\u0443': 'y', '\u0445': 'x', '\u0456': 'i',
-    '\u0455': 's', '\u0442': 't', '\u043C': 'm', '\u043A': 'k',
+    '\u0430': 'a',
+    '\u0435': 'e',
+    '\u043E': 'o',
+    '\u0440': 'p',
+    '\u0441': 'c',
+    '\u0443': 'y',
+    '\u0445': 'x',
+    '\u0456': 'i',
+    '\u0455': 's',
+    '\u0442': 't',
+    '\u043C': 'm',
+    '\u043A': 'k',
   };
   s = s.replace(/./g, (ch) => homoglyphs[ch] || ch);
   return s.toLowerCase();

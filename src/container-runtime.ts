@@ -32,7 +32,10 @@ export function stopContainer(name: string): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) {
     throw new Error(`Invalid container name: ${name}`);
   }
-  execSync(`${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`, { stdio: 'pipe', windowsHide: true });
+  execSync(`${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`, {
+    stdio: 'pipe',
+    windowsHide: true,
+  });
 }
 
 /** Ensure the container runtime is running, starting it if needed. */
@@ -122,7 +125,10 @@ export function cleanupOrphans(): void {
       .filter(Boolean);
     for (const name of deadNames) {
       try {
-        execSync(`${CONTAINER_RUNTIME_BIN} rm ${name}`, { stdio: 'pipe', windowsHide: true });
+        execSync(`${CONTAINER_RUNTIME_BIN} rm ${name}`, {
+          stdio: 'pipe',
+          windowsHide: true,
+        });
       } catch {
         /* already removed */
       }
