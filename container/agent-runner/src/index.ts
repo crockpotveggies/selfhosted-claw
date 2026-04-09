@@ -6,6 +6,7 @@
 
 import { execFile } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
+import { resolve as dnsResolve } from 'dns/promises';
 import fs from 'fs';
 import path from 'path';
 
@@ -126,6 +127,155 @@ const MAX_HISTORY_KEEP_MESSAGES = 16;
 const MAX_GROUP_MEMORY_CHARS = 2_000;
 const MAX_SHARED_MEMORY_CHARS = 1_200;
 const WEB_SEARCH_ENDPOINT = 'https://duckduckgo.com/html/';
+
+// ── Security: SSRF protection ──────────────────────────────────────────────
+const MAX_FETCH_BYTES = 2 * 1024 * 1024; // 2 MB raw body cap
+const MAX_REDIRECTS = 5;
+const ALLOWED_SCHEMES = new Set(['http:', 'https:']);
+
+function isBlockedIP(ip: string): boolean {
+  if (ip === '::1' || ip === '0.0.0.0') return true;
+  const lower = ip.toLowerCase();
+  // IPv4-mapped IPv6  (::ffff:127.0.0.1)
+  const v4Mapped = lower.startsWith('::ffff:') ? lower.slice(7) : null;
+  const check = v4Mapped || lower;
+  if (
+    check.startsWith('127.') ||
+    check.startsWith('0.') ||
+    check.startsWith('10.') ||
+    check.startsWith('169.254.') ||
+    check.startsWith('192.168.')
+  ) return true;
+  // 172.16.0.0 – 172.31.255.255
+  const m172 = check.match(/^172\.(\d+)\./);
+  if (m172) {
+    const second = parseInt(m172[1], 10);
+    if (second >= 16 && second <= 31) return true;
+  }
+  // IPv6 unique-local (fc00::/7) and link-local (fe80::/10)
+  if (lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80')) return true;
+  return false;
+}
+
+async function validateUrl(raw: string): Promise<URL> {
+  const url = new URL(raw); // throws on invalid URLs
+  if (!ALLOWED_SCHEMES.has(url.protocol)) {
+    throw new Error(`Blocked URL scheme: ${url.protocol}`);
+  }
+  // Reject numeric/IP-literal hosts directly
+  if (url.hostname.match(/^\d+\.\d+\.\d+\.\d+$/) || url.hostname.startsWith('[')) {
+    if (isBlockedIP(url.hostname.replace(/^\[|\]$/g, ''))) {
+      throw new Error('Blocked: URL points to a private/reserved IP address');
+    }
+  }
+  // DNS resolve and check every returned address
+  try {
+    const addresses = await dnsResolve(url.hostname);
+    for (const addr of addresses) {
+      if (isBlockedIP(addr)) {
+        throw new Error(`Blocked: ${url.hostname} resolves to a private/reserved IP address`);
+      }
+    }
+  } catch (err) {
+    // dnsResolve failure (ENOTFOUND etc.) — let fetch() handle it naturally
+    if (err instanceof Error && err.message.startsWith('Blocked:')) throw err;
+  }
+  return url;
+}
+
+/**
+ * Fetch a URL with SSRF protection: validates every redirect hop and caps
+ * the response body at MAX_FETCH_BYTES.
+ */
+async function safeFetch(
+  url: string,
+  opts: { headers?: Record<string, string>; maxBytes?: number } = {},
+): Promise<{ response: Response; body: string }> {
+  let current = await validateUrl(url);
+  const maxBytes = opts.maxBytes ?? MAX_FETCH_BYTES;
+  let response!: Response;
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    response = await fetch(current.toString(), {
+      redirect: 'manual',
+      headers: opts.headers || {},
+    });
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (!location) break;
+      current = await validateUrl(new URL(location, current).toString());
+      continue;
+    }
+    break;
+  }
+
+  // Stream body with size cap
+  const reader = response.body?.getReader();
+  if (!reader) return { response, body: '' };
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done || !value) break;
+    totalBytes += value.length;
+    if (totalBytes > maxBytes) {
+      reader.cancel();
+      chunks.push(value.slice(0, value.length - (totalBytes - maxBytes)));
+      break;
+    }
+    chunks.push(value);
+  }
+  const body = Buffer.concat(chunks).toString('utf-8');
+  return { response, body };
+}
+
+// ── Security: Tool output sanitisation ─────────────────────────────────────
+const TOOL_OUTPUT_INJECTION_PATTERNS = [
+  /\bignore (all|any|previous|prior|above|system) (instructions|rules|prompts|context)\b/i,
+  /\bdisregard (all|any|previous|prior|above) (instructions|rules|prompts)\b/i,
+  /\bforget (all|any|previous|prior|your) (instructions|rules|prompts|context)\b/i,
+  /\b(system prompt|developer message|hidden prompt|system message)\b/i,
+  /\b(reveal|print|dump|show|output|repeat|echo) (your |the |)(system prompt|instructions|rules)\b/i,
+  /\bact as\b/i,
+  /\bpretend (to be|you are)\b/i,
+  /\b(jailbreak|dan mode|developer mode|god mode)\b/i,
+  /\boverride\b.*\b(safety|policy|guardrails?)\b/i,
+  /\b(bypass|circumvent|disable)\b.*\b(safety|filter|guard|restriction)\b/i,
+  /\btool.?call\b/i,
+  /\bfunction.?call\b/i,
+  /<\s*(system|assistant|developer|function|tool|internal|thinking)\b/i,
+  /\[inst\]/i,
+  /\[system\]/i,
+  /<\|im_start\|>/i,
+  /<\|im_end\|>/i,
+  /### (system|instruction|human|assistant):/i,
+];
+
+function sanitiseToolOutput(text: string): string {
+  const lines = text.split('\n');
+  let redacted = 0;
+  const cleaned = lines.map((line) => {
+    const lower = line.toLowerCase()
+      .replace(/[\u200B-\u200F\u2028-\u202F\uFEFF\u00AD]/g, '');
+    if (TOOL_OUTPUT_INJECTION_PATTERNS.some((p) => p.test(lower))) {
+      redacted++;
+      return '[line redacted: potential prompt injection]';
+    }
+    return line;
+  });
+  if (redacted > 0) log(`Sanitised tool output: ${redacted} line(s) redacted`);
+  return cleaned.join('\n');
+}
+
+// ── Security: Per-tool rate limits ─────────────────────────────────────────
+const TOOL_RATE_LIMITS: Record<string, number> = {
+  web_fetch: 3,
+  web_search: 3,
+  shell: 10,
+  send_external_message: 5,
+};
 
 function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_START_MARKER);
@@ -1237,13 +1387,13 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
     execute: async (args) => {
       const url = String(args.url || '');
       const maxChars = Math.max(500, Math.min(30_000, Number(args.max_chars) || 10_000));
-      const response = await fetch(url, {
+      const { response, body: rawBody } = await safeFetch(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
       });
-      let body = await response.text();
+      let body = rawBody;
       const contentType = response.headers.get('content-type') || '';
       // Extract readable text from HTML
       if (contentType.includes('html') || body.trimStart().startsWith('<!') || body.trimStart().startsWith('<html')) {
@@ -1268,7 +1418,7 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
       const query = String(args.query || '').trim();
       if (!query) throw new Error('query is required');
       const maxResults = Math.max(1, Math.min(10, Number(args.max_results) || 5));
-      const response = await fetch(
+      const { body: html } = await safeFetch(
         `${WEB_SEARCH_ENDPOINT}?q=${encodeURIComponent(query)}`,
         {
           headers: {
@@ -1276,7 +1426,6 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
           },
         },
       );
-      const html = await response.text();
       const results: string[] = [];
       // Extract result blocks: title link + snippet
       const anchorPattern =
@@ -1968,27 +2117,48 @@ function buildOpenAITools(
     }));
 }
 
+/** Tools whose output comes from untrusted external sources and needs sanitisation. */
+const UNTRUSTED_OUTPUT_TOOLS = new Set(['web_fetch', 'web_search', 'shell']);
+
 async function executeToolCall(
   call: OpenAIToolCall,
   ctx: ToolContext,
+  toolCallCounts: Record<string, number>,
 ): Promise<OpenAIMessage> {
-  const tool = TOOL_REGISTRY[call.function.name];
+  const toolName = call.function.name;
+  const tool = TOOL_REGISTRY[toolName];
   if (!tool) {
     return {
       role: 'tool',
-      name: call.function.name,
+      name: toolName,
       tool_call_id: call.id,
-      content: `Unknown tool: ${call.function.name}`,
+      content: `Unknown tool: ${toolName}`,
     };
   }
   // Defense in depth: block controller-only tools even if model hallucinates them
   if (tool.controllerOnly && !ctx.containerInput.controllerTriggered) {
     return {
       role: 'tool',
-      name: call.function.name,
+      name: toolName,
       tool_call_id: call.id,
       content: 'This tool is not available in the current context.',
     };
+  }
+
+  // Per-tool rate limiting
+  const limit = TOOL_RATE_LIMITS[toolName];
+  if (limit !== undefined) {
+    const count = (toolCallCounts[toolName] || 0) + 1;
+    toolCallCounts[toolName] = count;
+    if (count > limit) {
+      log(`Rate limit hit: ${toolName} called ${count} times (limit ${limit})`);
+      return {
+        role: 'tool',
+        name: toolName,
+        tool_call_id: call.id,
+        content: `Rate limit: ${toolName} can be called at most ${limit} times per turn. Try completing your task with the results you already have.`,
+      };
+    }
   }
 
   let parsedArgs: Record<string, unknown> = {};
@@ -1999,24 +2169,28 @@ async function executeToolCall(
   } catch (err) {
     return {
       role: 'tool',
-      name: call.function.name,
+      name: toolName,
       tool_call_id: call.id,
       content: `Tool argument parse error: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 
   try {
-    const result = await tool.execute(parsedArgs, ctx);
+    let result = await tool.execute(parsedArgs, ctx);
+    // Sanitise outputs from tools that return untrusted external content
+    if (UNTRUSTED_OUTPUT_TOOLS.has(toolName)) {
+      result = sanitiseToolOutput(result);
+    }
     return {
       role: 'tool',
-      name: call.function.name,
+      name: toolName,
       tool_call_id: call.id,
       content: truncate(result),
     };
   } catch (err) {
     return {
       role: 'tool',
-      name: call.function.name,
+      name: toolName,
       tool_call_id: call.id,
       content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
     };
@@ -2032,6 +2206,7 @@ async function runConversationTurn(
   const workingHistory: OpenAIMessage[] = [...history, { role: 'user', content: prompt }];
   const ctx: ToolContext = { containerInput };
   const tools = buildOpenAITools(containerInput.controllerTriggered === true);
+  const toolCallCounts: Record<string, number> = {}; // per-turn rate limit counters
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     let response: ChatCompletionResult;
@@ -2092,7 +2267,7 @@ async function runConversationTurn(
     }
 
     for (const toolCall of response.toolCalls) {
-      const toolMessage = await executeToolCall(toolCall, ctx);
+      const toolMessage = await executeToolCall(toolCall, ctx, toolCallCounts);
       workingHistory.push(toolMessage);
     }
   }
