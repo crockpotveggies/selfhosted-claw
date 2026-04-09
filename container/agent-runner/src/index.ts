@@ -423,7 +423,7 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
       : `You are ${containerInput.assistantName || 'the assistant'}, running inside NanoClaw. You use an OpenAI-compatible chat completions backend and NanoClaw-native tools.`,
     `Use tools when they materially improve the answer. Prefer concise responses.`,
     hasExternalAudience
-      ? `RESPONSE ROUTING (GROUP CHAT): Your normal text response is sent to the GROUP CHAT — everyone in the group can see it. Only put socially appropriate replies in your text response (direct answers to questions, friendly conversation). For operational messages meant only for the controller (scheduling follow-ups, status updates, clarifying questions about tasks, error reports), use send_internal_message — the controller will see those privately. To message other people or groups, use send_external_message. NEVER repeat the message content in your text response after calling either tool.`
+      ? `RESPONSE ROUTING (GROUP CHAT — CRITICAL): Your normal text response goes to the GROUP CHAT where EVERYONE can see it. ONLY put things a friend would say in conversation: direct answers, friendly replies, social messages. EVERYTHING ELSE must go through send_internal_message, which goes PRIVATELY to the controller. This includes: calendar checks, scheduling logistics, availability questions, confirmation requests, status updates, clarifying questions about tasks, error reports, "what's the context" questions, approval requests — ALL of these MUST use send_internal_message. If in doubt, use send_internal_message. To message other people or groups, use send_external_message. NEVER repeat the message content in your text response after calling either tool.`
       : `To message external people or groups, use the send_external_message tool with "to" set to the recipient's name, phone number, or group name. To reply to the controller (the user you are chatting with), use send_internal_message. Your normal text response is also delivered to the controller — only use send_internal_message for interim updates during multi-step tasks. NEVER repeat the message content in your text response after calling either tool.`,
     `To create a new Signal group, use the signal_create_group tool. Always provide a descriptive title — never leave it blank. After creating a group, use send_external_message with "to" set to the group's title to send follow-up messages.`,
     `To add people to a Signal group, use the signal_add_group_members tool with the group name and member phone numbers or UUIDs. Use signal_list_groups to discover existing groups before sending messages or modifying them.`,
@@ -1206,10 +1206,19 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
     execute: async (args, ctx) => {
       const text = String(args.text || '').trim();
       if (!text) throw new Error('send_internal_message requires non-empty text');
+      // In group chats, internal messages MUST go to the controller's DM,
+      // NOT back to the group.  controlSignalJid is the controller's private
+      // JID; fall back to chatJid only when it is already a DM (isMain).
+      const targetJid =
+        !ctx.containerInput.isMain && ctx.containerInput.controlSignalJid
+          ? ctx.containerInput.controlSignalJid
+          : ctx.containerInput.chatJid;
       writeIpcFile(MESSAGES_DIR, {
         type: 'message',
-        chatJid: ctx.containerInput.chatJid,
-        text,
+        chatJid: targetJid,
+        text: !ctx.containerInput.isMain
+          ? `[${ctx.containerInput.groupFolder}] ${text}`
+          : text,
         groupFolder: ctx.containerInput.groupFolder,
         timestamp: new Date().toISOString(),
       });

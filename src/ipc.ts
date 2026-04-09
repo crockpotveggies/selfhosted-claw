@@ -272,8 +272,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 } else {
                   // Authorization: verify this group can send to this chatJid
                   const targetGroup = registeredGroups[chatJid];
+                  const isControllerDm =
+                    CONTROL_SIGNAL_JID && chatJid === CONTROL_SIGNAL_JID;
                   if (
                     isMain ||
+                    isControllerDm ||
                     (targetGroup && targetGroup.folder === sourceGroup)
                   ) {
                     if (isDuplicateIpcMessage(chatJid, data.text)) {

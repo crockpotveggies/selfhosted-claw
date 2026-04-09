@@ -422,12 +422,48 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           }
         }
 
-        const text = isExternalChat
+        let text = isExternalChat
           ? (parsed.visibleText || '').trim()
           : [parsed.visibleText, ...statusLines]
               .filter(Boolean)
               .join('\n\n')
               .trim();
+
+        // Hard guard: detect operational/controller-facing content that the
+        // agent accidentally put into its visible text response for a group
+        // chat.  If the entire response looks operational, redirect it to the
+        // controller and suppress it from the group.
+        if (isExternalChat && text && CONTROL_SIGNAL_JID) {
+          const OPERATIONAL_PATTERNS = [
+            /\bcross-check\b.*\bcalendar\b/i,
+            /\bcheck\b.*\b(your|the)\s+calendar\b/i,
+            /\bconfirm\b.*\btime\s*slot\b/i,
+            /\bwhat(?:'s| is) the meeting context\b/i,
+            /\bwho else is attending\b/i,
+            /\bwhat are we scheduling\b/i,
+            /\bescalat(e|ing) to\b/i,
+            /\bfor your confirmation\b/i,
+            /\bpropose a.*time\b.*\bconfirmation\b/i,
+            /\bneed to verify\b.*\bwith you\b/i,
+            /\bcontroller\b/i,
+          ];
+          const looksOperational = OPERATIONAL_PATTERNS.some((p) => p.test(text));
+          if (looksOperational) {
+            const controlChannel = findChannel(channels, CONTROL_SIGNAL_JID);
+            if (controlChannel) {
+              logger.warn(
+                { group: group.name },
+                'Redirected operational text response from group to controller',
+              );
+              await controlChannel.sendMessage(
+                CONTROL_SIGNAL_JID,
+                `[${group.name}] (redirected from group) ${text}`,
+              );
+            }
+            text = '';
+          }
+        }
+
         if (text) {
           // Brief typing indicator so the reply feels natural
           await channel.setTyping?.(chatJid, true);
