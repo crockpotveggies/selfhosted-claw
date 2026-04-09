@@ -284,9 +284,39 @@ export class SignalChannel implements Channel {
       throw new Error(`Signal RPC createGroup failed with ${response.status}`);
     }
     const payload = (await response.json()) as { id?: string };
-    const groupId = String(payload.id || '').trim();
-    if (!groupId) {
+    const createId = String(payload.id || '').trim();
+    if (!createId) {
       throw new Error('Signal RPC createGroup did not return a group id');
+    }
+
+    // The ID returned by the create endpoint may differ from the ID used in
+    // message envelopes (different base64 encoding).  Re-fetch via listGroups
+    // to discover the canonical envelope-compatible ID.
+    let groupId = createId;
+    try {
+      const groups = await this.listGroups();
+      const match = groups.find(
+        (g) => {
+          const gid = String(g.id || g.groupId || '');
+          const gname = String(g.name || g.title || g.groupName || '');
+          return gid === createId || gname === title;
+        },
+      );
+      if (match) {
+        const canonicalId = String(match.id || match.groupId || '').trim();
+        if (canonicalId && canonicalId !== createId) {
+          logger.info(
+            { createId, canonicalId, title },
+            'Resolved canonical group ID from listGroups',
+          );
+          groupId = canonicalId;
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { err: String(err), createId, title },
+        'Failed to resolve canonical group ID after creation; using create ID',
+      );
     }
 
     const jid = makeSignalGroupJid(groupId);

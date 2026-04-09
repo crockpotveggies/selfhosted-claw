@@ -62,7 +62,11 @@ import type {
   OutboundUpdateGroupInput,
 } from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
-import { deriveGroupFolder, isValidGroupFolder, resolveGroupFolderPath } from './group-folder.js';
+import {
+  deriveGroupFolder,
+  isValidGroupFolder,
+  resolveGroupFolderPath,
+} from './group-folder.js';
 import { consumeIpcSideEffect, startIpcWatcher } from './ipc.js';
 import { sanitizeInboundMessage } from './inbound-guard.js';
 import { parseAgentOutput } from './outbound-directives.js';
@@ -102,7 +106,6 @@ const queue = new GroupQueue();
 let controlServiceRef: ControlActionService | null = null;
 
 const onecli = new OneCLI({ url: ONECLI_URL });
-
 
 function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   if (group.isMain) return;
@@ -629,6 +632,29 @@ async function startMessageLoop(): Promise<void> {
                   isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
             );
             if (!hasTrigger) continue;
+          }
+
+          // Skip waking the agent for acknowledgment-only messages in
+          // non-main groups (emojis, "ok", "thanks", thumbs-up, etc.).
+          // These are conversation closers that don't need a response and
+          // cause reply loops.  The messages still accumulate in the DB and
+          // will be included as context if a real message arrives later.
+          if (!isMainGroup) {
+            const ACK_PATTERN =
+              /^(?:ok(?:ay)?|k|got it|thanks?|thx|ty|sure|yep|yeah|yea|yup|np|no\s*problem|sounds?\s*good|cool|nice|great|perfect|bet|word|aight|alright|will do|noted|👍|👌|🤙|🙏|✅|💯|🔥|😊|😂|🤣|❤️|💪|🎯|👋|✌️|🫡|💜|🥰|😎|🤝|😁|💙|🤗|😇|🙌|😄|👏|💛|🧡|💚|😉)$/i;
+            const allAcks = groupMessages.every((m) =>
+              ACK_PATTERN.test(m.content.trim()),
+            );
+            if (allAcks) {
+              logger.debug(
+                { chatJid, count: groupMessages.length },
+                'Skipping acknowledgment-only messages in group chat',
+              );
+              lastAgentTimestamp[chatJid] =
+                groupMessages[groupMessages.length - 1].timestamp;
+              saveState();
+              continue;
+            }
           }
 
           // Pull all messages since lastAgentTimestamp so non-trigger
