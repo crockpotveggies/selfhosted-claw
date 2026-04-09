@@ -232,20 +232,20 @@ async function safeFetch(
 }
 
 // ── Security: Tool output sanitisation ─────────────────────────────────────
+// Injection patterns must be specific enough to avoid false positives on
+// normal web content (news articles, documentation, etc.).  Phrases like
+// "act as", "system message", "function call" appear in everyday English
+// and must NOT be matched.
 const TOOL_OUTPUT_INJECTION_PATTERNS = [
-  /\bignore (all|any|previous|prior|above|system) (instructions|rules|prompts|context)\b/i,
+  /\bignore (all |any |previous |prior |above |system )+(instructions|rules|prompts|context)\b/i,
   /\bdisregard (all|any|previous|prior|above) (instructions|rules|prompts)\b/i,
   /\bforget (all|any|previous|prior|your) (instructions|rules|prompts|context)\b/i,
-  /\b(system prompt|developer message|hidden prompt|system message)\b/i,
   /\b(reveal|print|dump|show|output|repeat|echo) (your |the |)(system prompt|instructions|rules)\b/i,
-  /\bact as\b/i,
-  /\bpretend (to be|you are)\b/i,
+  /\byou are (now |)(a |an |)(new |)?(ai|assistant|chatbot|language model)\b/i,
+  /\bpretend (to be|you are) (a |an |)(new |)?(ai|assistant|chatbot)\b/i,
   /\b(jailbreak|dan mode|developer mode|god mode)\b/i,
   /\boverride\b.*\b(safety|policy|guardrails?)\b/i,
   /\b(bypass|circumvent|disable)\b.*\b(safety|filter|guard|restriction)\b/i,
-  /\btool.?call\b/i,
-  /\bfunction.?call\b/i,
-  /<\s*(system|assistant|developer|function|tool|internal|thinking)\b/i,
   /\[inst\]/i,
   /\[system\]/i,
   /<\|im_start\|>/i,
