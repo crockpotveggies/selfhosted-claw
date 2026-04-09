@@ -287,6 +287,39 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
+/**
+ * Strip private details from calendar_list_events results, keeping only
+ * start/end times and a "busy" marker.  Used when external people can see
+ * the agent's response to prevent leaking event titles, descriptions,
+ * attendees, and locations.
+ */
+function stripCalendarEventDetails(result: unknown): unknown {
+  if (!result || typeof result !== 'object') return result;
+  const obj = result as Record<string, unknown>;
+  // Google Calendar API returns { items: [...] }
+  if (Array.isArray(obj.items)) {
+    return {
+      ...obj,
+      items: (obj.items as Record<string, unknown>[]).map((event) => ({
+        start: event.start,
+        end: event.end,
+        status: event.status || 'confirmed',
+        summary: '(busy)',
+      })),
+    };
+  }
+  // If it's a flat array of events
+  if (Array.isArray(result)) {
+    return (result as Record<string, unknown>[]).map((event) => ({
+      start: event.start,
+      end: event.end,
+      status: event.status || 'confirmed',
+      summary: '(busy)',
+    }));
+  }
+  return result;
+}
+
 function truncate(text: string, maxChars: number = MAX_TOOL_OUTPUT_CHARS): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} chars]`;
@@ -429,7 +462,10 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
     `To add people to a Signal group, use the signal_add_group_members tool with the group name and member phone numbers or UUIDs. Use signal_list_groups to discover existing groups before sending messages or modifying them.`,
     `To interact with Google Calendar, use the calendar_* tools. Use ISO 8601 timestamps with timezone offsets (e.g. "2026-04-07T12:30:00-04:00"). When creating events with attendees, use their email addresses. If an attendee's email is unavailable, ask them for it via send_external_message.`,
     // Calendar scheduling policy
-    `CALENDAR SCHEDULING POLICY: Before creating any calendar event you MUST: (1) check the controller's calendar for conflicts using calendar_list_events or calendar_check_availability, (2) confirm availability with all external participants via conversation, (3) present the full event details (title, date, time, duration, location, attendees) to the controller for approval via send_internal_message, and (4) only call calendar_create_event AFTER the controller explicitly confirms. The same confirmation flow applies to calendar_update_event and calendar_delete_event. NEVER post internal scheduling logistics or confirmation requests in group chats — always use send_internal_message for controller-facing updates. Sharing generic free/busy times with group participants (e.g. "Justin is free Thursday afternoon") is fine. After creating/updating/deleting an event, notify external participants via send_external_message.`,
+    `CALENDAR SCHEDULING POLICY: Before creating any calendar event you MUST: (1) check the controller's calendar for conflicts using calendar_list_events or calendar_check_availability, (2) confirm availability with all external participants via conversation, (3) present the full event details (title, date, time, duration, location, attendees) to the controller for approval via send_internal_message, and (4) only call calendar_create_event AFTER the controller explicitly confirms. The same confirmation flow applies to calendar_update_event and calendar_delete_event. NEVER post internal scheduling logistics or confirmation requests in group chats — always use send_internal_message for controller-facing updates. After creating/updating/deleting an event, notify external participants via send_external_message.`,
+    hasExternalAudience
+      ? `CALENDAR PRIVACY (HARD RULE): When sharing availability with anyone other than the controller, ONLY share free/busy time blocks — NEVER reveal event titles, descriptions, attendees, locations, or any other event details. Say "busy 9-10am" NOT "busy 9-10am - Tree Trimming". Say "free after 7:15pm" NOT "free after the BISCUT Demo". Event details are private. The ONLY acceptable format is generic time blocks: "busy 7:30-8am, 9-10am, 6:15-7:15pm" or "free 10am-6:15pm". If someone asks what the events are, say that's private.`
+      : `Sharing full calendar details with the controller is fine — they own the calendar.`,
     `ERROR ESCALATION: If a tool call fails, you hit a permission error, or you cannot complete a requested action (e.g. missing event ID, API error, blocked operation), immediately notify the controller via send_internal_message with a clear explanation of what went wrong and what you need. Do NOT just tell the group chat that something failed — always escalate to the controller directly so they can help resolve it.`,
     `If recipient, channel, or content is ambiguous, ask a clarifying question instead of guessing.`,
     `Do not mention OneCLI or secrets unless directly relevant; host-side credentials may be managed outside the container.`,
@@ -1846,6 +1882,13 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
         },
         requestId,
       );
+      // When external people can see the response, strip event details
+      // (titles, descriptions, attendees, locations) so the LLM can only
+      // share free/busy time blocks.  The controller gets full details.
+      if (!ctx.containerInput.isMain) {
+        const stripped = stripCalendarEventDetails(result);
+        return truncate(JSON.stringify(stripped, null, 2));
+      }
       return truncate(JSON.stringify(result, null, 2));
     },
   },
