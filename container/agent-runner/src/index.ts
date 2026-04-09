@@ -123,7 +123,7 @@ const IPC_RESPONSE_TIMEOUT = 30_000; // 30s
 const SCRIPT_TIMEOUT_MS = 30_000;
 const MAX_TOOL_ROUNDS = 15;
 const MAX_TOOL_OUTPUT_CHARS = 16_000;
-const MAX_HISTORY_KEEP_MESSAGES = 16;
+const MAX_HISTORY_KEEP_MESSAGES = 40;
 const MAX_GROUP_MEMORY_CHARS = 2_000;
 const MAX_SHARED_MEMORY_CHARS = 1_200;
 const WEB_SEARCH_ENDPOINT = 'https://duckduckgo.com/html/';
@@ -2282,6 +2282,10 @@ async function runConversationTurn(
       const toolMessage = await executeToolCall(toolCall, ctx, toolCallCounts);
       workingHistory.push(toolMessage);
     }
+    // Save history after each tool round so context survives container kills.
+    // Without this, a kill between sending a message (via IPC tool) and the
+    // final text response loses the entire turn from history.
+    saveHistory(workingHistory);
   }
 
   const fallback =
