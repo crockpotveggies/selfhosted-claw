@@ -11,7 +11,7 @@ import {
 } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
-import { isValidGroupFolder } from './group-folder.js';
+import { deriveGroupFolder, isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -863,19 +863,22 @@ export async function processTaskIpc(
           'Signal group created via IPC',
         );
 
-        // Auto-register the new group so inbound messages get routed to the agent
+        // Auto-register the new group so inbound messages get routed to the agent.
+        // Derive an isolated folder from the group title — do NOT reuse the
+        // source group's folder, otherwise messages would land in the wrong context.
         const groupJid = result.jid.startsWith('signal:group:')
           ? result.jid
           : `signal:group:${result.jid}`;
+        const newGroupFolder = deriveGroupFolder(result.title);
         deps.registerGroup(groupJid, {
           name: result.title,
-          folder: sourceGroup,
+          folder: newGroupFolder,
           trigger: '',
           added_at: new Date().toISOString(),
           requiresTrigger: false,
         });
         logger.info(
-          { jid: groupJid, folder: sourceGroup },
+          { jid: groupJid, folder: newGroupFolder },
           'Auto-registered Signal group created via IPC',
         );
 

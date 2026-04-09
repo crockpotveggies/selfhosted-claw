@@ -35,6 +35,32 @@ export function resolveGroupFolderPath(folder: string): string {
   return groupPath;
 }
 
+/**
+ * Derive a valid group folder name from a display name.
+ * Sanitizes to [A-Za-z0-9_-], lowercases, and truncates to 64 chars.
+ */
+export function deriveGroupFolder(displayName: string): string {
+  let folder = displayName
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9_-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  // Must start with alphanumeric
+  folder = folder.replace(/^[^a-z0-9]+/, '');
+  if (!folder || !isValidGroupFolder(folder)) {
+    // Fallback: use a hash-based name
+    const hash = Array.from(displayName).reduce(
+      (acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0,
+      0,
+    );
+    folder = `group-${Math.abs(hash).toString(36)}`;
+  }
+  return folder;
+}
+
 export function resolveGroupIpcPath(folder: string): string {
   assertValidGroupFolder(folder);
   const ipcBaseDir = path.resolve(DATA_DIR, 'ipc');

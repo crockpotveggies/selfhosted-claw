@@ -62,7 +62,7 @@ import type {
   OutboundUpdateGroupInput,
 } from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
-import { isValidGroupFolder, resolveGroupFolderPath } from './group-folder.js';
+import { deriveGroupFolder, isValidGroupFolder, resolveGroupFolderPath } from './group-folder.js';
 import { consumeIpcSideEffect, startIpcWatcher } from './ipc.js';
 import { sanitizeInboundMessage } from './inbound-guard.js';
 import { parseAgentOutput } from './outbound-directives.js';
@@ -103,31 +103,6 @@ let controlServiceRef: ControlActionService | null = null;
 
 const onecli = new OneCLI({ url: ONECLI_URL });
 
-/**
- * Derive a valid group folder name from a display name.
- * Sanitizes to [A-Za-z0-9_-], lowercases, and truncates to 64 chars.
- */
-function deriveGroupFolder(displayName: string): string {
-  let folder = displayName
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z0-9_-]/g, '')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64);
-  // Must start with alphanumeric
-  folder = folder.replace(/^[^a-z0-9]+/, '');
-  if (!folder || !isValidGroupFolder(folder)) {
-    // Fallback: use a hash-based name
-    const hash = Array.from(displayName).reduce(
-      (acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0,
-      0,
-    );
-    folder = `group-${Math.abs(hash).toString(36)}`;
-  }
-  return folder;
-}
 
 function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   if (group.isMain) return;
@@ -447,7 +422,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             /\bneed to verify\b.*\bwith you\b/i,
             /\bcontroller\b/i,
           ];
-          const looksOperational = OPERATIONAL_PATTERNS.some((p) => p.test(text));
+          const looksOperational = OPERATIONAL_PATTERNS.some((p) =>
+            p.test(text),
+          );
           if (looksOperational) {
             const controlChannel = findChannel(channels, CONTROL_SIGNAL_JID);
             if (controlChannel) {
