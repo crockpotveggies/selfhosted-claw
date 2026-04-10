@@ -57,6 +57,8 @@ export interface IpcDeps {
     members: string[];
     message?: string;
   }) => Promise<{ jid: string; title: string }>;
+  signalLeaveGroup?: (groupId: string) => Promise<void>;
+  unregisterGroup?: (jid: string) => void;
   signalListGroups?: () => Promise<
     { name: string; id: string; members: string[] }[]
   >;
@@ -812,6 +814,54 @@ export async function processTaskIpc(
         }
       }
       break;
+
+    case 'signal_leave_group': {
+      const groupName = String(data.groupName || '').trim();
+      if (!groupName) {
+        logger.warn({ data }, 'Invalid signal_leave_group request - missing groupName');
+        break;
+      }
+      if (!deps.signalFindGroup || !deps.signalLeaveGroup) {
+        logger.warn({ sourceGroup }, 'signal_leave_group: Signal channel not available');
+        if (data.chatJid) {
+          await deps.sendMessage(data.chatJid, 'Signal is not configured — cannot leave group.');
+        }
+        break;
+      }
+      try {
+        const group = await deps.signalFindGroup(groupName);
+        if (!group) {
+          logger.warn({ groupName }, 'signal_leave_group: group not found');
+          if (data.chatJid) {
+            await deps.sendMessage(data.chatJid, `No Signal group found matching "${groupName}".`);
+          }
+          break;
+        }
+        await deps.signalLeaveGroup(group.id);
+        markIpcSideEffect(sourceGroup);
+        logger.info({ groupName: group.name, groupId: group.id }, 'Left Signal group via IPC');
+
+        // Unregister the group so NanoClaw stops polling for messages
+        const groupJid = `signal:group:${group.id}`;
+        if (deps.unregisterGroup) {
+          deps.unregisterGroup(groupJid);
+          logger.info({ jid: groupJid }, 'Unregistered group after leaving');
+        }
+
+        if (data.chatJid) {
+          await deps.sendMessage(data.chatJid, `Left Signal group "${group.name}".`);
+        }
+      } catch (err) {
+        logger.error({ err, groupName }, 'Failed to leave Signal group');
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to leave group "${groupName}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      break;
+    }
 
     case 'signal_create_group':
       if (!data.title || !data.members || data.members.length === 0) {

@@ -459,7 +459,7 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
       ? `RESPONSE ROUTING (GROUP CHAT — CRITICAL): Your normal text response goes to the GROUP CHAT where EVERYONE can see it. ONLY put things a friend would say in conversation: direct answers, friendly replies, social messages. EVERYTHING ELSE must go through send_internal_message, which goes PRIVATELY to the controller. This includes: calendar checks, scheduling logistics, availability questions, confirmation requests, status updates, clarifying questions about tasks, error reports, "what's the context" questions, approval requests — ALL of these MUST use send_internal_message. If in doubt, use send_internal_message. To message other people or groups, use send_external_message. NEVER repeat the message content in your text response after calling either tool.`
       : `To message external people or groups, use the send_external_message tool with "to" set to the recipient's name, phone number, or group name. To reply to the controller (the user you are chatting with), use send_internal_message. Your normal text response is also delivered to the controller — only use send_internal_message for interim updates during multi-step tasks. NEVER repeat the message content in your text response after calling either tool.`,
     `To create a new Signal group, use the signal_create_group tool. Always provide a descriptive title — never leave it blank. After creating a group, use send_external_message with "to" set to the group's title to send follow-up messages.`,
-    `To add people to a Signal group, use the signal_add_group_members tool with the group name and member phone numbers or UUIDs. Use signal_list_groups to discover existing groups before sending messages or modifying them.`,
+    `To add people to a Signal group, use the signal_add_group_members tool with the group name and member phone numbers or UUIDs. To leave a Signal group, use the signal_leave_group tool. Use signal_list_groups to discover existing groups before sending messages or modifying them.`,
     `To interact with Google Calendar, use the calendar_* tools. Use ISO 8601 timestamps with timezone offsets (e.g. "2026-04-07T12:30:00-04:00"). When creating events with attendees, use their email addresses. If an attendee's email is unavailable, ask them for it via send_external_message.`,
     // Calendar scheduling policy
     `CALENDAR SCHEDULING POLICY: Before creating any calendar event you MUST: (1) check the controller's calendar for conflicts using calendar_list_events or calendar_check_availability, (2) confirm availability with all external participants via conversation, (3) present the full event details (title, date, time, duration, location, attendees) to the controller for approval via send_internal_message, and (4) only call calendar_create_event AFTER the controller explicitly confirms. The same confirmation flow applies to calendar_update_event and calendar_delete_event. NEVER post internal scheduling logistics or confirmation requests in group chats — always use send_internal_message for controller-facing updates. After creating/updating/deleting an event, notify external participants via send_external_message.`,
@@ -1772,6 +1772,34 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
         timestamp: new Date().toISOString(),
       });
       return `Request to add ${members.length} member(s) to Signal group "${groupName}" submitted. The host will resolve the group and add the members.`;
+    },
+  },
+  signal_leave_group: {
+    controllerOnly: true,
+    description:
+      'Leave a Signal group. The agent will no longer receive or respond to messages in that group.',
+    parameters: {
+      type: 'object',
+      properties: {
+        group_name: {
+          type: 'string',
+          description: 'The name of the Signal group to leave.',
+        },
+      },
+      required: ['group_name'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const groupName = String(args.group_name || '').trim();
+      if (!groupName) throw new Error('group_name is required');
+      writeIpcFile(TASKS_DIR, {
+        type: 'signal_leave_group',
+        groupName,
+        chatJid: ctx.containerInput.chatJid,
+        groupFolder: ctx.containerInput.groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+      return `Request to leave Signal group "${groupName}" submitted.`;
     },
   },
   signal_list_groups: {

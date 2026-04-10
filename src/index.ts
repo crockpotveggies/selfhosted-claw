@@ -39,6 +39,7 @@ import {
   stopContainerReaper,
 } from './container-runtime.js';
 import {
+  deleteRegisteredGroup,
   getAllChats,
   getAllRegisteredGroups,
   getAllTasks,
@@ -1454,6 +1455,7 @@ async function main(): Promise<void> {
             name: string,
           ) => Promise<{ id: string; name: string; members: string[] } | null>;
           addMembers?: (groupId: string, members: string[]) => Promise<void>;
+          leaveGroup?: (groupId: string) => Promise<void>;
           getGroups?: () => Promise<any[]>;
         })
       | undefined;
@@ -1505,6 +1507,16 @@ async function main(): Promise<void> {
       const ch = getSignalChannel();
       if (!ch?.createGroup) throw new Error('Signal createGroup not available');
       return ch.createGroup(input);
+    },
+    signalLeaveGroup: async (groupId) => {
+      const ch = getSignalChannel();
+      if (!ch?.leaveGroup) throw new Error('Signal leaveGroup not available');
+      await ch.leaveGroup(groupId);
+    },
+    unregisterGroup: (jid) => {
+      delete registeredGroups[jid];
+      deleteRegisteredGroup(jid);
+      logger.info({ jid }, 'Group unregistered');
     },
     signalListGroups: async () => {
       const ch = getSignalChannel();

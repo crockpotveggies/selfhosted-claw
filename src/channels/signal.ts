@@ -295,13 +295,11 @@ export class SignalChannel implements Channel {
     let groupId = createId;
     try {
       const groups = await this.listGroups();
-      const match = groups.find(
-        (g) => {
-          const gid = String(g.id || g.groupId || '');
-          const gname = String(g.name || g.title || g.groupName || '');
-          return gid === createId || gname === title;
-        },
-      );
+      const match = groups.find((g) => {
+        const gid = String(g.id || g.groupId || '');
+        const gname = String(g.name || g.title || g.groupName || '');
+        return gid === createId || gname === title;
+      });
       if (match) {
         const canonicalId = String(match.id || match.groupId || '').trim();
         if (canonicalId && canonicalId !== createId) {
@@ -381,6 +379,23 @@ export class SignalChannel implements Channel {
     if (!response.ok) {
       throw new Error(
         `Signal RPC removeMembers failed with ${response.status}`,
+      );
+    }
+  }
+
+  async leaveGroup(groupId: string): Promise<void> {
+    const url = new URL(
+      `/v1/groups/${encodeURIComponent(this.account)}/${encodeURIComponent(groupId)}`,
+      this.rpcUrl,
+    );
+    const response = await this.fetchWithContext(
+      url,
+      { method: 'DELETE' },
+      'leaveGroup',
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Signal RPC leaveGroup failed with ${response.status}`,
       );
     }
   }
