@@ -635,21 +635,21 @@ async function startMessageLoop(): Promise<void> {
             if (!hasTrigger) continue;
           }
 
-          // Skip waking the agent for acknowledgment-only messages in
-          // non-main groups (emojis, "ok", "thanks", thumbs-up, etc.).
-          // These are conversation closers that don't need a response and
-          // cause reply loops.  The messages still accumulate in the DB and
+          // Skip waking the agent for acknowledgment-only messages
+          // (emojis, "ok", "thanks", thumbs-up, etc.).  These are
+          // conversation closers that don't need a response and cause
+          // reply loops.  The messages still accumulate in the DB and
           // will be included as context if a real message arrives later.
-          if (!isMainGroup) {
+          {
             const ACK_PATTERN =
-              /^(?:ok(?:ay)?|k|got it|thanks?|thx|ty|sure|yep|yeah|yea|yup|np|no\s*problem|sounds?\s*good|cool|nice|great|perfect|bet|word|aight|alright|will do|noted|👍|👌|🤙|🙏|✅|💯|🔥|😊|😂|🤣|❤️|💪|🎯|👋|✌️|🫡|💜|🥰|😎|🤝|😁|💙|🤗|😇|🙌|😄|👏|💛|🧡|💚|😉)$/i;
+              /^(?:ok(?:ay)?|k|got it|thanks?|thx|ty|sure|yep|yeah|yea|yup|np|no\s*problem|sounds?\s*good|cool|nice|great|perfect|bet|word|aight|alright|will do|noted|yes|yea+h*|👍|👌|🤙|🙏|✅|💯|🔥|😊|😂|🤣|❤️|💪|🎯|👋|✌️|🫡|💜|🥰|😎|🤝|😁|💙|🤗|😇|🙌|😄|👏|💛|🧡|💚|😉)$/i;
             const allAcks = groupMessages.every((m) =>
               ACK_PATTERN.test(m.content.trim()),
             );
             if (allAcks) {
               logger.debug(
                 { chatJid, count: groupMessages.length },
-                'Skipping acknowledgment-only messages in group chat',
+                'Skipping acknowledgment-only messages',
               );
               lastAgentTimestamp[chatJid] =
                 groupMessages[groupMessages.length - 1].timestamp;
