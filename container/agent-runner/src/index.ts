@@ -123,7 +123,7 @@ const IPC_RESPONSE_TIMEOUT = 30_000; // 30s
 const SCRIPT_TIMEOUT_MS = 30_000;
 const MAX_TOOL_ROUNDS = 15;
 const MAX_TOOL_OUTPUT_CHARS = 16_000;
-const MAX_HISTORY_KEEP_MESSAGES = 40;
+const MAX_HISTORY_KEEP_MESSAGES = 24;
 const MAX_GROUP_MEMORY_CHARS = 2_000;
 const MAX_SHARED_MEMORY_CHARS = 1_200;
 const WEB_SEARCH_ENDPOINT = 'https://duckduckgo.com/html/';
@@ -2441,6 +2441,14 @@ async function main(): Promise<void> {
 
   if (containerInput.isScheduledTask) {
     prompt = `[SCHEDULED TASK]\n\n${prompt}`;
+  }
+
+  // Guard: if history is too large to fit in the context window, force-compact
+  // before the first turn to prevent repeated context-limit failures.
+  const preHistory = loadHistory();
+  if (preHistory.length > MAX_HISTORY_KEEP_MESSAGES) {
+    log(`History has ${preHistory.length} messages (limit ${MAX_HISTORY_KEEP_MESSAGES}), forcing compaction`);
+    await archiveAndCompactHistory(systemPrompt);
   }
 
   const pending = drainIpcInput();
