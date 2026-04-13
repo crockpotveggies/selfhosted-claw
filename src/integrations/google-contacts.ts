@@ -124,12 +124,26 @@ function writeIntegrationOAuthState(state: GoogleContactsOAuthState): void {
   });
 }
 
+/**
+ * Get OAuth state from the integration's OWN settings store first,
+ * falling back to legacy file only for backward-compat token access.
+ * Admin UI status/setup checks should use getOwnOAuthState() instead.
+ */
 function getStoredOAuthState(): GoogleContactsOAuthState {
   const integrationState = readIntegrationOAuthState();
   if (integrationState.accessToken || integrationState.refreshToken) {
     return integrationState;
   }
   return readLegacyOAuthState();
+}
+
+/**
+ * Get OAuth state ONLY from the integration's own settings store.
+ * Used by status checks and isComplete — the integration is only
+ * "connected" when it has done its own OAuth flow.
+ */
+function getOwnOAuthState(): GoogleContactsOAuthState {
+  return readIntegrationOAuthState();
 }
 
 function writeOAuthState(state: GoogleContactsOAuthState): void {
@@ -523,21 +537,21 @@ const googleContactsIntegration: IntegrationDefinition = {
     icon: 'cilAddressBook',
     category: 'productivity',
     getStatus: async () => {
-      const stored = getStoredOAuthState();
-      if (!stored.accessToken && !stored.refreshToken) {
+      const own = getOwnOAuthState();
+      if (!own.accessToken && !own.refreshToken) {
         return {
           state: 'unconfigured',
-          message: 'Google Contacts is not connected',
+          message: 'Not connected — run setup from the integration page',
         };
       }
-      if (stored.accessToken && !isTokenExpired(stored.expiryDate)) {
+      if (own.accessToken && !isTokenExpired(own.expiryDate)) {
         return {
           state: 'online',
-          message: `Connected${stored.connectedAt ? ` since ${stored.connectedAt.split('T')[0]}` : ''}`,
+          message: `Connected${own.connectedAt ? ` since ${own.connectedAt.split('T')[0]}` : ''}`,
         };
       }
-      if (stored.refreshToken) {
-        const refreshed = await refreshAccessToken(stored).catch(() => null);
+      if (own.refreshToken) {
+        const refreshed = await refreshAccessToken(own).catch(() => null);
         if (refreshed?.accessToken) {
           return {
             state: 'online',
@@ -556,23 +570,15 @@ const googleContactsIntegration: IntegrationDefinition = {
     },
     getNotifications: async () => {
       const notifications: IntegrationNotification[] = [];
-      const stored = getStoredOAuthState();
-      if (!stored.accessToken && !stored.refreshToken) {
-        notifications.push({
-          id: 'google-contacts:not-connected',
-          integration: 'google-contacts',
-          severity: 'info',
-          title: 'Google Contacts Not Connected',
-          message:
-            'Connect your Google account from the integration setup page.',
-        });
+      const own = getOwnOAuthState();
+      if (!own.accessToken && !own.refreshToken) {
+        return notifications; // Not connected yet — no alert needed
+      }
+      if (own.accessToken && !isTokenExpired(own.expiryDate)) {
         return notifications;
       }
-      if (stored.accessToken && !isTokenExpired(stored.expiryDate)) {
-        return notifications;
-      }
-      const refreshed = stored.refreshToken
-        ? await refreshAccessToken(stored).catch(() => null)
+      const refreshed = own.refreshToken
+        ? await refreshAccessToken(own).catch(() => null)
         : null;
       if (!refreshed?.accessToken) {
         notifications.push({
@@ -600,23 +606,24 @@ const googleContactsIntegration: IntegrationDefinition = {
         startAuth,
         completeAuth,
         isComplete: async () => {
-          const token = await ensureGoogleContactsAccessToken();
-          return Boolean(token);
+          const own = getOwnOAuthState();
+          return Boolean(own.accessToken || own.refreshToken);
         },
       },
     ],
     getStatus: async () => {
       const host = `${ADMIN_BIND_HOST}:${ADMIN_PORT}`;
-      const token = await ensureGoogleContactsAccessToken();
+      const own = getOwnOAuthState();
+      const hasOwnToken = Boolean(own.accessToken || own.refreshToken);
       return {
-        completed: Boolean(token),
-        currentStep: token ? 1 : 0,
+        completed: hasOwnToken,
+        currentStep: hasOwnToken ? 1 : 0,
         steps: [
           {
             type: 'oauth2',
             label: 'Connect Google Account',
             description: `Register callback URL: http://${host}${CALLBACK_PATH}`,
-            status: token ? 'completed' : 'pending',
+            status: hasOwnToken ? 'completed' : 'pending',
           },
         ],
       };
