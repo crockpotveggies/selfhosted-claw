@@ -40,6 +40,20 @@ interface StartAdminServerOptions {
   service: ControlActionService;
 }
 
+function getGoogleContactsOAuthStep() {
+  const def = getIntegration('google-contacts');
+  const step = def?.setup?.steps.find((item) => item.type === 'oauth2');
+  if (!step || step.type !== 'oauth2') {
+    throw new Error(
+      'Google Contacts integration is not registered or missing OAuth setup.',
+    );
+  }
+  return {
+    def,
+    step,
+  };
+}
+
 function isLocalAddress(remoteAddress: string | undefined): boolean {
   if (!remoteAddress) return false;
   return (
@@ -493,15 +507,16 @@ export function startAdminServer(
         const env = options.service.getSetupEnvironment();
         const host = req.headers.host || `${ADMIN_BIND_HOST}:${ADMIN_PORT}`;
         const origin = `http://${host}`;
-        const providers = await options.service.getProviderAvailability();
+        const { step } = getGoogleContactsOAuthStep();
+        const isComplete = await step.isComplete();
         sendJson(res, 200, {
           origin,
-          callbackUri: `${origin}/api/admin/google/oauth/callback`,
-          scopes: ['https://www.googleapis.com/auth/contacts.readonly'],
+          callbackUri: `${origin}${step.callbackPath}`,
+          scopes: step.scopes,
           configured: {
             clientId: Boolean(env.GOOGLE_CLIENT_ID),
             clientSecret: Boolean(env.GOOGLE_CLIENT_SECRET),
-            accessToken: providers.googleContactsAvailable,
+            accessToken: isComplete,
           },
         });
         return;
@@ -513,7 +528,8 @@ export function startAdminServer(
       ) {
         const host = req.headers.host || `${ADMIN_BIND_HOST}:${ADMIN_PORT}`;
         const origin = `http://${host}`;
-        const result = await options.service.startGoogleContactsOAuth(origin);
+        const { step } = getGoogleContactsOAuthStep();
+        const result = await step.startAuth(origin);
         sendJson(res, 200, result);
         return;
       }
@@ -545,7 +561,8 @@ export function startAdminServer(
         }
 
         try {
-          await options.service.completeGoogleContactsOAuth({
+          const { step } = getGoogleContactsOAuthStep();
+          await step.completeAuth({
             origin,
             code,
             state,

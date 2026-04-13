@@ -1,5 +1,3 @@
-import { randomBytes } from 'crypto';
-
 import { OneCLI } from '@onecli-sh/sdk';
 
 import { readEnvFile, setEnvFileValues } from './env.js';
@@ -18,7 +16,6 @@ import {
   ProviderAvailability,
   ResolvedContactTarget,
   resolveLiteralTarget,
-  searchGoogleContacts,
 } from './contact-resolution.js';
 import { canonicalizeIdentity, displayIdentity } from './control-identities.js';
 import {
@@ -52,6 +49,7 @@ import {
 } from './integrations/service-manager.js';
 import { getIntegration } from './integrations/registry.js';
 import { getIntegrationSettings } from './integrations/settings-store.js';
+import { resolveGoogleContactsTarget } from './integrations/google-contacts.js';
 
 /**
  * Signal compose status — kept for backward compatibility with admin-server
@@ -992,33 +990,14 @@ export class ControlActionService {
   }
 
   async startGoogleContactsOAuth(origin: string): Promise<{ url: string }> {
-    const env = this.getSetupEnvironment();
-    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    const def = getIntegration('google-contacts');
+    const oauthStep = def?.setup?.steps.find((step) => step.type === 'oauth2');
+    if (!oauthStep || oauthStep.type !== 'oauth2') {
       throw new Error(
-        'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required before connecting Google Contacts.',
+        'Google Contacts integration is not registered or missing OAuth setup.',
       );
     }
-
-    const current = this.store.getGoogleContactsOAuth();
-    const oauthState = randomBytes(18).toString('base64url');
-    this.store.saveGoogleContactsOAuth({
-      ...current,
-      oauthState,
-      oauthStateCreatedAt: nowIso(),
-    });
-
-    const callbackUri = `${origin.replace(/\/$/, '')}/api/admin/google/oauth/callback`;
-    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    authUrl.searchParams.set('client_id', env.GOOGLE_CLIENT_ID);
-    authUrl.searchParams.set('redirect_uri', callbackUri);
-    authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('scope', GOOGLE_CONTACTS_SCOPE);
-    authUrl.searchParams.set('access_type', 'offline');
-    authUrl.searchParams.set('prompt', 'consent');
-    authUrl.searchParams.set('include_granted_scopes', 'true');
-    authUrl.searchParams.set('state', oauthState);
-
-    return { url: authUrl.toString() };
+    return oauthStep.startAuth(origin);
   }
 
   async completeGoogleContactsOAuth(input: {
@@ -1026,66 +1005,14 @@ export class ControlActionService {
     state: string;
     code: string;
   }): Promise<{ message: string }> {
-    const env = this.getSetupEnvironment();
-    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    const def = getIntegration('google-contacts');
+    const oauthStep = def?.setup?.steps.find((step) => step.type === 'oauth2');
+    if (!oauthStep || oauthStep.type !== 'oauth2') {
       throw new Error(
-        'Google OAuth client settings are missing. Save the client ID and secret first.',
+        'Google Contacts integration is not registered or missing OAuth setup.',
       );
     }
-
-    const stored = this.store.getGoogleContactsOAuth();
-    if (!stored.oauthState || stored.oauthState !== input.state) {
-      throw new Error(
-        'Google OAuth state did not match the active login request.',
-      );
-    }
-
-    const callbackUri = `${input.origin.replace(/\/$/, '')}/api/admin/google/oauth/callback`;
-    const body = new URLSearchParams({
-      code: input.code,
-      client_id: env.GOOGLE_CLIENT_ID,
-      client_secret: env.GOOGLE_CLIENT_SECRET,
-      redirect_uri: callbackUri,
-      grant_type: 'authorization_code',
-    });
-
-    const response = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body,
-    });
-    const payload = (await response.json().catch(() => ({}))) as {
-      access_token?: string;
-      refresh_token?: string;
-      expires_in?: number;
-      scope?: string;
-      token_type?: string;
-      error?: string;
-      error_description?: string;
-    };
-    if (!response.ok || !payload.access_token) {
-      throw new Error(
-        payload.error_description ||
-          payload.error ||
-          `Google token exchange failed with ${response.status}`,
-      );
-    }
-
-    this.store.saveGoogleContactsOAuth({
-      accessToken: payload.access_token,
-      refreshToken: payload.refresh_token || stored.refreshToken,
-      expiryDate: new Date(
-        Date.now() + Math.max(60, payload.expires_in || 3600) * 1000,
-      ).toISOString(),
-      scope: payload.scope || GOOGLE_CONTACTS_SCOPE,
-      tokenType: payload.token_type || 'Bearer',
-      connectedAt: nowIso(),
-      oauthState: '',
-      oauthStateCreatedAt: '',
-    });
-
+    await oauthStep.completeAuth(input);
     return { message: 'Google Contacts connected.' };
   }
 
@@ -1151,22 +1078,10 @@ export class ControlActionService {
       }
     }
 
-    const env = this.getSetupEnvironment();
-    const providerEnv = await this.loadProviderEnvironment(env);
-    const googleToken = await this.ensureGoogleContactsAccessToken(
-      providerEnv,
-      env,
-    );
-    if (!googleToken) {
-      throw new Error(
-        `No ${channel} contact matched "${query}", and Google Contacts is not configured for host-side resolution.`,
-      );
-    }
-
-    const googleMatch = await searchGoogleContacts(googleToken, channel, query);
+    const googleMatch = await resolveGoogleContactsTarget(channel, query);
     if (!googleMatch) {
       throw new Error(
-        `No ${channel} contact matched "${query}" in Google Contacts.`,
+        `No ${channel} contact matched "${query}", and Google Contacts is not configured or returned no match.`,
       );
     }
     return googleMatch;

@@ -100,7 +100,20 @@ export function getServiceManager(): ServiceManager {
 
 export function getNodePath(): string {
   try {
-    return execSync('command -v node', { encoding: 'utf-8' }).trim();
+    if (process.platform === 'win32') {
+      return execSync('where.exe node', {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      })
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find(Boolean)!;
+    }
+    return execSync('command -v node', {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
   } catch {
     return process.execPath;
   }
@@ -108,6 +121,13 @@ export function getNodePath(): string {
 
 export function commandExists(name: string): boolean {
   try {
+    if (process.platform === 'win32') {
+      execSync(`where.exe ${name}`, {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      return true;
+    }
     execSync(`command -v ${name}`, { stdio: 'ignore' });
     return true;
   } catch {
@@ -117,7 +137,11 @@ export function commandExists(name: string): boolean {
 
 export function getNodeVersion(): string | null {
   try {
-    const version = execSync('node --version', { encoding: 'utf-8' }).trim();
+    const version = execSync('node --version', {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: process.platform === 'win32',
+    }).trim();
     return version.replace(/^v/, '');
   } catch {
     return null;

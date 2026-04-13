@@ -76,6 +76,8 @@ Optional but recommended:
 OPENAI_API_KEY=""
 ADMIN_UI_TOKEN="choose-a-local-admin-token"
 ONECLI_URL="http://localhost:10254"
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
 ```
 
 ### 5. Build and start Self-Hosted Claw
@@ -157,6 +159,18 @@ The wizard can now drive both supported Signal onboarding paths:
 
 Signal still requires a human to complete the trust ceremony by scanning the QR code or entering the verification code.
 
+### Optional: connect Google Contacts
+
+If you want host-side contact resolution for outbound messaging, set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`, then open the admin UI and connect the `google-contacts` integration.
+
+The Google Contacts integration provides:
+
+- An OAuth setup flow in the Integrations page
+- A host-side `google_contacts.search` tool for the agent
+- Contact lookup for outbound `signal`, `whatsapp`, `sms`, and `email` routing
+
+The OAuth callback URL is shown directly in the integration setup wizard so you can register it in Google Cloud without guessing.
+
 ### 7. Restart after wizard changes
 
 If the wizard updated `.env`, restart the main service so the Node process picks up the new values:
@@ -224,6 +238,7 @@ Point `INBOUND_GUARD_SCRIPT` at your own script if you want to customize the inj
 - **Isolated group context** - Each group has its own `AGENT.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted to it.
 - **Main channel** - Your private channel (self-chat) for admin control; every group is completely isolated
 - **Scheduled tasks** - Recurring jobs that run the Self-Hosted Claw agent and can message you back
+- **Google Contacts integration** - Optional OAuth-backed contact search and outbound recipient resolution across supported channels
 - **Web access** - Search and fetch content from the Web
 - **Container isolation** - Agents are sandboxed in Docker (macOS/Linux), [Docker Sandboxes](docs/docker-sandboxes.md) (micro VM isolation), or Apple Container (macOS)
 - **Credential security** - Agents can use [OneCLI's Agent Vault](https://github.com/onecli/onecli) for proxied credential injection, or connect directly to a local backend when you do not need proxying.

@@ -58,6 +58,17 @@ Then add the import to `src/integrations/index.ts`:
 import './my-service.js';
 ```
 
+### Example: Google Contacts
+
+`google-contacts` is a good reference integration when you need:
+
+- An OAuth2 setup step with an explicit callback URL
+- A host-side tool implemented with `execute()`
+- Backward-compatible migration logic that still writes a legacy settings file
+- Admin status and notification handling for expired OAuth tokens
+
+See `src/integrations/google-contacts.ts` for a concrete example.
+
 ### Wrapping an existing channel
 
 If you have a channel registered via the legacy `registerChannel()` pattern:
@@ -131,6 +142,8 @@ Declare ordered setup steps. The admin UI renders the right component for each:
 | `custom` | Complex flows | Custom routes + optional component |
 
 **OAuth callback URLs**: The `callbackPath` on OAuth steps is displayed prominently in the setup wizard so users can register it with their OAuth provider.
+
+For a concrete OAuth example, see `google-contacts`, which stores tokens in both the integration settings store and the legacy `google-contacts-oauth.json` file during migration.
 
 ## Docker Service Lifecycle
 
@@ -227,4 +240,5 @@ src/integrations/
   index.ts              — Barrel file (import all integrations)
   signal.ts             — Signal (core)
   calendar.ts           — Google Calendar (installable)
+  google-contacts.ts    — Google Contacts (installable tool integration)
 ```
