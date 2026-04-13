@@ -311,8 +311,8 @@ export function startAdminServer(
             hasCredential: (key: string) =>
               Boolean(
                 process.env[key] ||
-                  options.service.getSetupEnvironment()[key] ||
-                  settings[key],
+                options.service.getSetupEnvironment()[key] ||
+                settings[key],
               ),
           };
 
@@ -1227,9 +1227,7 @@ export function startAdminServer(
       // GET /api/admin/integrations/:name/profile
       const profileGetMatch =
         req.method === 'GET' &&
-        url.pathname.match(
-          /^\/api\/admin\/integrations\/([^/]+)\/profile$/,
-        );
+        url.pathname.match(/^\/api\/admin\/integrations\/([^/]+)\/profile$/);
       if (profileGetMatch) {
         const name = profileGetMatch[1];
         const def = getIntegration(name);
@@ -1255,9 +1253,7 @@ export function startAdminServer(
       // POST /api/admin/integrations/:name/profile
       const profilePostMatch =
         req.method === 'POST' &&
-        url.pathname.match(
-          /^\/api\/admin\/integrations\/([^/]+)\/profile$/,
-        );
+        url.pathname.match(/^\/api\/admin\/integrations\/([^/]+)\/profile$/);
       if (profilePostMatch) {
         const name = profilePostMatch[1];
         const def = getIntegration(name);
@@ -1265,9 +1261,10 @@ export function startAdminServer(
           sendJson(res, 404, { error: 'no_profile' });
           return;
         }
-        const body = JSON.parse(
-          (await readBody(req)) || '{}',
-        ) as Record<string, string>;
+        const body = JSON.parse((await readBody(req)) || '{}') as Record<
+          string,
+          string
+        >;
         try {
           await def.profile.saveProfile(body);
           sendJson(res, 200, { ok: true });

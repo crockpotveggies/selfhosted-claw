@@ -896,7 +896,6 @@ export class ControlActionService {
         };
       },
     });
-
   }
 
   private register<TInput, TResult>(

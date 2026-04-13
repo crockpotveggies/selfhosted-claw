@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { dataUrlToBuffer, getReadReceiptKey, isWhatsAppJid } from './whatsapp.js';
+import {
+  dataUrlToBuffer,
+  getReadReceiptKey,
+  isWhatsAppJid,
+} from './whatsapp.js';
 
 describe('WhatsApp integration JID ownership', () => {
   it('recognizes standard WhatsApp chat JIDs', () => {

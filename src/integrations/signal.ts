@@ -323,7 +323,10 @@ const signalIntegration: IntegrationDefinition = {
       parameters: {
         type: 'object',
         properties: {
-          to: { type: 'string', description: 'Recipient name, phone number, or Signal JID' },
+          to: {
+            type: 'string',
+            description: 'Recipient name, phone number, or Signal JID',
+          },
           text: { type: 'string', description: 'Message text' },
         },
         required: ['to', 'text'],
@@ -336,7 +339,9 @@ const signalIntegration: IntegrationDefinition = {
         if (!ctx.resolveRecipient || !ctx.sendMessage) {
           throw new Error('Messaging context not available');
         }
-        const jid = to.startsWith('signal:') ? to : await ctx.resolveRecipient(to);
+        const jid = to.startsWith('signal:')
+          ? to
+          : await ctx.resolveRecipient(to);
         await ctx.sendMessage(jid, text);
         return JSON.stringify({ status: 'sent', to: jid });
       },
@@ -368,7 +373,11 @@ const signalIntegration: IntegrationDefinition = {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Group name' },
-          members: { type: 'array', items: { type: 'string' }, description: 'Member names or phone numbers' },
+          members: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Member names or phone numbers',
+          },
           message: { type: 'string', description: 'Optional initial message' },
         },
         required: ['members'],
@@ -392,8 +401,15 @@ const signalIntegration: IntegrationDefinition = {
       parameters: {
         type: 'object',
         properties: {
-          groupName: { type: 'string', description: 'Group name to search for' },
-          members: { type: 'array', items: { type: 'string' }, description: 'Members to add' },
+          groupName: {
+            type: 'string',
+            description: 'Group name to search for',
+          },
+          members: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Members to add',
+          },
         },
         required: ['groupName', 'members'],
       },
@@ -401,9 +417,11 @@ const signalIntegration: IntegrationDefinition = {
       controllerOnly: true,
       execute: async (args, ctx) => {
         const ch = ctx.channels?.find((c) => c.name === 'signal') as any;
-        if (!ch?.findGroupByName || !ch?.addMembers) throw new Error('Signal channel not connected');
+        if (!ch?.findGroupByName || !ch?.addMembers)
+          throw new Error('Signal channel not connected');
         const group = await ch.findGroupByName(args.groupName as string);
-        if (!group) throw new Error(`Signal group "${args.groupName}" not found`);
+        if (!group)
+          throw new Error(`Signal group "${args.groupName}" not found`);
         await ch.addMembers(group.id, args.members as string[]);
         return JSON.stringify({ status: 'members_added', group: group.name });
       },
@@ -526,7 +544,12 @@ const signalIntegration: IntegrationDefinition = {
   profile: {
     label: 'Signal Profile',
     fields: [
-      { key: 'account', label: 'Signal Account', type: 'text', placeholder: '+15555550123' },
+      {
+        key: 'account',
+        label: 'Signal Account',
+        type: 'text',
+        placeholder: '+15555550123',
+      },
       { key: 'name', label: 'Profile Name', type: 'text' },
       { key: 'about', label: 'About', type: 'text' },
       { key: 'avatarDataUrl', label: 'Avatar', type: 'image' },
@@ -535,7 +558,9 @@ const signalIntegration: IntegrationDefinition = {
       // Read from the control store's signal-profile.json
       const profilePath = path.join(ADMIN_CONFIG_DIR, 'signal-profile.json');
       try {
-        const data = JSON.parse(fs.readFileSync(profilePath, 'utf-8')) as Record<string, string>;
+        const data = JSON.parse(
+          fs.readFileSync(profilePath, 'utf-8'),
+        ) as Record<string, string>;
         return {
           account: data.account || getSettings().account || '',
           name: data.name || '',
@@ -582,9 +607,7 @@ const signalIntegration: IntegrationDefinition = {
         }),
       });
       if (response.status !== 204 && !response.ok) {
-        throw new Error(
-          `Signal profile update failed with ${response.status}`,
-        );
+        throw new Error(`Signal profile update failed with ${response.status}`);
       }
 
       // Persist to local store
@@ -593,13 +616,17 @@ const signalIntegration: IntegrationDefinition = {
       const tmpPath = `${profilePath}.tmp`;
       fs.writeFileSync(
         tmpPath,
-        JSON.stringify({
-          account,
-          name: values.name || '',
-          about: values.about || '',
-          avatarDataUrl: values.avatarDataUrl || '',
-          updatedAt: new Date().toISOString(),
-        }, null, 2),
+        JSON.stringify(
+          {
+            account,
+            name: values.name || '',
+            about: values.about || '',
+            avatarDataUrl: values.avatarDataUrl || '',
+            updatedAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        ),
         { mode: 0o600 },
       );
       fs.renameSync(tmpPath, profilePath);

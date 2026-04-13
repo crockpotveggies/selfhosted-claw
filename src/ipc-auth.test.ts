@@ -357,11 +357,13 @@ describe('WhatsApp group IPC tools', () => {
       added_at: '2024-01-01T00:00:00.000Z',
     };
 
-    const resolveMessageRecipient = vi.fn(async (sourceGroup: string, name: string) => {
-      expect(sourceGroup).toBe('whatsapp_main');
-      expect(name).toBe('Family');
-      return 'family@g.us';
-    });
+    const resolveMessageRecipient = vi.fn(
+      async (sourceGroup: string, name: string) => {
+        expect(sourceGroup).toBe('whatsapp_main');
+        expect(name).toBe('Family');
+        return 'family@g.us';
+      },
+    );
     deps.resolveMessageRecipient = resolveMessageRecipient;
     const sendMessage = vi.fn(async () => {});
     deps.sendMessage = sendMessage;

@@ -88,7 +88,9 @@ export function deriveUniqueGroupFolder(
   }
 
   for (let i = 2; i <= 999; i++) {
-    const candidate = deriveGroupFolder(`${displayName}-${hint || 'chat'}-${i}`);
+    const candidate = deriveGroupFolder(
+      `${displayName}-${hint || 'chat'}-${i}`,
+    );
     if (!used.has(candidate.toLowerCase())) return candidate;
   }
 

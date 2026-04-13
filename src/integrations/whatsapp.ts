@@ -33,9 +33,9 @@ import type {
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 
-const { proto } = createRequire(import.meta.url)(
-  '@whiskeysockets/baileys',
-) as { proto: typeof ProtoTypes };
+const { proto } = createRequire(import.meta.url)('@whiskeysockets/baileys') as {
+  proto: typeof ProtoTypes;
+};
 
 // @ts-expect-error no type declarations
 import QRCode from 'qrcode';
@@ -61,7 +61,10 @@ import type {
 } from '../types.js';
 
 import { registerIntegration } from './registry.js';
-import { getIntegrationSettings, saveIntegrationSettings } from './settings-store.js';
+import {
+  getIntegrationSettings,
+  saveIntegrationSettings,
+} from './settings-store.js';
 import type {
   ChannelOpts,
   IntegrationDefinition,
@@ -108,8 +111,11 @@ export function getReadReceiptKey(
 
 async function qrToDataUrl(qrData: string): Promise<string> {
   try {
-    return await (QRCode as { toDataURL(text: string, opts: Record<string, unknown>): Promise<string> })
-      .toDataURL(qrData, { width: 300, margin: 2 });
+    return await (
+      QRCode as {
+        toDataURL(text: string, opts: Record<string, unknown>): Promise<string>;
+      }
+    ).toDataURL(qrData, { width: 300, margin: 2 });
   } catch {
     // Fallback: return empty image
     return '';
@@ -256,7 +262,7 @@ class WhatsAppChannel implements Channel {
         // Write status for setup wizard
         try {
           fs.writeFileSync(STATUS_FILE, 'authenticated');
-              autoEnable();
+          autoEnable();
           fs.unlinkSync(QR_DATA_FILE);
         } catch {
           // ignore
@@ -278,7 +284,10 @@ class WhatsAppChannel implements Channel {
         // Delay profile updates to avoid interfering with initial key exchange
         setTimeout(() => {
           this.applyPendingProfileUpdates().catch((err) => {
-            log.error({ err }, 'Failed to apply pending WhatsApp profile updates');
+            log.error(
+              { err },
+              'Failed to apply pending WhatsApp profile updates',
+            );
           });
         }, 10000);
 
@@ -300,12 +309,15 @@ class WhatsAppChannel implements Channel {
 
     // Phone number share events (Baileys version-dependent)
     try {
-      (this.sock.ev as any).on('chats.phoneNumberShare', (data: { lid?: string; jid?: string }) => {
-        const lidUser = data.lid?.split('@')[0].split(':')[0];
-        if (lidUser && data.jid) {
-          this.setLidPhoneMapping(lidUser, data.jid);
-        }
-      });
+      (this.sock.ev as any).on(
+        'chats.phoneNumberShare',
+        (data: { lid?: string; jid?: string }) => {
+          const lidUser = data.lid?.split('@')[0].split(':')[0];
+          if (lidUser && data.jid) {
+            this.setLidPhoneMapping(lidUser, data.jid);
+          }
+        },
+      );
     } catch {
       // Event not available in this Baileys version
     }
@@ -386,7 +398,10 @@ class WhatsAppChannel implements Channel {
             is_bot_message: isBotMessage,
           });
         } catch (err) {
-          log.error({ err, remoteJid: msg.key?.remoteJid }, 'Message processing error');
+          log.error(
+            { err, remoteJid: msg.key?.remoteJid },
+            'Message processing error',
+          );
         }
       }
     });
@@ -411,7 +426,10 @@ class WhatsAppChannel implements Channel {
           this.sentMessageCache.delete(oldest);
         }
       }
-      log.info({ jid, messageId: sent?.key?.id }, 'WhatsApp outbound message sent');
+      log.info(
+        { jid, messageId: sent?.key?.id },
+        'WhatsApp outbound message sent',
+      );
     } catch (err) {
       log.error({ err, jid }, 'WhatsApp outbound send failed');
       throw err;
@@ -455,8 +473,8 @@ class WhatsAppChannel implements Channel {
           id: jid,
           jid,
           name: metadata.subject || normalized?.subject || jid,
-          members: (normalized?.participants || []).map((participant) =>
-            participant.id,
+          members: (normalized?.participants || []).map(
+            (participant) => participant.id,
           ),
         };
       }),
@@ -470,8 +488,9 @@ class WhatsAppChannel implements Channel {
     if (!normalizedName) return null;
     const groups = await this.getGroups();
     return (
-      groups.find((group) => group.name.trim().toLowerCase() === normalizedName) ||
-      null
+      groups.find(
+        (group) => group.name.trim().toLowerCase() === normalizedName,
+      ) || null
     );
   }
 
@@ -521,7 +540,9 @@ class WhatsAppChannel implements Channel {
       if (imageBuffer) {
         const selfJid = this.sock.user?.id;
         if (!selfJid) {
-          throw new Error('WhatsApp profile picture update requires an authenticated user');
+          throw new Error(
+            'WhatsApp profile picture update requires an authenticated user',
+          );
         }
         await this.sock.updateProfilePicture(selfJid, imageBuffer);
       }
@@ -601,7 +622,9 @@ class WhatsAppChannel implements Channel {
     try {
       const pn = await (
         this.sock.signalRepository as unknown as {
-          lidMapping?: { getPNForLID(jid: string): Promise<string | undefined> };
+          lidMapping?: {
+            getPNForLID(jid: string): Promise<string | undefined>;
+          };
         }
       )?.lidMapping?.getPNForLID(jid);
       if (pn) {
@@ -663,7 +686,10 @@ class WhatsAppChannel implements Channel {
             'Flushed queued WhatsApp outbound message',
           );
         } catch (err) {
-          log.error({ err, jid: item.jid }, 'Failed to flush queued WhatsApp outbound message');
+          log.error(
+            { err, jid: item.jid },
+            'Failed to flush queued WhatsApp outbound message',
+          );
           this.outgoingQueue.unshift(item);
           break;
         }
@@ -689,10 +715,11 @@ function hasCredentials(): boolean {
 
 function autoEnable(): void {
   try {
-    const { isIntegrationEnabled, setIntegrationEnabled } = require('./settings-store.js') as {
-      isIntegrationEnabled: (name: string) => boolean;
-      setIntegrationEnabled: (name: string, enabled: boolean) => void;
-    };
+    const { isIntegrationEnabled, setIntegrationEnabled } =
+      require('./settings-store.js') as {
+        isIntegrationEnabled: (name: string) => boolean;
+        setIntegrationEnabled: (name: string, enabled: boolean) => void;
+      };
     if (!isIntegrationEnabled('whatsapp')) {
       setIntegrationEnabled('whatsapp', true);
       log.info('WhatsApp auto-enabled after successful authentication');
@@ -792,7 +819,10 @@ const whatsappIntegration: IntegrationDefinition = {
       parameters: {
         type: 'object',
         properties: {
-          to: { type: 'string', description: 'Recipient name, phone number, or WhatsApp JID' },
+          to: {
+            type: 'string',
+            description: 'Recipient name, phone number, or WhatsApp JID',
+          },
           text: { type: 'string', description: 'Message text' },
         },
         required: ['to', 'text'],
@@ -802,13 +832,15 @@ const whatsappIntegration: IntegrationDefinition = {
       execute: async (args, ctx) => {
         const to = args.to as string;
         const text = args.text as string;
-        if (!ctx.sendMessage) throw new Error('Messaging context not available');
+        if (!ctx.sendMessage)
+          throw new Error('Messaging context not available');
         // If it's already a WhatsApp JID, use directly
-        const jid = to.endsWith('@s.whatsapp.net') || to.endsWith('@g.us')
-          ? to
-          : ctx.resolveRecipient
-            ? await ctx.resolveRecipient(to)
-            : `${to.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+        const jid =
+          to.endsWith('@s.whatsapp.net') || to.endsWith('@g.us')
+            ? to
+            : ctx.resolveRecipient
+              ? await ctx.resolveRecipient(to)
+              : `${to.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
         await ctx.sendMessage(jid, text);
         return JSON.stringify({ status: 'sent', to: jid });
       },
@@ -826,7 +858,8 @@ const whatsappIntegration: IntegrationDefinition = {
       location: 'host' as const,
       execute: async (args, ctx) => {
         const text = args.text as string;
-        if (!ctx.chatJid || !ctx.sendMessage) throw new Error('Chat context not available');
+        if (!ctx.chatJid || !ctx.sendMessage)
+          throw new Error('Chat context not available');
         await ctx.sendMessage(ctx.chatJid, text);
         return JSON.stringify({ status: 'sent' });
       },
@@ -838,7 +871,11 @@ const whatsappIntegration: IntegrationDefinition = {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Group name' },
-          members: { type: 'array', items: { type: 'string' }, description: 'Member phone numbers' },
+          members: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Member phone numbers',
+          },
           message: { type: 'string', description: 'Optional initial message' },
         },
         required: ['title', 'members'],
@@ -846,7 +883,8 @@ const whatsappIntegration: IntegrationDefinition = {
       location: 'host' as const,
       controllerOnly: true,
       execute: async (args, ctx) => {
-        if (!channelInstance?.isConnected()) throw new Error('WhatsApp not connected');
+        if (!channelInstance?.isConnected())
+          throw new Error('WhatsApp not connected');
         const result = await channelInstance.createGroup({
           title: args.title as string,
           members: args.members as string[],
@@ -861,17 +899,28 @@ const whatsappIntegration: IntegrationDefinition = {
       parameters: {
         type: 'object',
         properties: {
-          groupName: { type: 'string', description: 'Group name to search for' },
-          members: { type: 'array', items: { type: 'string' }, description: 'Phone numbers to add' },
+          groupName: {
+            type: 'string',
+            description: 'Group name to search for',
+          },
+          members: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Phone numbers to add',
+          },
         },
         required: ['groupName', 'members'],
       },
       location: 'host' as const,
       controllerOnly: true,
       execute: async (args, ctx) => {
-        if (!channelInstance?.isConnected()) throw new Error('WhatsApp not connected');
-        const group = await channelInstance.findGroupByName(args.groupName as string);
-        if (!group) throw new Error(`WhatsApp group "${args.groupName}" not found`);
+        if (!channelInstance?.isConnected())
+          throw new Error('WhatsApp not connected');
+        const group = await channelInstance.findGroupByName(
+          args.groupName as string,
+        );
+        if (!group)
+          throw new Error(`WhatsApp group "${args.groupName}" not found`);
         await channelInstance.addMembers(group.id, args.members as string[]);
         return JSON.stringify({ status: 'members_added', group: group.name });
       },
@@ -883,7 +932,8 @@ const whatsappIntegration: IntegrationDefinition = {
       location: 'host' as const,
       controllerOnly: true,
       execute: async () => {
-        if (!channelInstance?.isConnected()) throw new Error('WhatsApp not connected');
+        if (!channelInstance?.isConnected())
+          throw new Error('WhatsApp not connected');
         const groups = await channelInstance.getGroups();
         return JSON.stringify(groups);
       },
@@ -926,7 +976,8 @@ const whatsappIntegration: IntegrationDefinition = {
         profileAbout: values.about || '',
         profileAvatarDataUrl: avatarDataUrl,
         profileAvatarUrl:
-          avatarValue.startsWith('http://') || avatarValue.startsWith('https://')
+          avatarValue.startsWith('http://') ||
+          avatarValue.startsWith('https://')
             ? avatarValue
             : '',
         profileUpdatedAt: new Date().toISOString(),
@@ -981,8 +1032,12 @@ const whatsappIntegration: IntegrationDefinition = {
           cleanupAuthSocket();
 
           // Clear stale state
-          try { fs.unlinkSync(STATUS_FILE); } catch {}
-          try { fs.unlinkSync(QR_DATA_FILE); } catch {}
+          try {
+            fs.unlinkSync(STATUS_FILE);
+          } catch {}
+          try {
+            fs.unlinkSync(QR_DATA_FILE);
+          } catch {}
 
           fs.writeFileSync(STATUS_FILE, 'connecting');
 
@@ -1015,19 +1070,32 @@ const whatsappIntegration: IntegrationDefinition = {
             }
             if (update.connection === 'close') {
               const reason = (
-                update.lastDisconnect?.error as { output?: { statusCode?: number } }
+                update.lastDisconnect?.error as {
+                  output?: { statusCode?: number };
+                }
               )?.output?.statusCode;
               if (reason === 515) {
                 // 515 = stream error after pairing — reconnect to finish
-                log.info('Stream error (515) — reconnecting to finish handshake');
+                log.info(
+                  'Stream error (515) — reconnecting to finish handshake',
+                );
                 fs.writeFileSync(STATUS_FILE, 'reconnecting');
                 setTimeout(async () => {
                   try {
-                    const { state: s2, saveCreds: sc2 } = await useMultiFileAuthState(AUTH_DIR);
-                    const { version: v2 } = await fetchLatestWaWebVersion({}).catch(() => ({ version: undefined }));
+                    const { state: s2, saveCreds: sc2 } =
+                      await useMultiFileAuthState(AUTH_DIR);
+                    const { version: v2 } = await fetchLatestWaWebVersion(
+                      {},
+                    ).catch(() => ({ version: undefined }));
                     authSocket = makeWASocket({
                       version: v2,
-                      auth: { creds: s2.creds, keys: makeCacheableSignalKeyStore(s2.keys, baileysLogger) },
+                      auth: {
+                        creds: s2.creds,
+                        keys: makeCacheableSignalKeyStore(
+                          s2.keys,
+                          baileysLogger,
+                        ),
+                      },
                       printQRInTerminal: false,
                       logger: baileysLogger,
                       browser: Browsers.appropriate('Chrome'),
@@ -1036,7 +1104,7 @@ const whatsappIntegration: IntegrationDefinition = {
                     authSocket.ev.on('connection.update', (u) => {
                       if (u.connection === 'open') {
                         fs.writeFileSync(STATUS_FILE, 'authenticated');
-              autoEnable();
+                        autoEnable();
                         log.info('WhatsApp authenticated after 515 reconnect');
                         cleanupAuthSocket();
                       }
@@ -1058,7 +1126,10 @@ const whatsappIntegration: IntegrationDefinition = {
           try {
             const code = await sock.requestPairingCode(phone);
             fs.writeFileSync(STATUS_FILE, `pairing_code:${code}`);
-            log.info({ phone: phone.slice(0, 4) + '***' }, 'Pairing code generated');
+            log.info(
+              { phone: phone.slice(0, 4) + '***' },
+              'Pairing code generated',
+            );
             return {
               message: `Your pairing code is: **${code}**\n\nOn your phone: WhatsApp → Settings → Linked Devices → Link a Device → "Link with phone number instead" → enter this code.`,
             };
@@ -1089,11 +1160,14 @@ const whatsappIntegration: IntegrationDefinition = {
                 }
               }
             } catch (err) {
-              if (err instanceof Error && err.message.includes('failed')) throw err;
+              if (err instanceof Error && err.message.includes('failed'))
+                throw err;
             }
           }
           cleanupAuthSocket();
-          throw new Error('Timed out waiting for pairing to complete. Try again.');
+          throw new Error(
+            'Timed out waiting for pairing to complete. Try again.',
+          );
         },
         isComplete: async () => hasCredentials(),
       },

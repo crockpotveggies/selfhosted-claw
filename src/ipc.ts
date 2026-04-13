@@ -806,9 +806,15 @@ export async function processTaskIpc(
           });
           break;
         }
-        logger.warn({ sourceGroup }, 'signal_list_groups: Signal channel not available');
+        logger.warn(
+          { sourceGroup },
+          'signal_list_groups: Signal channel not available',
+        );
         if (data.chatJid) {
-          await deps.sendMessage(data.chatJid, 'Signal is not configured — cannot list groups.');
+          await deps.sendMessage(
+            data.chatJid,
+            'Signal is not configured — cannot list groups.',
+          );
         }
         break;
       }
@@ -1095,9 +1101,15 @@ export async function processTaskIpc(
           });
           break;
         }
-        logger.warn({ sourceGroup }, 'whatsapp_list_groups: WhatsApp channel not available');
+        logger.warn(
+          { sourceGroup },
+          'whatsapp_list_groups: WhatsApp channel not available',
+        );
         if (data.chatJid) {
-          await deps.sendMessage(data.chatJid, 'WhatsApp is not configured — cannot list groups.');
+          await deps.sendMessage(
+            data.chatJid,
+            'WhatsApp is not configured — cannot list groups.',
+          );
         }
         break;
       }
@@ -1178,7 +1190,10 @@ export async function processTaskIpc(
         );
         if (deps.unregisterGroup) {
           deps.unregisterGroup(group.id);
-          logger.info({ jid: group.id }, 'Unregistered WhatsApp group after leaving');
+          logger.info(
+            { jid: group.id },
+            'Unregistered WhatsApp group after leaving',
+          );
         }
         if (data.chatJid) {
           await deps.sendMessage(
@@ -1517,7 +1532,11 @@ export async function processTaskIpc(
       try {
         const settings = getIntegrationSettings(data.integration);
         logger.info(
-          { integration: data.integration, tool: data.tool, group_folder: sourceGroup },
+          {
+            integration: data.integration,
+            tool: data.tool,
+            group_folder: sourceGroup,
+          },
           `Integration tool called: ${data.tool}`,
         );
         const result = await toolDef.execute(data.args || {}, {
@@ -1536,12 +1555,21 @@ export async function processTaskIpc(
         });
         markIpcSideEffect(sourceGroup);
         logger.info(
-          { integration: data.integration, tool: data.tool, group_folder: sourceGroup },
+          {
+            integration: data.integration,
+            tool: data.tool,
+            group_folder: sourceGroup,
+          },
           `Integration tool completed: ${data.tool}`,
         );
       } catch (err) {
         logger.error(
-          { integration: data.integration, tool: data.tool, group_folder: sourceGroup, err: String(err) },
+          {
+            integration: data.integration,
+            tool: data.tool,
+            group_folder: sourceGroup,
+            err: String(err),
+          },
           `Integration tool failed: ${data.tool}`,
         );
         writeIpcResponse(sourceGroup, data.requestId, {

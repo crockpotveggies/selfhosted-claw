@@ -323,7 +323,8 @@ const calendarIntegration: IntegrationDefinition = {
           } else {
             return {
               state: 'degraded',
-              message: 'OAuth token expired or refresh failed — re-authenticate',
+              message:
+                'OAuth token expired or refresh failed — re-authenticate',
             };
           }
         }

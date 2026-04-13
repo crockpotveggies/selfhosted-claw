@@ -62,9 +62,7 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { ControlActionService } from './control-actions.js';
-import type {
-  ApprovalReplyDecision,
-} from './control-actions.js';
+import type { ApprovalReplyDecision } from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
 import {
   deriveUniqueGroupFolder,
@@ -906,7 +904,9 @@ async function main(): Promise<void> {
           return `Confirmation required before starting a new Signal conversation with ${target.displayName} (${target.resolvedTarget}).\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
         }
         await controlService.executeAction(
-          'outbound.send' as string, input, agentContext,
+          'outbound.send' as string,
+          input,
+          agentContext,
         );
         return `Sent via Signal to ${target.displayName} (${target.resolvedTarget}).`;
       }
@@ -1394,17 +1394,31 @@ async function main(): Promise<void> {
   const findLiveGroupAcrossChannels = async (
     name: string,
     preferredChannelName?: string | null,
-  ): Promise<{ jid: string; channelName: string; displayName: string } | null> => {
+  ): Promise<{
+    jid: string;
+    channelName: string;
+    displayName: string;
+  } | null> => {
     const trimmed = name.trim();
     if (!trimmed) return null;
-    const candidateChannels = channels.filter((channel) => channel.findGroupByName);
+    const candidateChannels = channels.filter(
+      (channel) => channel.findGroupByName,
+    );
     const orderedChannels = preferredChannelName
       ? [
-          ...candidateChannels.filter((channel) => channel.name === preferredChannelName),
-          ...candidateChannels.filter((channel) => channel.name !== preferredChannelName),
+          ...candidateChannels.filter(
+            (channel) => channel.name === preferredChannelName,
+          ),
+          ...candidateChannels.filter(
+            (channel) => channel.name !== preferredChannelName,
+          ),
         ]
       : candidateChannels;
-    const matches: Array<{ channelName: string; jid: string; displayName: string }> = [];
+    const matches: Array<{
+      channelName: string;
+      jid: string;
+      displayName: string;
+    }> = [];
     for (const channel of orderedChannels) {
       const group = await channel.findGroupByName?.(trimmed);
       if (!group) continue;
@@ -1427,9 +1441,7 @@ async function main(): Promise<void> {
       `Recipient "${name}" matches multiple live groups across channels.`,
     );
   };
-  const inferSourceChannel = (
-    sourceGroupFolder: string,
-  ): string | null => {
+  const inferSourceChannel = (sourceGroupFolder: string): string | null => {
     for (const [jid, group] of Object.entries(registeredGroups)) {
       if (group.folder !== sourceGroupFolder) continue;
       const channel = findChannel(channels, jid);
@@ -1465,7 +1477,10 @@ async function main(): Promise<void> {
       }
       return `${resolvedDigits}@s.whatsapp.net`;
     }
-    const target = await controlService.resolveOutboundTarget('signal', trimmed);
+    const target = await controlService.resolveOutboundTarget(
+      'signal',
+      trimmed,
+    );
     return target.resolvedTarget;
   };
   const resolveIpcMessageRecipient = async (
@@ -1479,8 +1494,8 @@ async function main(): Promise<void> {
       return trimmed;
     }
 
-    const exactMatches = Object.entries(registeredGroups).filter(([, group]) =>
-      group.name.trim().toLowerCase() === trimmed.toLowerCase(),
+    const exactMatches = Object.entries(registeredGroups).filter(
+      ([, group]) => group.name.trim().toLowerCase() === trimmed.toLowerCase(),
     );
     const sourceChannel = inferSourceChannel(sourceGroupFolder);
     if (sourceChannel) {
@@ -1506,7 +1521,8 @@ async function main(): Promise<void> {
         const existingChat = getAllChats().find(
           (chat) =>
             chat.jid === liveGroupMatch.jid &&
-            chat.name.trim().toLowerCase() === liveGroupMatch.displayName.trim().toLowerCase(),
+            chat.name.trim().toLowerCase() ===
+              liveGroupMatch.displayName.trim().toLowerCase(),
         );
         if (!existingChat) {
           throw new Error(
@@ -1517,12 +1533,14 @@ async function main(): Promise<void> {
       }
       return resolveIpcRecipientForChannel(sourceChannel, trimmed);
     }
-    const crossChannelLiveGroupMatch = await findLiveGroupAcrossChannels(trimmed);
+    const crossChannelLiveGroupMatch =
+      await findLiveGroupAcrossChannels(trimmed);
     if (crossChannelLiveGroupMatch) {
       const existingChat = getAllChats().find(
         (chat) =>
           chat.jid === crossChannelLiveGroupMatch.jid &&
-          chat.name.trim().toLowerCase() === crossChannelLiveGroupMatch.displayName.trim().toLowerCase(),
+          chat.name.trim().toLowerCase() ===
+            crossChannelLiveGroupMatch.displayName.trim().toLowerCase(),
       );
       if (!existingChat) {
         throw new Error(
@@ -1531,9 +1549,9 @@ async function main(): Promise<void> {
       }
       return crossChannelLiveGroupMatch.jid;
     }
-    return controlService.resolveOutboundTarget('signal', trimmed).then(
-      (target) => target.resolvedTarget,
-    );
+    return controlService
+      .resolveOutboundTarget('signal', trimmed)
+      .then((target) => target.resolvedTarget);
   };
 
   startIpcWatcher({
@@ -1549,7 +1567,10 @@ async function main(): Promise<void> {
       if (channel === 'signal' || channel === 'whatsapp') {
         return resolveIpcRecipientForChannel(channel, name);
       }
-      const target = await controlService.resolveOutboundTarget(channel, name.trim());
+      const target = await controlService.resolveOutboundTarget(
+        channel,
+        name.trim(),
+      );
       return target.resolvedTarget;
     },
     registeredGroups: () => registeredGroups,
@@ -1620,7 +1641,8 @@ async function main(): Promise<void> {
     },
     whatsappCreateGroup: async (input) => {
       const ch = getChannelByName('whatsapp');
-      if (!ch?.createGroup) throw new Error('WhatsApp createGroup not available');
+      if (!ch?.createGroup)
+        throw new Error('WhatsApp createGroup not available');
       return ch.createGroup(input);
     },
     whatsappLeaveGroup: async (groupId) => {

@@ -334,11 +334,12 @@ describe('control plane parity', () => {
       oauthStateCreatedAt: '',
     });
 
-    vi
-      .spyOn(harness.service as any, 'loadProviderEnvironment')
-      .mockResolvedValue({
-        GOOGLE_CALENDAR_ACCESS_TOKEN: 'stale-direct-token',
-      });
+    vi.spyOn(
+      harness.service as any,
+      'loadProviderEnvironment',
+    ).mockResolvedValue({
+      GOOGLE_CALENDAR_ACCESS_TOKEN: 'stale-direct-token',
+    });
 
     const fetchMock = vi
       .fn()

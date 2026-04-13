@@ -121,7 +121,9 @@ process.on('uncaughtException', (err) => {
     logger.fatal({ err }, 'Uncaught exception');
   } catch {
     // If logger itself is broken (e.g., transport worker died), fall back to stderr
-    process.stderr.write(`[FATAL] Uncaught exception: ${err?.message || err}\n`);
+    process.stderr.write(
+      `[FATAL] Uncaught exception: ${err?.message || err}\n`,
+    );
   }
   setTimeout(() => process.exit(1), 200);
 });
