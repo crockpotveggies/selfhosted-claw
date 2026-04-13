@@ -1,11 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   CBadge,
-  CCard,
-  CCardBody,
-  CCardHeader,
   CCloseButton,
-  CCol,
   CContainer,
   CHeader,
   CHeaderBrand,
@@ -13,7 +9,6 @@ import {
   CHeaderToggler,
   CPopover,
   CNavItem,
-  CRow,
   CSidebar,
   CSidebarBrand,
   CSidebarFooter,
@@ -46,7 +41,6 @@ import { ADMIN_PATHS, ADMIN_TABS, tabFromPathname } from './admin/navigation';
 import { useAdminDashboard } from './admin/useAdminDashboard';
 import type { AdminTab } from './admin/types';
 import { PageContent } from './components/PageContent';
-import { SidebarInspector } from './components/SidebarInspector';
 import { SetupOverlay } from './components/SetupOverlay';
 
 function AdminDashboardLayout() {
@@ -59,7 +53,7 @@ function AdminDashboardLayout() {
 
   const isSetupRoute = location.pathname === ADMIN_PATHS.setup;
   const matchedTab = tabFromPathname(location.pathname);
-  const activeTab: AdminTab = matchedTab || 'contacts';
+  const activeTab: AdminTab = matchedTab || 'dashboard';
   const activeTabMeta =
     ADMIN_TABS.find((tab) => tab.id === activeTab) || ADMIN_TABS[0];
   const systemChecks = [
@@ -79,7 +73,7 @@ function AdminDashboardLayout() {
   useEffect(() => {
     if (location.pathname === '/') {
       navigate(
-        `${ADMIN_PATHS.contacts}${location.search}${location.hash}`,
+        `${ADMIN_PATHS.dashboard}${location.search}${location.hash}`,
         { replace: true },
       );
       return;
@@ -88,7 +82,7 @@ function AdminDashboardLayout() {
     const validPath =
       isSetupRoute || ADMIN_TABS.some((tab) => tab.path === location.pathname);
     if (!validPath) {
-      navigate(ADMIN_PATHS.contacts, { replace: true });
+      navigate(ADMIN_PATHS.dashboard, { replace: true });
     }
   }, [isSetupRoute, location.hash, location.pathname, location.search, navigate]);
 
@@ -119,7 +113,7 @@ function AdminDashboardLayout() {
     navigate(
       {
         pathname:
-          location.pathname === '/' ? ADMIN_PATHS.contacts : location.pathname,
+          location.pathname === '/' ? ADMIN_PATHS.dashboard : location.pathname,
         search: nextSearch ? `?${nextSearch}` : '',
         hash: location.hash,
       },
@@ -129,7 +123,7 @@ function AdminDashboardLayout() {
 
   useEffect(() => {
     if (!dashboard.setupBlocked && isSetupRoute) {
-      navigate(ADMIN_PATHS.contacts, { replace: true });
+      navigate(ADMIN_PATHS.dashboard, { replace: true });
     }
   }, [dashboard.setupBlocked, isSetupRoute, navigate]);
 
@@ -248,73 +242,26 @@ function AdminDashboardLayout() {
               </CNavItem>
             </CHeaderNav>
           </CContainer>
-          <CContainer fluid className="px-4 py-3 adminHeaderDetails">
-            <div>
-              <div className="heroEyebrow">{heroEyebrow}</div>
-              <h1 className="adminPageTitle">{heroTitle}</h1>
-              <p className="adminPageLead">
-                The admin UI and Signal control chat call the same host-side actions,
-                so everything here reflects the real control plane.
-              </p>
+          <CContainer fluid className="px-4 py-2 adminHeaderDetails">
+            <div className="d-flex align-items-center gap-2">
+              <span className="heroEyebrow">{heroEyebrow}</span>
+              <span className="adminPageTitle ms-auto">{heroTitle}</span>
+              <CTooltip
+                content="The admin UI and Signal control chat call the same host-side actions, so everything here reflects the real control plane."
+                placement="bottom"
+              >
+                <span className="headerHelpIcon">?</span>
+              </CTooltip>
             </div>
           </CContainer>
         </CHeader>
 
         <div className="body flex-grow-1 adminBody">
           <CContainer fluid className="px-4">
-            <CRow className="g-4 mb-4">
-              <CCol sm={6} xl={3}>
-                <CCard className="metricCard">
-                  <CCardBody>
-                    <div className="text-body-secondary small text-uppercase">Contacts</div>
-                    <div className="metricValue">{dashboard.contacts.length}</div>
-                    <div className="metricMeta">Known identities in review</div>
-                  </CCardBody>
-                </CCard>
-              </CCol>
-              <CCol sm={6} xl={3}>
-                <CCard className="metricCard">
-                  <CCardBody>
-                    <div className="text-body-secondary small text-uppercase">Approvals</div>
-                    <div className="metricValue">{dashboard.pendingActions.length}</div>
-                    <div className="metricMeta">Pending human decisions</div>
-                  </CCardBody>
-                </CCard>
-              </CCol>
-              <CCol sm={6} xl={3}>
-                <CCard className="metricCard">
-                  <CCardBody>
-                    <div className="text-body-secondary small text-uppercase">Audit log</div>
-                    <div className="metricValue">{dashboard.auditRecords.length}</div>
-                    <div className="metricMeta">Recent control-plane events</div>
-                  </CCardBody>
-                </CCard>
-              </CCol>
-              <CCol sm={6} xl={3}>
-                <CCard className="metricCard">
-                  <CCardBody>
-                    <div className="text-body-secondary small text-uppercase">Verified</div>
-                    <div className="metricValue">{dashboard.verifiedIdentities.length}</div>
-                    <div className="metricMeta">Trusted human identities</div>
-                  </CCardBody>
-                </CCard>
-              </CCol>
-            </CRow>
-
-            <CRow className="g-4">
-              <CCol xl={9} className="workspace">
-                {dashboard.errorBanner ? (
-                  <div className="banner error">{dashboard.errorBanner}</div>
-                ) : null}
-                <div className="contentDeck">
-                  <PageContent activeTab={activeTab} />
-                </div>
-              </CCol>
-
-              <CCol xl={3} className="inspector">
-                <SidebarInspector activeTab={activeTab} />
-              </CCol>
-            </CRow>
+            {dashboard.errorBanner ? (
+              <div className="banner error">{dashboard.errorBanner}</div>
+            ) : null}
+            <PageContent activeTab={activeTab} />
           </CContainer>
         </div>
       </div>
@@ -335,7 +282,7 @@ export function App() {
           <Route key={tab.id} path={tab.path} element={<AdminDashboardLayout />} />
         ))}
         <Route path={ADMIN_PATHS.setup} element={<AdminDashboardLayout />} />
-        <Route path="*" element={<Navigate to={ADMIN_PATHS.contacts} replace />} />
+        <Route path="*" element={<Navigate to={ADMIN_PATHS.dashboard} replace />} />
       </Routes>
     </AdminDashboardProvider>
   );

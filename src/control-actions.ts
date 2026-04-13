@@ -45,7 +45,28 @@ import {
   ControlToolDefinitionSummary,
   VerifiedIdentity,
 } from './control-types.js';
-import { SignalComposeManager, SignalComposeStatus } from './signal-compose.js';
+import {
+  getServiceStatus,
+  startService,
+  resetCircuitBreaker,
+} from './integrations/service-manager.js';
+import { getIntegration } from './integrations/registry.js';
+import { getIntegrationSettings } from './integrations/settings-store.js';
+
+/**
+ * Signal compose status — kept for backward compatibility with admin-server
+ * and control-commands callers. Built from the integration service manager.
+ */
+export interface SignalComposeStatus {
+  account: string;
+  localRpcUrl: string;
+  composeFile: string;
+  envFile: string;
+  dataDir: string;
+  configured: boolean;
+  running: boolean;
+  lastError: string;
+}
 import { resolveSignalTarget } from './outbound-directives.js';
 
 interface ContactMutationInput {
@@ -402,7 +423,6 @@ export class ControlActionService {
 
   constructor(
     private readonly store: ControlStore = new ControlStore(),
-    private readonly signalCompose: SignalComposeManager = new SignalComposeManager(),
   ) {
     this.registerDefinitions();
   }
@@ -838,7 +858,15 @@ export class ControlActionService {
         const env = this.getSetupEnvironment();
         const account = input.account || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT;
         const rpcUrl = input.rpcUrl || env.SIGNAL_RPC_URL || SIGNAL_RPC_URL;
-        const next = this.signalCompose.start({ account, rpcUrl });
+        resetCircuitBreaker('signal');
+        const svcStatus = startService('signal', { account, rpcUrl });
+        const next: SignalComposeStatus = {
+          ...before,
+          account,
+          localRpcUrl: rpcUrl,
+          running: svcStatus.running,
+          lastError: svcStatus.lastError,
+        };
         return {
           result: next,
           beforeState: stableStringify(before),
@@ -1145,10 +1173,21 @@ export class ControlActionService {
 
   getSignalComposeStatus(): SignalComposeStatus {
     const env = this.getSetupEnvironment();
-    return this.signalCompose.getStatus({
-      account: env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT,
-      rpcUrl: env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
-    });
+    const settings = getIntegrationSettings('signal');
+    const account = (settings.account as string) || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT;
+    const rpcUrl = (settings.rpcUrl as string) || env.SIGNAL_RPC_URL || SIGNAL_RPC_URL;
+    const dataDir = (settings.dataDir as string) || '';
+    const svcStatus = getServiceStatus('signal');
+    return {
+      account,
+      localRpcUrl: rpcUrl,
+      composeFile: svcStatus.configured ? 'scripts/signal-cli/docker-compose.yml' : '',
+      envFile: svcStatus.configured ? 'scripts/signal-cli/.env' : '',
+      dataDir,
+      configured: svcStatus.configured,
+      running: svcStatus.running,
+      lastError: svcStatus.lastError,
+    };
   }
 
   getSignalProfile(): SignalProfileSettings {
@@ -1356,18 +1395,24 @@ export class ControlActionService {
   }
 
   async getSignalLinkQrDataUrl(deviceName: string): Promise<string> {
+    const def = getIntegration('signal');
+    const setup = def?.service?.setup;
+    if (!setup?.fetchLinkQr) {
+      throw new Error('Signal integration not registered or missing setup hooks');
+    }
     const env = this.getSetupEnvironment();
-    return this.signalCompose.fetchLinkQrDataUrl({
-      deviceName,
-      rpcUrl: env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
-    });
+    const rpcUrl = env.SIGNAL_RPC_URL || SIGNAL_RPC_URL;
+    return setup.fetchLinkQr(rpcUrl, deviceName);
   }
 
   async listSignalAccounts(rpcUrl?: string): Promise<string[]> {
+    const def = getIntegration('signal');
+    const setup = def?.service?.setup;
+    if (!setup?.listAccounts) {
+      throw new Error('Signal integration not registered or missing setup hooks');
+    }
     const env = this.getSetupEnvironment();
-    return this.signalCompose.listAccounts(
-      rpcUrl || env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
-    );
+    return setup.listAccounts(rpcUrl || env.SIGNAL_RPC_URL || SIGNAL_RPC_URL);
   }
 
   async startSignalRegistration(
@@ -1375,8 +1420,13 @@ export class ControlActionService {
     useVoice: boolean,
     captchaToken?: string,
   ): Promise<{ message: string }> {
+    const def = getIntegration('signal');
+    const setup = def?.service?.setup;
+    if (!setup?.startRegistration) {
+      throw new Error('Signal integration not registered or missing setup hooks');
+    }
     const env = this.getSetupEnvironment();
-    return this.signalCompose.startRegistration({
+    return setup.startRegistration({
       account: account || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT,
       rpcUrl: env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
       useVoice,
@@ -1388,8 +1438,13 @@ export class ControlActionService {
     account: string,
     code: string,
   ): Promise<{ message: string }> {
+    const def = getIntegration('signal');
+    const setup = def?.service?.setup;
+    if (!setup?.verifyRegistration) {
+      throw new Error('Signal integration not registered or missing setup hooks');
+    }
     const env = this.getSetupEnvironment();
-    return this.signalCompose.verifyRegistration({
+    return setup.verifyRegistration({
       account: account || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT,
       rpcUrl: env.SIGNAL_RPC_URL || SIGNAL_RPC_URL,
       code,

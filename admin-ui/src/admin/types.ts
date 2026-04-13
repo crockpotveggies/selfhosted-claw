@@ -2,14 +2,18 @@ export type ContactStatus = 'trusted' | 'unknown' | 'abuse';
 export type PersonalityScope = 'global' | 'main' | `group:${string}`;
 export type SignalProvisionMode = 'link' | 'register';
 export type AdminTab =
+  | 'dashboard'
   | 'contacts'
   | 'personality'
   | 'policy'
-  | 'connections'
+  | 'availability'
+  | 'integrations'
   | 'tools'
   | 'skills'
+  | 'tasks'
   | 'approvals'
-  | 'audit';
+  | 'audit'
+  | 'logs';
 
 export interface SkillView {
   name: string;

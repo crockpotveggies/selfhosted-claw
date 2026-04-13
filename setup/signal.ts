@@ -1,6 +1,6 @@
 import { readEnvFile } from '../src/env.js';
 import { logger } from '../src/logger.js';
-import { SignalComposeManager } from '../src/signal-compose.js';
+import { getServiceStatus } from '../src/integrations/service-manager.js';
 import { emitStatus } from './status.js';
 
 export async function run(_args: string[]): Promise<void> {
@@ -9,10 +9,7 @@ export async function run(_args: string[]): Promise<void> {
   const rpcUrl =
     process.env.SIGNAL_RPC_URL || envVars.SIGNAL_RPC_URL || 'http://127.0.0.1:8080';
 
-  const composeStatus = new SignalComposeManager().getStatus({
-    account,
-    rpcUrl,
-  });
+  const composeStatus = getServiceStatus('signal');
   let rpcReachable = false;
   let selfChatReady = false;
 
@@ -40,7 +37,7 @@ export async function run(_args: string[]): Promise<void> {
   }
 
   emitStatus('SIGNAL', {
-    SIGNAL_COMPOSE_FILE: composeStatus.composeFile,
+    SIGNAL_COMPOSE_FILE: composeStatus.configured ? 'scripts/signal-cli/docker-compose.yml' : '',
     SIGNAL_COMPOSE_RUNNING: composeStatus.running,
     SIGNAL_ACCOUNT: account || 'missing',
     SIGNAL_RPC_URL: rpcUrl,

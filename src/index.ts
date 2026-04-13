@@ -22,10 +22,16 @@ import {
 import { ensureAgentMemoryFile } from './agent-memory.js';
 import { startAdminServer } from './admin-server.js';
 import './channels/index.js';
+import './integrations/index.js';
 import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
+import {
+  ensureServicesRunning,
+  startHealthMonitor,
+} from './integrations/service-manager.js';
+import { startLogPruner } from './logger/pruner.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -1405,6 +1411,9 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
+  // Ensure integration Docker services (signal-cli, etc.) are running before connecting channels.
+  await ensureServicesRunning();
+
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
@@ -1434,6 +1443,10 @@ async function main(): Promise<void> {
   }
 
   startAdminServer({ service: controlService });
+
+  // Start integration health monitor and log pruner
+  startHealthMonitor();
+  startLogPruner();
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({

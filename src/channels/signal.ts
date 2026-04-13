@@ -394,9 +394,7 @@ export class SignalChannel implements Channel {
       'leaveGroup',
     );
     if (!response.ok) {
-      throw new Error(
-        `Signal RPC leaveGroup failed with ${response.status}`,
-      );
+      throw new Error(`Signal RPC leaveGroup failed with ${response.status}`);
     }
   }
 

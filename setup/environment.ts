@@ -10,7 +10,7 @@ import Database from 'better-sqlite3';
 import { STORE_DIR } from '../src/config.js';
 import { readEnvFile } from '../src/env.js';
 import { logger } from '../src/logger.js';
-import { SignalComposeManager } from '../src/signal-compose.js';
+import { getServiceStatus } from '../src/integrations/service-manager.js';
 import { commandExists, getPlatform, isHeadless, isWSL } from './platform.js';
 import { emitStatus } from './status.js';
 
@@ -41,7 +41,7 @@ export async function run(_args: string[]): Promise<void> {
     }
   }
 
-  const signalCompose = new SignalComposeManager().getStatus();
+  const signalCompose = getServiceStatus('signal');
   const envVars = readEnvFile([
     'OPENAI_BASE_URL',
     'OPENAI_MODEL',

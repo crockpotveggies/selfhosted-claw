@@ -1,25 +1,33 @@
 import {
   cilCheckCircle,
   cilCode,
-  cilCloudDownload,
   cilDescription,
   cilNotes,
   cilPeople,
+  cilPuzzle,
   cilShieldAlt,
+  cilSpeedometer,
+  cilCalendar,
+  cilClock,
   cilUser,
+  cilGraph,
 } from '@coreui/icons';
 
 import type { AdminTab } from './types';
 
 export const ADMIN_PATHS = {
+  dashboard: '/dashboard',
   contacts: '/contacts',
   personality: '/personality',
   policy: '/policy',
-  connections: '/connections',
+  availability: '/availability',
+  integrations: '/integrations',
   tools: '/tools',
   skills: '/skills',
+  tasks: '/tasks',
   approvals: '/approvals',
   audit: '/audit',
+  logs: '/logs',
   setup: '/setup',
 } as const;
 
@@ -30,6 +38,13 @@ export const ADMIN_TABS: Array<{
   description: string;
   icon: unknown;
 }> = [
+  {
+    id: 'dashboard',
+    path: ADMIN_PATHS.dashboard,
+    label: 'Dashboard',
+    description: 'System overview and recent activity',
+    icon: cilGraph,
+  },
   {
     id: 'contacts',
     path: ADMIN_PATHS.contacts,
@@ -52,11 +67,18 @@ export const ADMIN_TABS: Array<{
     icon: cilShieldAlt,
   },
   {
-    id: 'connections',
-    path: ADMIN_PATHS.connections,
-    label: 'Connections',
-    description: 'Integration health and service reachability',
-    icon: cilCloudDownload,
+    id: 'availability',
+    path: ADMIN_PATHS.availability,
+    label: 'Availability',
+    description: 'Calendar availability windows and scheduling preferences',
+    icon: cilCalendar,
+  },
+  {
+    id: 'integrations',
+    path: ADMIN_PATHS.integrations,
+    label: 'Integrations',
+    description: 'Installed integrations and their settings',
+    icon: cilPuzzle,
   },
   {
     id: 'tools',
@@ -73,6 +95,13 @@ export const ADMIN_TABS: Array<{
     icon: cilCode,
   },
   {
+    id: 'tasks',
+    path: ADMIN_PATHS.tasks,
+    label: 'Tasks',
+    description: 'Scheduled and recurring agent tasks',
+    icon: cilClock,
+  },
+  {
     id: 'approvals',
     path: ADMIN_PATHS.approvals,
     label: 'Approvals',
@@ -85,6 +114,13 @@ export const ADMIN_TABS: Array<{
     label: 'Audit',
     description: 'Action history and accountability',
     icon: cilDescription,
+  },
+  {
+    id: 'logs',
+    path: ADMIN_PATHS.logs,
+    label: 'Logs',
+    description: 'Structured log viewer with filtering',
+    icon: cilSpeedometer,
   },
 ];
 

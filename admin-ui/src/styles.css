@@ -2,6 +2,15 @@
   color-scheme: dark;
 }
 
+/* Fix Bootstrap checkbox visibility in dark mode */
+.form-check-input:checked {
+  background-color: var(--cui-primary);
+  border-color: var(--cui-primary);
+}
+.form-check-input:checked[type="checkbox"] {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='m6 10 3 3 6-6'/%3e%3c/svg%3e");
+}
+
 html,
 body,
 #root {
@@ -122,28 +131,47 @@ body {
 
 .adminHeaderDetails {
   display: flex;
-  justify-content: space-between;
-  gap: 1.5rem;
-  align-items: flex-start;
+  justify-content: flex-end;
+  align-items: center;
 }
 
 .heroEyebrow {
   display: inline-flex;
   align-items: center;
-  padding: 0.28rem 0.6rem;
+  padding: 0.18rem 0.5rem;
   border-radius: 999px;
   background: rgba(88, 126, 255, 0.16);
   color: #b6c5ff;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .adminPageTitle {
-  margin: 0.8rem 0 0.35rem;
-  font-size: 1.6rem;
-  font-weight: 700;
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 400;
+  color: var(--cui-secondary-color);
+}
+
+.headerHelpIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--cui-secondary-color);
+  color: var(--cui-secondary-color);
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: help;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+.headerHelpIcon:hover {
+  opacity: 1;
 }
 
 .adminPageLead,
@@ -262,7 +290,6 @@ body {
 
 .metricCard,
 .panel,
-.sidebarCard,
 .wizardCard,
 .toolWidget {
   border: 1px solid rgba(255, 255, 255, 0.06);
@@ -344,22 +371,6 @@ body {
   padding: 0.55rem 0.7rem;
 }
 
-.connectionWidget {
-  height: 100%;
-}
-
-.connectionWidgetTitle {
-  display: grid;
-  gap: 0.25rem;
-}
-
-.connectionWidgetTitle small {
-  font-size: 0.75rem;
-  font-weight: 500;
-  opacity: 0.85;
-  text-transform: none;
-}
-
 .toolCapabilityRow,
 .toolLegendList {
   display: flex;
@@ -418,12 +429,7 @@ body {
   color: #ffd7d7;
 }
 
-.contentDeck,
-.workspace,
-.inspector,
 .checklist,
-.contactList,
-.historyList,
 .plainList,
 .statStack,
 .wizardBody {
@@ -446,8 +452,6 @@ body {
 }
 
 .panelHeader,
-.sidebarCardHeader,
-.historyMeta,
 .wizardActions,
 .buttonRow {
   display: flex;
@@ -457,14 +461,8 @@ body {
 }
 
 .panelHeader,
-.sidebarCardHeader,
-.historyMeta,
 .wizardActions {
   justify-content: space-between;
-}
-
-.sidebarCardHeader {
-  margin-bottom: 0;
 }
 
 .buttonRow {
@@ -523,8 +521,6 @@ label {
 
 .hintBox,
 .provisionCard,
-.historyCard,
-.contactRow,
 .inlineBlock {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 0.75rem;
@@ -532,22 +528,8 @@ label {
 }
 
 .hintBox,
-.provisionCard,
-.historyCard {
+.provisionCard {
   padding: 0.9rem 1rem;
-}
-
-.contactRow {
-  display: flex;
-  justify-content: space-between;
-  width: 100%;
-  padding: 0.85rem 1rem;
-  text-align: left;
-}
-
-.contactRow.selected {
-  border-color: rgba(88, 126, 255, 0.45);
-  background: rgba(88, 126, 255, 0.12);
 }
 
 .status.trusted {
@@ -563,11 +545,6 @@ label {
 .status.abuse {
   background: rgba(229, 83, 83, 0.16) !important;
   color: #ffb4b4 !important;
-}
-
-.historyMeta {
-  font-size: 0.78rem;
-  color: var(--cui-secondary-color);
 }
 
 .plainList {
@@ -675,7 +652,7 @@ pre {
   }
 
   .adminHeaderDetails {
-    flex-direction: column;
+    justify-content: flex-start;
   }
 
   .heroChips {
@@ -689,70 +666,10 @@ pre {
     grid-template-columns: 1fr;
   }
 
-  .adminPageTitle {
-    font-size: 1.35rem;
-  }
 }
 
 /* ── Skills Page ── */
 
-.skillsLayout {
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  gap: 1.25rem;
-}
-
-@media (max-width: 767.98px) {
-  .skillsLayout {
-    grid-template-columns: 1fr;
-  }
-}
-
-.skillListPanel {
-  align-self: start;
-}
-
-.skillList {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  margin-top: 0.5rem;
-}
-
-.skillListItem {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.15rem;
-  text-align: left;
-  padding: 0.6rem 0.75rem;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.skillListItem.active {
-  background: rgba(88, 126, 255, 0.15);
-  border-color: rgba(88, 126, 255, 0.35);
-}
-
-.skillEditorPanel {
-  min-height: 420px;
-}
-
-.skillEditorFields {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
-}
-
-.skillContentEditor {
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-size: 0.82rem;
-  line-height: 1.5;
-  min-height: 350px;
-  resize: vertical;
-}
 
 .btnPrimary {
   background: rgba(88, 126, 255, 0.18);

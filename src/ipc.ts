@@ -818,13 +818,22 @@ export async function processTaskIpc(
     case 'signal_leave_group': {
       const groupName = String(data.groupName || '').trim();
       if (!groupName) {
-        logger.warn({ data }, 'Invalid signal_leave_group request - missing groupName');
+        logger.warn(
+          { data },
+          'Invalid signal_leave_group request - missing groupName',
+        );
         break;
       }
       if (!deps.signalFindGroup || !deps.signalLeaveGroup) {
-        logger.warn({ sourceGroup }, 'signal_leave_group: Signal channel not available');
+        logger.warn(
+          { sourceGroup },
+          'signal_leave_group: Signal channel not available',
+        );
         if (data.chatJid) {
-          await deps.sendMessage(data.chatJid, 'Signal is not configured — cannot leave group.');
+          await deps.sendMessage(
+            data.chatJid,
+            'Signal is not configured — cannot leave group.',
+          );
         }
         break;
       }
@@ -833,13 +842,19 @@ export async function processTaskIpc(
         if (!group) {
           logger.warn({ groupName }, 'signal_leave_group: group not found');
           if (data.chatJid) {
-            await deps.sendMessage(data.chatJid, `No Signal group found matching "${groupName}".`);
+            await deps.sendMessage(
+              data.chatJid,
+              `No Signal group found matching "${groupName}".`,
+            );
           }
           break;
         }
         await deps.signalLeaveGroup(group.id);
         markIpcSideEffect(sourceGroup);
-        logger.info({ groupName: group.name, groupId: group.id }, 'Left Signal group via IPC');
+        logger.info(
+          { groupName: group.name, groupId: group.id },
+          'Left Signal group via IPC',
+        );
 
         // Unregister the group so NanoClaw stops polling for messages
         const groupJid = `signal:group:${group.id}`;
@@ -849,7 +864,10 @@ export async function processTaskIpc(
         }
 
         if (data.chatJid) {
-          await deps.sendMessage(data.chatJid, `Left Signal group "${group.name}".`);
+          await deps.sendMessage(
+            data.chatJid,
+            `Left Signal group "${group.name}".`,
+          );
         }
       } catch (err) {
         logger.error({ err, groupName }, 'Failed to leave Signal group');

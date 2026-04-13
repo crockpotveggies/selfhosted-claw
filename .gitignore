@@ -33,8 +33,7 @@ groups/global/*
 .vscode/
 
 # Claude Code
-.claude/projects/
-.claude/worktrees/
+.claude/
 
 # Skills system (local per-installation state)
 .nanoclaw/

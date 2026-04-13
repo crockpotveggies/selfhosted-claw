@@ -9,7 +9,8 @@ import { SignalControlCommandParser } from './control-commands.js';
 import { canonicalizeIdentity, identitiesMatch } from './control-identities.js';
 import { ControlStore } from './control-store.js';
 import { _closeDatabase, _initTestDatabase } from './db.js';
-import { SignalComposeManager } from './signal-compose.js';
+import { setComposeRunner } from './integrations/service-manager.js';
+import './integrations/index.js'; // Register signal integration for tests
 import { NewMessage, RegisteredGroup } from './types.js';
 
 function makeMessage(sender: string, content: string): NewMessage {
@@ -39,30 +40,14 @@ function createHarness() {
 
   _initTestDatabase();
   const store = new ControlStore(configDir, dataDir);
-  const composeManager = new SignalComposeManager({
-    composeDir: path.join(root, 'signal-compose'),
-    dataDir: path.join(dataDir, 'signal-compose'),
-    runner: (args) => {
-      if (args.includes('ps')) {
-        return {
-          stdout: 'signal-cli\n',
-          stderr: '',
-          status: 0,
-        };
-      }
-      return {
-        stdout: 'started\n',
-        stderr: '',
-        status: 0,
-      };
-    },
+  // Mock the Docker compose runner for the integration service manager
+  setComposeRunner((args) => {
+    if (args.includes('ps')) {
+      return { stdout: 'signal-cli\n', stderr: '', status: 0 };
+    }
+    return { stdout: 'started\n', stderr: '', status: 0 };
   });
-  fs.mkdirSync(composeManager.composeDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(composeManager.composeDir, 'docker-compose.yml'),
-    'services:\n  signal-cli:\n    image: example\n',
-  );
-  const service = new ControlActionService(store, composeManager);
+  const service = new ControlActionService(store);
   const sent: Array<{ jid: string; text: string }> = [];
   const parser = new SignalControlCommandParser({
     service,
@@ -206,9 +191,6 @@ describe('control plane parity', () => {
     );
 
     expect(result.running).toBe(true);
-    expect(
-      fs.existsSync(path.join(harness.root, 'signal-compose', '.env')),
-    ).toBe(true);
   });
 
   it('updates the Signal profile through the shared control action surface', async () => {

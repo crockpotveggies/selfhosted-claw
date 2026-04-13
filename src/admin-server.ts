@@ -2,13 +2,42 @@ import fs from 'fs';
 import http from 'http';
 import path from 'path';
 
+import Database from 'better-sqlite3';
+
 import {
   ADMIN_BIND_HOST,
   ADMIN_PORT,
   ADMIN_UI_TOKEN,
   ADMIN_UI_USERNAME,
+  STORE_DIR,
 } from './config.js';
 import { ControlActionService } from './control-actions.js';
+import {
+  getAllChats,
+  getAllRegisteredGroups,
+  getAllTasks,
+} from './db.js';
+import {
+  getRegisteredIntegrations,
+  getIntegration,
+} from './integrations/registry.js';
+import {
+  getIntegrationSettings,
+  saveIntegrationSettings,
+  isIntegrationEnabled,
+  setIntegrationEnabled,
+} from './integrations/settings-store.js';
+import {
+  getServiceStatus,
+  startService,
+  stopService,
+  resetCircuitBreaker,
+} from './integrations/service-manager.js';
+import {
+  handleSetupRoute,
+  registerSetupRoutes,
+} from './integrations/setup-router.js';
+import { getLogSettings, saveLogSettings } from './logger/pruner.js';
 import { logger } from './logger.js';
 
 interface StartAdminServerOptions {
@@ -113,6 +142,9 @@ export function startAdminServer(
 ): http.Server {
   const uiDistDir = path.resolve(process.cwd(), 'admin-ui', 'dist');
 
+  // Register setup routes for all integrations with setup flows
+  registerSetupRoutes();
+
   const server = http.createServer(async (req, res) => {
     try {
       if (req.method === 'OPTIONS') {
@@ -145,6 +177,130 @@ export function startAdminServer(
 
       if (req.method === 'GET' && url.pathname === '/api/admin/health') {
         sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      // Dashboard stats
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/dashboard'
+      ) {
+        const registeredGroups = getAllRegisteredGroups();
+        const groups = Object.values(registeredGroups);
+        const chats = getAllChats();
+        const contacts = options.service.listContacts();
+        const pending = options.service.listPendingActions();
+        const auditRecords = options.service.getAuditRecords(100);
+
+        // Message counts from logs.db
+        let messagesLast24h = 0;
+        let messagesLast7d = 0;
+        let errorsLast24h = 0;
+        const logDbPath = path.join(STORE_DIR, 'logs.db');
+        if (fs.existsSync(logDbPath)) {
+          let logDb: Database.Database | null = null;
+          try {
+            logDb = new Database(logDbPath, { readonly: true });
+            messagesLast24h = (
+              logDb
+                .prepare(
+                  "SELECT count(*) as cnt FROM logs WHERE time >= datetime('now', '-1 day')",
+                )
+                .get() as { cnt: number }
+            ).cnt;
+            messagesLast7d = (
+              logDb
+                .prepare(
+                  "SELECT count(*) as cnt FROM logs WHERE time >= datetime('now', '-7 days')",
+                )
+                .get() as { cnt: number }
+            ).cnt;
+            errorsLast24h = (
+              logDb
+                .prepare(
+                  "SELECT count(*) as cnt FROM logs WHERE level >= 50 AND time >= datetime('now', '-1 day')",
+                )
+                .get() as { cnt: number }
+            ).cnt;
+          } catch {
+            // logs.db may not exist yet
+          } finally {
+            try {
+              logDb?.close();
+            } catch {
+              /* already closed */
+            }
+          }
+        }
+
+        // Recent activity from messages DB
+        let recentMessages: Array<{
+          chat_name: string;
+          sender_name: string;
+          content: string;
+          timestamp: string;
+          channel: string;
+          is_from_me: number;
+        }> = [];
+        try {
+          const messagesDb = new Database(
+            path.join(STORE_DIR, 'messages.db'),
+            { readonly: true },
+          );
+          recentMessages = messagesDb
+            .prepare(
+              `SELECT m.sender_name, m.content, m.timestamp, m.is_from_me,
+                      COALESCE(c.name, c.jid) as chat_name,
+                      COALESCE(c.channel, '') as channel
+               FROM messages m
+               LEFT JOIN chats c ON m.chat_jid = c.jid
+               ORDER BY m.timestamp DESC
+               LIMIT 20`,
+            )
+            .all() as typeof recentMessages;
+          messagesDb.close();
+        } catch {
+          // DB not available
+        }
+
+        const integrations = getRegisteredIntegrations();
+
+        sendJson(res, 200, {
+          metrics: {
+            groups: groups.length,
+            chats: chats.length,
+            contacts: contacts.length,
+            pendingApprovals: pending.length,
+            activeTasks: getAllTasks().filter((t) => t.status === 'active').length,
+            integrations: integrations.length,
+            logEventsLast24h: messagesLast24h,
+            logEventsLast7d: messagesLast7d,
+            errorsLast24h,
+          },
+          recentActivity: recentMessages.map((m) => ({
+            chatName: m.chat_name,
+            senderName: m.sender_name,
+            content:
+              m.content.length > 120
+                ? m.content.slice(0, 120) + '...'
+                : m.content,
+            timestamp: m.timestamp,
+            channel: m.channel,
+            isFromMe: Boolean(m.is_from_me),
+          })),
+          auditRecent: auditRecords.slice(0, 10).map((r) => ({
+            actionName: r.actionName,
+            status: r.status,
+            createdAt: r.createdAt,
+            summary: r.payloadSummary,
+          })),
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/admin/tasks') {
+        const tasks = getAllTasks();
+        sendJson(res, 200, tasks);
         return;
       }
 
@@ -685,6 +841,472 @@ export function startAdminServer(
           /* directory not empty, that's fine */
         }
         sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      // -----------------------------------------------------------------
+      // Integration API routes
+      // -----------------------------------------------------------------
+
+      // Setup routes (auto-registered per integration)
+      if (
+        url.pathname.startsWith('/api/admin/integrations/') &&
+        url.pathname.includes('/setup/')
+      ) {
+        const handled = await handleSetupRoute(
+          req,
+          res,
+          req.method || 'GET',
+          url.pathname,
+        );
+        if (handled) return;
+      }
+
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/integrations'
+      ) {
+        const integrations = getRegisteredIntegrations();
+        const results = await Promise.all(
+          integrations.map(async (def) => {
+            const enabled = isIntegrationEnabled(def.name);
+            let status: { state: string; message: string; serviceRunning?: boolean } = {
+              state: 'unconfigured',
+              message: 'No status check',
+            };
+            if (def.adminPage?.getStatus) {
+              try {
+                const settings = getIntegrationSettings(def.name);
+                status = await def.adminPage.getStatus({
+                  settings,
+                  groupSettings: () => settings,
+                  hasCredential: (key) =>
+                    Boolean(
+                      process.env[key] || settings[key],
+                    ),
+                });
+              } catch {
+                status = {
+                  state: 'offline',
+                  message: 'Status check failed',
+                };
+              }
+            }
+            const svcStatus = def.service
+              ? getServiceStatus(def.name)
+              : undefined;
+
+            return {
+              name: def.name,
+              description: def.description,
+              version: def.version,
+              core: def.core,
+              category: def.adminPage?.category || 'utility',
+              icon: def.adminPage?.icon || 'cilPuzzle',
+              enabled,
+              status,
+              service: svcStatus
+                ? {
+                    running: svcStatus.running,
+                    lastError: svcStatus.lastError,
+                    circuitOpen: svcStatus.circuitOpen,
+                  }
+                : undefined,
+              capabilities: {
+                hasChannel: Boolean(def.channel),
+                toolCount: def.tools?.length ?? 0,
+                hasSkills: (def.skills?.length ?? 0) > 0,
+                hasMemory: Boolean(def.memory),
+                hasSetup: Boolean(def.setup),
+              },
+            };
+          }),
+        );
+        sendJson(res, 200, results);
+        return;
+      }
+
+      // GET /api/admin/integrations/:name
+      const integrationDetailMatch =
+        req.method === 'GET' &&
+        url.pathname.match(
+          /^\/api\/admin\/integrations\/([^/]+)$/,
+        );
+      if (integrationDetailMatch) {
+        const name = integrationDetailMatch[1];
+        const def = getIntegration(name);
+        if (!def) {
+          sendJson(res, 404, { error: 'integration_not_found' });
+          return;
+        }
+        const settings = getIntegrationSettings(name);
+        const svcStatus = def.service
+          ? getServiceStatus(name)
+          : undefined;
+        let status;
+        try {
+          status = def.adminPage?.getStatus
+            ? await def.adminPage.getStatus({
+                settings,
+                groupSettings: () => settings,
+                hasCredential: (key) =>
+                  Boolean(process.env[key] || settings[key]),
+              })
+            : { state: 'unconfigured', message: '' };
+        } catch {
+          status = { state: 'offline', message: 'Status check failed' };
+        }
+
+        sendJson(res, 200, {
+          name: def.name,
+          description: def.description,
+          version: def.version,
+          core: def.core,
+          category: def.adminPage?.category || 'utility',
+          icon: def.adminPage?.icon || 'cilPuzzle',
+          enabled: isIntegrationEnabled(name),
+          status,
+          service: svcStatus,
+          settings: {
+            schema: def.settings?.schema || null,
+            values: settings,
+          },
+          credentials: def.credentials.map((c) => ({
+            key: c.key,
+            label: c.label,
+            type: c.type,
+            configured: Boolean(
+              c.envVar
+                ? process.env[c.envVar] || settings[c.key]
+                : settings[c.key],
+            ),
+          })),
+          capabilities: {
+            hasChannel: Boolean(def.channel),
+            tools: def.tools?.map((t) => ({
+              name: t.name,
+              description: t.description,
+              controllerOnly: t.controllerOnly,
+              location: t.location,
+            })),
+            skills: def.skills,
+            hasMemory: Boolean(def.memory),
+            hasSetup: Boolean(def.setup),
+          },
+        });
+        return;
+      }
+
+      // GET /api/admin/integrations/:name/settings
+      const integrationSettingsGetMatch =
+        req.method === 'GET' &&
+        url.pathname.match(
+          /^\/api\/admin\/integrations\/([^/]+)\/settings$/,
+        );
+      if (integrationSettingsGetMatch) {
+        const name = integrationSettingsGetMatch[1];
+        sendJson(res, 200, getIntegrationSettings(name));
+        return;
+      }
+
+      // POST /api/admin/integrations/:name/settings
+      const integrationSettingsPostMatch =
+        req.method === 'POST' &&
+        url.pathname.match(
+          /^\/api\/admin\/integrations\/([^/]+)\/settings$/,
+        );
+      if (integrationSettingsPostMatch) {
+        const name = integrationSettingsPostMatch[1];
+        const body = JSON.parse(
+          (await readBody(req)) || '{}',
+        ) as Record<string, unknown>;
+        try {
+          const def = getIntegration(name);
+          const prev = getIntegrationSettings(name);
+          saveIntegrationSettings(name, body);
+          if (def?.lifecycle?.onSettingsChange) {
+            await def.lifecycle.onSettingsChange(prev, body);
+          }
+          sendJson(res, 200, { ok: true });
+        } catch (err) {
+          sendJson(res, 400, {
+            error:
+              err instanceof Error
+                ? err.message
+                : 'save_failed',
+          });
+        }
+        return;
+      }
+
+      // POST /api/admin/integrations/:name/toggle
+      const integrationToggleMatch =
+        req.method === 'POST' &&
+        url.pathname.match(
+          /^\/api\/admin\/integrations\/([^/]+)\/toggle$/,
+        );
+      if (integrationToggleMatch) {
+        const name = integrationToggleMatch[1];
+        const body = JSON.parse(
+          (await readBody(req)) || '{}',
+        ) as { enabled?: boolean };
+        try {
+          setIntegrationEnabled(name, body.enabled ?? false);
+          sendJson(res, 200, { ok: true });
+        } catch (err) {
+          sendJson(res, 400, {
+            error:
+              err instanceof Error
+                ? err.message
+                : 'toggle_failed',
+          });
+        }
+        return;
+      }
+
+      // POST /api/admin/integrations/:name/service/start
+      const svcStartMatch =
+        req.method === 'POST' &&
+        url.pathname.match(
+          /^\/api\/admin\/integrations\/([^/]+)\/service\/start$/,
+        );
+      if (svcStartMatch) {
+        const name = svcStartMatch[1];
+        const body = JSON.parse(
+          (await readBody(req)) || '{}',
+        ) as Record<string, string>;
+        try {
+          resetCircuitBreaker(name);
+          // If body has values, use as bootstrap input
+          const hasBootstrap = Object.keys(body).length > 0;
+          const status = startService(
+            name,
+            hasBootstrap ? body : undefined,
+          );
+          sendJson(res, 200, status);
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error
+                ? err.message
+                : 'start_failed',
+          });
+        }
+        return;
+      }
+
+      // POST /api/admin/integrations/:name/service/stop
+      const svcStopMatch =
+        req.method === 'POST' &&
+        url.pathname.match(
+          /^\/api\/admin\/integrations\/([^/]+)\/service\/stop$/,
+        );
+      if (svcStopMatch) {
+        const name = svcStopMatch[1];
+        try {
+          const status = stopService(name);
+          sendJson(res, 200, status);
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error
+                ? err.message
+                : 'stop_failed',
+          });
+        }
+        return;
+      }
+
+      // GET /api/admin/integrations/:name/service/status
+      const svcStatusMatch =
+        req.method === 'GET' &&
+        url.pathname.match(
+          /^\/api\/admin\/integrations\/([^/]+)\/service\/status$/,
+        );
+      if (svcStatusMatch) {
+        const name = svcStatusMatch[1];
+        sendJson(res, 200, getServiceStatus(name));
+        return;
+      }
+
+      // -----------------------------------------------------------------
+      // Log API routes
+      // -----------------------------------------------------------------
+
+      if (req.method === 'GET' && url.pathname === '/api/admin/logs') {
+        const logDbPath = path.join(STORE_DIR, 'logs.db');
+        if (!fs.existsSync(logDbPath)) {
+          sendJson(res, 200, []);
+          return;
+        }
+        let logDb: Database.Database | null = null;
+        try {
+          logDb = new Database(logDbPath, { readonly: true });
+          const conditions: string[] = [];
+          const params: unknown[] = [];
+
+          const integration = url.searchParams.get('integration');
+          if (integration) {
+            conditions.push('integration = ?');
+            params.push(integration);
+          }
+          const group = url.searchParams.get('group');
+          if (group) {
+            conditions.push('group_folder = ?');
+            params.push(group);
+          }
+          const level = url.searchParams.get('level');
+          if (level) {
+            const levelMap: Record<string, number> = {
+              debug: 20,
+              info: 30,
+              warn: 40,
+              error: 50,
+              fatal: 60,
+            };
+            const levelNum = levelMap[level];
+            if (levelNum) {
+              conditions.push('level >= ?');
+              params.push(levelNum);
+            }
+          }
+          const since = url.searchParams.get('since');
+          if (since) {
+            conditions.push('time >= ?');
+            params.push(since);
+          }
+          const until = url.searchParams.get('until');
+          if (until) {
+            conditions.push('time <= ?');
+            params.push(until);
+          }
+          const entity = url.searchParams.get('entity');
+          if (entity) {
+            conditions.push('entity = ?');
+            params.push(entity);
+          }
+          const runId = url.searchParams.get('runId');
+          if (runId) {
+            conditions.push('run_id = ?');
+            params.push(runId);
+          }
+          const q = url.searchParams.get('q');
+          if (q) {
+            conditions.push('(msg LIKE ? OR data LIKE ?)');
+            params.push(`%${q}%`, `%${q}%`);
+          }
+
+          const where =
+            conditions.length > 0
+              ? `WHERE ${conditions.join(' AND ')}`
+              : '';
+          const limit = Math.min(
+            parseInt(
+              url.searchParams.get('limit') || '100',
+              10,
+            ) || 100,
+            500,
+          );
+          const offset = parseInt(
+            url.searchParams.get('offset') || '0',
+            10,
+          ) || 0;
+
+          const rows = logDb
+            .prepare(
+              `SELECT id, time, level, level_label, msg, integration, channel, group_folder, entity, run_id, data FROM logs ${where} ORDER BY time DESC LIMIT ? OFFSET ?`,
+            )
+            .all(...params, limit, offset);
+
+          sendJson(res, 200, rows);
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error
+                ? err.message
+                : 'log_query_failed',
+          });
+        } finally {
+          try {
+            logDb?.close();
+          } catch {
+            /* already closed */
+          }
+        }
+        return;
+      }
+
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/logs/stats'
+      ) {
+        const logDbPath = path.join(STORE_DIR, 'logs.db');
+        if (!fs.existsSync(logDbPath)) {
+          sendJson(res, 200, { total: 0, byLevel: {}, byIntegration: {} });
+          return;
+        }
+        let logDb: Database.Database | null = null;
+        try {
+          logDb = new Database(logDbPath, { readonly: true });
+          const total = (
+            logDb
+              .prepare('SELECT count(*) as cnt FROM logs')
+              .get() as { cnt: number }
+          ).cnt;
+          const byLevel = logDb
+            .prepare(
+              'SELECT level_label, count(*) as cnt FROM logs GROUP BY level_label',
+            )
+            .all() as Array<{ level_label: string; cnt: number }>;
+          const byIntegration = logDb
+            .prepare(
+              "SELECT COALESCE(integration, '_system') as name, count(*) as cnt FROM logs GROUP BY integration",
+            )
+            .all() as Array<{ name: string; cnt: number }>;
+
+          sendJson(res, 200, {
+            total,
+            byLevel: Object.fromEntries(
+              byLevel.map((r) => [r.level_label, r.cnt]),
+            ),
+            byIntegration: Object.fromEntries(
+              byIntegration.map((r) => [r.name, r.cnt]),
+            ),
+          });
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error
+                ? err.message
+                : 'stats_failed',
+          });
+        } finally {
+          try {
+            logDb?.close();
+          } catch {
+            /* already closed */
+          }
+        }
+        return;
+      }
+
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/logs/settings'
+      ) {
+        sendJson(res, 200, getLogSettings());
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname === '/api/admin/logs/settings'
+      ) {
+        const body = JSON.parse(
+          (await readBody(req)) || '{}',
+        ) as Record<string, unknown>;
+        saveLogSettings(body as Parameters<typeof saveLogSettings>[0]);
+        sendJson(res, 200, getLogSettings());
         return;
       }
 
