@@ -297,15 +297,14 @@ const calendarIntegration: IntegrationDefinition = {
       // Check if user recently re-authenticated via integration OAuth
       const settings = getIntegrationSettings('google-calendar');
       const recentlyConnected = settings.oauthConnectedAt
-        ? Date.now() - new Date(settings.oauthConnectedAt as string).getTime() < 7 * 24 * 60 * 60 * 1000
+        ? Date.now() - new Date(settings.oauthConnectedAt as string).getTime() <
+          7 * 24 * 60 * 60 * 1000
         : false;
 
       if (recentlyConnected) {
         // User re-authenticated recently — don't show expired legacy token warning
       } else if (legacy.accessToken && hasCalendarScope(legacy)) {
-        const expiry = legacy.expiryDate
-          ? new Date(legacy.expiryDate)
-          : null;
+        const expiry = legacy.expiryDate ? new Date(legacy.expiryDate) : null;
         const isExpired = expiry && expiry.getTime() < Date.now();
         if (isExpired) {
           try {
@@ -331,8 +330,7 @@ const calendarIntegration: IntegrationDefinition = {
               integration: 'google-calendar',
               severity: 'warning',
               title: 'Google API Unreachable',
-              message:
-                'Could not reach Google APIs to verify the OAuth token.',
+              message: 'Could not reach Google APIs to verify the OAuth token.',
             });
           }
         }
@@ -407,9 +405,7 @@ const calendarIntegration: IntegrationDefinition = {
             'GOOGLE_CLIENT_SECRET',
           ]);
           const clientId =
-            process.env.GOOGLE_CLIENT_ID ||
-            envVars.GOOGLE_CLIENT_ID ||
-            '';
+            process.env.GOOGLE_CLIENT_ID || envVars.GOOGLE_CLIENT_ID || '';
           const clientSecret =
             process.env.GOOGLE_CLIENT_SECRET ||
             envVars.GOOGLE_CLIENT_SECRET ||
@@ -432,9 +428,7 @@ const calendarIntegration: IntegrationDefinition = {
               }),
             },
           );
-          const tokenData = (await tokenResponse
-            .json()
-            .catch(() => ({}))) as {
+          const tokenData = (await tokenResponse.json().catch(() => ({}))) as {
             access_token?: string;
             refresh_token?: string;
             expires_in?: number;
@@ -454,8 +448,7 @@ const calendarIntegration: IntegrationDefinition = {
 
           const now = new Date();
           const expiryDate = new Date(
-            now.getTime() +
-              Math.max(60, tokenData.expires_in || 3600) * 1000,
+            now.getTime() + Math.max(60, tokenData.expires_in || 3600) * 1000,
           ).toISOString();
 
           // Update the legacy OAuth file so the rest of the system
@@ -466,9 +459,7 @@ const calendarIntegration: IntegrationDefinition = {
           );
           let legacyState: Record<string, unknown> = {};
           try {
-            legacyState = JSON.parse(
-              fs.readFileSync(legacyPath, 'utf-8'),
-            );
+            legacyState = JSON.parse(fs.readFileSync(legacyPath, 'utf-8'));
           } catch {
             // No existing file
           }
@@ -480,10 +471,7 @@ const calendarIntegration: IntegrationDefinition = {
               (legacyState.refreshToken as string) ||
               '',
             expiryDate,
-            scope:
-              tokenData.scope ||
-              (legacyState.scope as string) ||
-              '',
+            scope: tokenData.scope || (legacyState.scope as string) || '',
             tokenType: tokenData.token_type || 'Bearer',
             connectedAt: now.toISOString(),
             oauthState: '',
@@ -491,11 +479,9 @@ const calendarIntegration: IntegrationDefinition = {
           };
           fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
           const tmpPath = `${legacyPath}.tmp`;
-          fs.writeFileSync(
-            tmpPath,
-            JSON.stringify(updatedLegacy, null, 2),
-            { mode: 0o600 },
-          );
+          fs.writeFileSync(tmpPath, JSON.stringify(updatedLegacy, null, 2), {
+            mode: 0o600,
+          });
           fs.renameSync(tmpPath, legacyPath);
 
           // Also save to integration settings

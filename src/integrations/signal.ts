@@ -270,7 +270,8 @@ const signalIntegration: IntegrationDefinition = {
           integration: 'signal',
           severity: 'warning',
           title: 'Signal Not Configured',
-          message: 'No Signal account configured. Run setup from the Integrations page.',
+          message:
+            'No Signal account configured. Run setup from the Integrations page.',
         });
         return notifications;
       }

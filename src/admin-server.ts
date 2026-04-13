@@ -292,10 +292,7 @@ export function startAdminServer(
       }
 
       // Notifications — separate from setup-status to avoid blocking the wizard
-      if (
-        req.method === 'GET' &&
-        url.pathname === '/api/admin/notifications'
-      ) {
+      if (req.method === 'GET' && url.pathname === '/api/admin/notifications') {
         const integrations = getRegisteredIntegrations();
         const notifications: Array<{
           id: string;
@@ -315,10 +312,10 @@ export function startAdminServer(
               groupSettings: () => settings,
               hasCredential: (key: string) =>
                 Boolean(
-                      process.env[key] ||
-                      options.service.getSetupEnvironment()[key] ||
-                      settings[key],
-                    ),
+                  process.env[key] ||
+                  options.service.getSetupEnvironment()[key] ||
+                  settings[key],
+                ),
             };
             const items = await def.adminPage.getNotifications(ctx);
             notifications.push(...items);
@@ -1019,10 +1016,10 @@ export function startAdminServer(
                 groupSettings: () => settings,
                 hasCredential: (key) =>
                   Boolean(
-                      process.env[key] ||
-                      options.service.getSetupEnvironment()[key] ||
-                      settings[key],
-                    ),
+                    process.env[key] ||
+                    options.service.getSetupEnvironment()[key] ||
+                    settings[key],
+                  ),
               })
             : { state: 'unconfigured', message: '' };
         } catch {
@@ -1046,15 +1043,17 @@ export function startAdminServer(
           credentials: def.credentials.map((c) => {
             const envValues = options.service.getSetupEnvironment();
             return {
-            key: c.key,
-            label: c.label,
-            type: c.type,
-            configured: Boolean(
-              c.envVar
-                ? process.env[c.envVar] || envValues[c.envVar] || settings[c.key]
-                : settings[c.key],
-            ),
-          };
+              key: c.key,
+              label: c.label,
+              type: c.type,
+              configured: Boolean(
+                c.envVar
+                  ? process.env[c.envVar] ||
+                      envValues[c.envVar] ||
+                      settings[c.key]
+                  : settings[c.key],
+              ),
+            };
           }),
           capabilities: {
             hasChannel: Boolean(def.channel),

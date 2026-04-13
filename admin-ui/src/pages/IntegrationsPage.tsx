@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   CBadge,
   CButton,
@@ -39,25 +39,29 @@ function statusLightColor(intg: IntegrationView): string {
 }
 
 export function IntegrationsPage() {
-  const [selected, setSelected] = useState<string | null>(null);
   const location = useLocation();
+  const navigate = useNavigate();
   const { data, loading, error, refresh } = useJson<IntegrationView[]>(
     'integrations',
     () => apiFetch('/api/admin/integrations'),
   );
 
-  // Auto-select integration from URL param (e.g., ?select=google-calendar)
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const selectParam = params.get('select');
-    if (selectParam && !selected) {
-      setSelected(selectParam);
-    }
-  }, [location.search, selected]);
+  // Read selected integration from URL search param
+  const params = new URLSearchParams(location.search);
+  const selected = params.get('select');
 
-  // Auto-refresh every 30 seconds so status changes (expired tokens, etc.) appear
+  const selectIntegration = (name: string) => {
+    navigate(`/integrations?select=${encodeURIComponent(name)}`, { replace: false });
+  };
+
+  const deselectIntegration = () => {
+    navigate('/integrations', { replace: false });
+    void refresh();
+  };
+
+  // Auto-refresh every 30 seconds so status changes appear
   useEffect(() => {
-    if (selected) return; // Don't poll while on detail page
+    if (selected) return;
     const interval = setInterval(() => void refresh(), 30000);
     return () => clearInterval(interval);
   }, [selected]);
@@ -66,10 +70,7 @@ export function IntegrationsPage() {
     return (
       <IntegrationDetailPage
         name={selected}
-        onBack={() => {
-          setSelected(null);
-          void refresh();
-        }}
+        onBack={deselectIntegration}
       />
     );
   }
@@ -126,7 +127,7 @@ export function IntegrationsPage() {
                 <CCard
                   className="integrationCard"
                   style={{ cursor: 'pointer' }}
-                  onClick={() => setSelected(intg.name)}
+                  onClick={() => selectIntegration(intg.name)}
                 >
                   <CCardBody>
                     <div className="d-flex justify-content-between align-items-start mb-2">
