@@ -166,6 +166,36 @@ memory: {
 Memory is scoped in 3 dimensions: entity (person/group/global) x integration x group.
 Files use YAML frontmatter with tags for cross-cutting queries.
 
+## Notifications
+
+Integrations can report health issues to the admin UI notification bell:
+
+```typescript
+adminPage: {
+  getNotifications: async (ctx) => {
+    if (!ctx.hasCredential('MY_KEY')) {
+      return [{
+        id: 'my-service:no-key',
+        integration: 'my-service',
+        severity: 'warning',
+        title: 'API Key Missing',
+        message: 'Configure in integration settings.',
+      }];
+    }
+    return [];
+  },
+}
+```
+
+Notifications appear in the header bell icon with a red badge count. Clicking navigates to the integration's detail page. Notifications auto-clear when the issue resolves (e.g., token refreshed, service restarted).
+
+## Credential Handling
+
+- Credentials with `envVar` are checked in `.env` (via `readEnvFile`), `process.env`, and settings store
+- Integration settings (`~/.config/self-hosted-claw/integrations/`) are **never mounted into containers**
+- `.env` is shadowed with `/dev/null` in containers
+- Credentials reach containers only via OneCLI gateway or host-side IPC tool execution
+
 ## Tool Injection
 
 Host-side tools are injected into containers via `integration_tools.json` manifest:

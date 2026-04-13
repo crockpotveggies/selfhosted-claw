@@ -1,20 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   CBadge,
   CButton,
   CCard,
   CCardBody,
   CCol,
-  CFormSwitch,
   CRow,
 } from '@coreui/react';
-import {
-  CheckCircleFill,
-  ExclamationTriangleFill,
-  XCircleFill,
-  QuestionCircleFill,
-} from 'react-bootstrap-icons';
-
 import { apiFetch, useJson } from '../admin/api';
 import { IntegrationDetailPage } from './IntegrationDetailPage';
 
@@ -37,25 +30,37 @@ interface IntegrationView {
   };
 }
 
-function StatusIcon({ state }: { state: string }) {
-  switch (state) {
-    case 'online':
-      return <CheckCircleFill size={14} className="text-success" />;
-    case 'degraded':
-      return <ExclamationTriangleFill size={14} className="text-warning" />;
-    case 'offline':
-      return <XCircleFill size={14} className="text-danger" />;
-    default:
-      return <QuestionCircleFill size={14} className="text-body-tertiary" />;
-  }
+function statusLightColor(intg: IntegrationView): string {
+  if (!intg.enabled) return 'var(--cui-secondary)';       // gray — disabled
+  if (intg.status.state === 'online') return 'var(--cui-success)';  // green
+  if (intg.status.state === 'degraded') return 'var(--cui-warning)'; // yellow
+  if (intg.status.state === 'offline') return 'var(--cui-danger)';   // red
+  return 'var(--cui-secondary)';                           // gray — unconfigured
 }
 
 export function IntegrationsPage() {
   const [selected, setSelected] = useState<string | null>(null);
+  const location = useLocation();
   const { data, loading, error, refresh } = useJson<IntegrationView[]>(
     'integrations',
     () => apiFetch('/api/admin/integrations'),
   );
+
+  // Auto-select integration from URL param (e.g., ?select=google-calendar)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const selectParam = params.get('select');
+    if (selectParam && !selected) {
+      setSelected(selectParam);
+    }
+  }, [location.search, selected]);
+
+  // Auto-refresh every 30 seconds so status changes (expired tokens, etc.) appear
+  useEffect(() => {
+    if (selected) return; // Don't poll while on detail page
+    const interval = setInterval(() => void refresh(), 30000);
+    return () => clearInterval(interval);
+  }, [selected]);
 
   if (selected) {
     return (
@@ -132,34 +137,54 @@ export function IntegrationsPage() {
                         </p>
                       </div>
                       <div className="d-flex align-items-center gap-2">
+                        <span
+                          style={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: '50%',
+                            backgroundColor: statusLightColor(intg),
+                            display: 'inline-block',
+                            flexShrink: 0,
+                          }}
+                        />
                         {intg.core ? (
                           <CBadge color="primary" size="sm">
                             Core
                           </CBadge>
-                        ) : (
-                          <CBadge color="secondary" size="sm" className="me-2">
-                            Plugin
-                          </CBadge>
-                        )}
-                        {!intg.core && (
-                          <CFormSwitch
-                            checked={intg.enabled}
-                            onChange={(e) => {
+                        ) : intg.enabled ? (
+                          <CBadge
+                            color="success"
+                            size="sm"
+                            style={{ cursor: 'pointer' }}
+                            onClick={(e) => {
                               e.stopPropagation();
-                              void handleToggle(
-                                intg.name,
-                                e.target.checked,
-                              );
+                              if (window.confirm(`Disable "${intg.name}"?`)) {
+                                void handleToggle(intg.name, false);
+                              }
                             }}
-                            onClick={(e) => e.stopPropagation()}
-                          />
+                          >
+                            Enabled
+                          </CBadge>
+                        ) : (
+                          <CBadge
+                            color="secondary"
+                            size="sm"
+                            style={{ cursor: 'pointer' }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm(`Enable "${intg.name}"?`)) {
+                                void handleToggle(intg.name, true);
+                              }
+                            }}
+                          >
+                            Disabled
+                          </CBadge>
                         )}
                       </div>
                     </div>
 
-                    <div className="d-flex align-items-center gap-2 mb-2">
-                      <StatusIcon state={intg.status.state} />
-                      <span className="small">{intg.status.message}</span>
+                    <div className="small text-body-secondary mb-2">
+                      {intg.status.message}
                     </div>
 
                     {intg.service && (

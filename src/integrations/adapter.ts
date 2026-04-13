@@ -67,9 +67,7 @@ export interface ChannelAsIntegrationOptions {
  * registered via the legacy registerChannel() call. This avoids
  * double-registration in the channel startup loop.
  */
-export function channelAsIntegration(
-  opts: ChannelAsIntegrationOptions,
-): void {
+export function channelAsIntegration(opts: ChannelAsIntegrationOptions): void {
   registerIntegration({
     name: opts.name,
     description: opts.description,
@@ -78,7 +76,9 @@ export function channelAsIntegration(
     credentials: opts.credentials,
     settings: opts.settings,
     adminPage: {
-      icon: opts.icon || `cil${opts.name.charAt(0).toUpperCase() + opts.name.slice(1)}`,
+      icon:
+        opts.icon ||
+        `cil${opts.name.charAt(0).toUpperCase() + opts.name.slice(1)}`,
       category: opts.category,
       getStatus: async (ctx) => opts.getStatus(),
     },

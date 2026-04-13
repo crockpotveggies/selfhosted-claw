@@ -36,7 +36,8 @@ function migrate(): void {
     return;
   }
 
-  const groupFolders = fs.readdirSync(GROUPS_DIR, { withFileTypes: true })
+  const groupFolders = fs
+    .readdirSync(GROUPS_DIR, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => d.name);
 

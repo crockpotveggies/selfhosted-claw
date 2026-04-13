@@ -154,8 +154,7 @@ function registerOAuthRoutes(
     method: 'GET',
     test: (m, p) => m === 'GET' && p === `${prefix}/oauth/start`,
     handler: async (req, res) => {
-      const host =
-        req.headers.host || 'localhost:3030';
+      const host = req.headers.host || 'localhost:3030';
       const origin = `http://${host}`;
       const result = await step.startAuth(origin);
       sendJson(res, 200, result);
@@ -175,31 +174,36 @@ function registerOAuthRoutes(
       const code = url.searchParams.get('code') || '';
       const state = url.searchParams.get('state') || '';
 
+      let success = false;
+      let errorMsg = '';
       try {
         await step.completeAuth({ code, state, origin });
-        // Redirect to integrations page on success
-        res.writeHead(302, {
-          Location: `/integrations?setup=${integrationName}&success=true`,
-        });
-        res.end();
+        success = true;
       } catch (err) {
         logger.error(
           { integration: integrationName, err: String(err) },
           'OAuth callback failed',
         );
-        res.writeHead(302, {
-          Location: `/integrations?setup=${integrationName}&error=oauth_failed`,
-        });
-        res.end();
+        errorMsg = err instanceof Error ? err.message : 'OAuth failed';
       }
+
+      // Return a self-closing HTML page — the parent window detects
+      // the popup closing and refreshes the integration status.
+      const html = success
+        ? `<!DOCTYPE html><html><body><p>Connected! This window will close automatically.</p><script>window.close();</script></body></html>`
+        : `<!DOCTYPE html><html><body><p>OAuth error: ${errorMsg.replace(/[<>&"]/g, '')}</p><p>You can close this window and try again.</p><script>setTimeout(function(){window.close()},5000);</script></body></html>`;
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
+      res.end(html);
     },
   });
 
   // Also return the callback URL for display in the admin UI
   registerRoute({
     method: 'GET',
-    test: (m, p) =>
-      m === 'GET' && p === `${prefix}/oauth/callback-url`,
+    test: (m, p) => m === 'GET' && p === `${prefix}/oauth/callback-url`,
     handler: async (req, res) => {
       const host = req.headers.host || 'localhost:3030';
       sendJson(res, 200, {
@@ -223,10 +227,7 @@ function registerCredentialRoutes(
     method: 'POST',
     test: (m, p) => m === 'POST' && p === `${prefix}/credentials`,
     handler: async (req, res) => {
-      const body = parseJson(await readBody(req)) as Record<
-        string,
-        string
-      >;
+      const body = parseJson(await readBody(req)) as Record<string, string>;
       const result = await step.validate(body);
       if (!result.valid) {
         sendJson(res, 400, { error: result.error });
@@ -240,8 +241,7 @@ function registerCredentialRoutes(
   // GET fields schema
   registerRoute({
     method: 'GET',
-    test: (m, p) =>
-      m === 'GET' && p === `${prefix}/credentials/fields`,
+    test: (m, p) => m === 'GET' && p === `${prefix}/credentials/fields`,
     handler: async (_req, res) => {
       sendJson(res, 200, {
         label: step.label,
@@ -283,8 +283,7 @@ function registerFormRoutes(
   // GET schema
   registerRoute({
     method: 'GET',
-    test: (m, p) =>
-      m === 'GET' && p === `${prefix}/form/${idx}/schema`,
+    test: (m, p) => m === 'GET' && p === `${prefix}/form/${idx}/schema`,
     handler: async (_req, res) => {
       sendJson(res, 200, {
         label: step.label,
@@ -309,10 +308,7 @@ function registerQrRoutes(
     method: 'POST',
     test: (m, p) => m === 'POST' && p === `${prefix}/qr/generate`,
     handler: async (req, res) => {
-      const body = parseJson(await readBody(req)) as Record<
-        string,
-        string
-      >;
+      const body = parseJson(await readBody(req)) as Record<string, string>;
       const result = await step.generateQr(body);
       sendJson(res, 200, result);
     },
@@ -330,8 +326,7 @@ function registerQrRoutes(
   // GET input fields
   registerRoute({
     method: 'GET',
-    test: (m, p) =>
-      m === 'GET' && p === `${prefix}/qr/fields`,
+    test: (m, p) => m === 'GET' && p === `${prefix}/qr/fields`,
     handler: async (_req, res) => {
       sendJson(res, 200, {
         label: step.label,
@@ -356,10 +351,7 @@ function registerVerificationRoutes(
     method: 'POST',
     test: (m, p) => m === 'POST' && p === `${prefix}/verify/send`,
     handler: async (req, res) => {
-      const body = parseJson(await readBody(req)) as Record<
-        string,
-        string
-      >;
+      const body = parseJson(await readBody(req)) as Record<string, string>;
       const result = await step.sendCode(body);
       sendJson(res, 200, result);
     },
@@ -367,8 +359,7 @@ function registerVerificationRoutes(
 
   registerRoute({
     method: 'POST',
-    test: (m, p) =>
-      m === 'POST' && p === `${prefix}/verify/check`,
+    test: (m, p) => m === 'POST' && p === `${prefix}/verify/check`,
     handler: async (req, res) => {
       const body = parseJson(await readBody(req)) as {
         code?: string;
@@ -394,8 +385,7 @@ function registerWebhookRoutes(
 ): void {
   registerRoute({
     method: 'GET',
-    test: (m, p) =>
-      m === 'GET' && p === `${prefix}/webhook/url`,
+    test: (m, p) => m === 'GET' && p === `${prefix}/webhook/url`,
     handler: async (_req, res) => {
       sendJson(res, 200, {
         url: step.getUrl(),
@@ -408,8 +398,7 @@ function registerWebhookRoutes(
 
   registerRoute({
     method: 'POST',
-    test: (m, p) =>
-      m === 'POST' && p === `${prefix}/webhook/test`,
+    test: (m, p) => m === 'POST' && p === `${prefix}/webhook/test`,
     handler: async (_req, res) => {
       const result = await step.validate();
       sendJson(res, 200, result);
@@ -430,8 +419,7 @@ function registerCustomRoutes(
     registerRoute({
       method: route.method,
       test: (m, p) =>
-        m === route.method &&
-        p === `${prefix}/custom${route.path}`,
+        m === route.method && p === `${prefix}/custom${route.path}`,
       handler: async (req, res) => {
         await route.handler(req, res);
       },

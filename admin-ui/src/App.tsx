@@ -24,8 +24,12 @@ import {
   cilSpeech,
 } from '@coreui/icons';
 import {
+  BellFill,
   CheckSquareFill,
   ExclamationSquareFill,
+  ExclamationTriangleFill,
+  InfoCircleFill,
+  XCircleFill,
 } from 'react-bootstrap-icons';
 import {
   Navigate,
@@ -37,6 +41,7 @@ import {
 } from 'react-router-dom';
 
 import { AdminDashboardProvider, useAdminDashboardContext } from './admin/context';
+import { apiFetch } from './admin/api';
 import { ADMIN_PATHS, ADMIN_TABS, tabFromPathname } from './admin/navigation';
 import { useAdminDashboard } from './admin/useAdminDashboard';
 import type { AdminTab } from './admin/types';
@@ -50,6 +55,24 @@ function AdminDashboardLayout() {
   const location = useLocation();
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [sidebarUnfoldable, setSidebarUnfoldable] = useState(false);
+  const [notifications, setNotifications] = useState<
+    Array<{ id: string; integration: string; severity: string; title: string; message: string }>
+  >([]);
+
+  // Poll notifications every 60 seconds
+  useEffect(() => {
+    const fetchNotifications = async () => {
+      try {
+        const data = await apiFetch<typeof notifications>('/api/admin/notifications');
+        setNotifications(data);
+      } catch {
+        // Silently ignore — don't block UI
+      }
+    };
+    void fetchNotifications();
+    const interval = setInterval(() => void fetchNotifications(), 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   const isSetupRoute = location.pathname === ADMIN_PATHS.setup;
   const matchedTab = tabFromPathname(location.pathname);
@@ -205,6 +228,71 @@ function AdminDashboardLayout() {
                   </NavLink>
                 </CNavItem>
               ) : null}
+              {/* Notification bell */}
+              <CNavItem>
+                <CPopover
+                  trigger="click"
+                  placement="bottom-end"
+                  className="healthPopover"
+                  content={
+                    <div style={{ minWidth: 280, maxWidth: 360 }}>
+                      {notifications.length === 0 ? (
+                        <div className="text-body-secondary small p-2 text-center">
+                          No notifications
+                        </div>
+                      ) : (
+                        notifications.map((n) => (
+                          <div
+                            key={n.id}
+                            className="d-flex gap-2 p-2 border-bottom"
+                            style={{ cursor: 'pointer' }}
+                            onClick={() =>
+                              navigate(
+                                `${ADMIN_PATHS.integrations}?select=${encodeURIComponent(n.integration)}`,
+                              )
+                            }
+                          >
+                            <div className="mt-1">
+                              {n.severity === 'error' ? (
+                                <XCircleFill size={14} className="text-danger" />
+                              ) : n.severity === 'warning' ? (
+                                <ExclamationTriangleFill size={14} className="text-warning" />
+                              ) : (
+                                <InfoCircleFill size={14} className="text-info" />
+                              )}
+                            </div>
+                            <div>
+                              <div className="small fw-semibold">{n.title}</div>
+                              <div className="small text-body-secondary">{n.message}</div>
+                              <div className="small text-body-tertiary">{n.integration}</div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  }
+                >
+                  <button
+                    type="button"
+                    className="position-relative btn btn-link p-1"
+                    style={{ color: 'var(--cui-header-color)' }}
+                  >
+                    <BellFill size={18} />
+                    {notifications.length > 0 && (
+                      <CBadge
+                        color="danger"
+                        shape="rounded-pill"
+                        className="position-absolute top-0 start-100 translate-middle"
+                        style={{ fontSize: '0.65rem', padding: '0.2em 0.45em' }}
+                      >
+                        {notifications.length}
+                      </CBadge>
+                    )}
+                  </button>
+                </CPopover>
+              </CNavItem>
+
+              {/* Health status */}
               <CNavItem>
                 <CPopover
                   trigger="click"
@@ -258,9 +346,6 @@ function AdminDashboardLayout() {
 
         <div className="body flex-grow-1 adminBody">
           <CContainer fluid className="px-4">
-            {dashboard.errorBanner ? (
-              <div className="banner error">{dashboard.errorBanner}</div>
-            ) : null}
             <PageContent activeTab={activeTab} />
           </CContainer>
         </div>

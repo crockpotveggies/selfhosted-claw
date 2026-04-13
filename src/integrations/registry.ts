@@ -17,7 +17,10 @@ export function registerIntegration(def: IntegrationDefinition): void {
     registerChannel(def.name, def.channel);
   }
 
-  logger.debug({ integration: def.name, core: def.core }, 'Integration registered');
+  logger.debug(
+    { integration: def.name, core: def.core },
+    'Integration registered',
+  );
 }
 
 export function getIntegration(

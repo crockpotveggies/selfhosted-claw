@@ -49,9 +49,7 @@ interface TransportOptions {
 }
 
 export default function buildTransport(options: TransportOptions) {
-  const dbPath = path.resolve(
-    options.dbPath || path.join('store', 'logs.db'),
-  );
+  const dbPath = path.resolve(options.dbPath || path.join('store', 'logs.db'));
 
   // Ensure the directory exists
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -112,8 +110,7 @@ export default function buildTransport(options: TransportOptions) {
     objectMode: true,
     transform(chunk, _encoding, callback) {
       try {
-        const obj =
-          typeof chunk === 'string' ? JSON.parse(chunk) : chunk;
+        const obj = typeof chunk === 'string' ? JSON.parse(chunk) : chunk;
 
         const level = obj.level as number;
         if (level < minLevelNum) {
@@ -128,11 +125,9 @@ export default function buildTransport(options: TransportOptions) {
           : new Date().toISOString();
 
         // Extract indexed keys
-        const integration =
-          (obj.integration as string) || null;
+        const integration = (obj.integration as string) || null;
         const channel = (obj.channel as string) || null;
-        const groupFolder =
-          (obj.group_folder as string) || null;
+        const groupFolder = (obj.group_folder as string) || null;
         const entity = (obj.entity as string) || null;
         const runId = (obj.run_id as string) || null;
 
@@ -162,9 +157,7 @@ export default function buildTransport(options: TransportOptions) {
           groupFolder,
           entity,
           runId,
-          Object.keys(data).length > 0
-            ? JSON.stringify(data)
-            : null,
+          Object.keys(data).length > 0 ? JSON.stringify(data) : null,
         ]);
 
         if (buffer.length >= FLUSH_SIZE) {

@@ -1,6 +1,11 @@
 import type http from 'http';
 
-import type { Channel, OnInboundMessage, OnChatMetadata, RegisteredGroup } from '../types.js';
+import type {
+  Channel,
+  OnInboundMessage,
+  OnChatMetadata,
+  RegisteredGroup,
+} from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Channel factory (re-export from channel registry for convenience)
@@ -58,9 +63,7 @@ export interface IntegrationSettings {
   /** Allow per-group setting overrides. */
   perGroup?: boolean;
   /** Custom validation beyond JSON Schema. Return null if valid. */
-  validate?: (
-    values: Record<string, unknown>,
-  ) => Record<string, string> | null;
+  validate?: (values: Record<string, unknown>) => Record<string, string> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,10 +108,21 @@ export interface IntegrationStatus {
   serviceRunning?: boolean;
 }
 
+export interface IntegrationNotification {
+  id: string;
+  integration: string;
+  severity: 'error' | 'warning' | 'info';
+  title: string;
+  message: string;
+}
+
 export interface IntegrationAdminPage {
   icon: string;
   category: 'messaging' | 'productivity' | 'utility' | 'developer';
   getStatus: (ctx: IntegrationContext) => Promise<IntegrationStatus>;
+  getNotifications?: (
+    ctx: IntegrationContext,
+  ) => Promise<IntegrationNotification[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,10 +152,7 @@ export interface RegistrationResponse {
 }
 
 export interface IntegrationServiceSetup {
-  fetchLinkQr?: (
-    rpcUrl: string,
-    deviceName: string,
-  ) => Promise<string>;
+  fetchLinkQr?: (rpcUrl: string, deviceName: string) => Promise<string>;
   listAccounts?: (rpcUrl: string) => Promise<string[]>;
   startRegistration?: (
     input: RegistrationInput,
@@ -205,9 +216,7 @@ export interface OAuthSetupStep {
   helpUrl?: string;
   /** The callback path to register with the OAuth provider. */
   callbackPath: string;
-  startAuth: (
-    origin: string,
-  ) => Promise<{ url: string; state: string }>;
+  startAuth: (origin: string) => Promise<{ url: string; state: string }>;
   completeAuth: (params: {
     code: string;
     state: string;

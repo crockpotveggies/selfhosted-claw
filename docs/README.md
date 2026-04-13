@@ -13,3 +13,6 @@ The files in this directory are original design documents and developer referenc
 | [DEBUG_CHECKLIST.md](DEBUG_CHECKLIST.md) | [Troubleshooting](https://docs.nanoclaw.dev/advanced/troubleshooting) |
 | [docker-sandboxes.md](docker-sandboxes.md) | [Docker Sandboxes](https://docs.nanoclaw.dev/advanced/docker-sandboxes) |
 | [APPLE-CONTAINER-NETWORKING.md](APPLE-CONTAINER-NETWORKING.md) | [Container runtime](https://docs.nanoclaw.dev/advanced/container-runtime) |
+| [INTEGRATIONS.md](INTEGRATIONS.md) | [Creating integrations](https://docs.nanoclaw.dev/integrations/creating-integrations) |
+| [BRANCH-FORK-MAINTENANCE.md](BRANCH-FORK-MAINTENANCE.md) | [Git workflow](https://docs.nanoclaw.dev/advanced/git-workflow) |
+| [SDK_DEEP_DIVE.md](SDK_DEEP_DIVE.md) | [Agent SDK internals](https://docs.nanoclaw.dev/advanced/agent-sdk) |

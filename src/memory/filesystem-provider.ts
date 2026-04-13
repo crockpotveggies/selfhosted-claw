@@ -82,7 +82,10 @@ function parseFrontmatter(raw: string): {
       case 'tags': {
         const tagMatch = value.match(/\[(.+)]/);
         if (tagMatch) {
-          tags = tagMatch[1].split(',').map((t) => t.trim()).filter(Boolean);
+          tags = tagMatch[1]
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean);
         }
         break;
       }
@@ -177,10 +180,7 @@ function removeFromIndex(relativePath: string): void {
 // Scan filesystem for memories
 // ---------------------------------------------------------------------------
 
-function scanDirectory(
-  dirPath: string,
-  baseDir: string,
-): MemoryResult[] {
+function scanDirectory(dirPath: string, baseDir: string): MemoryResult[] {
   const results: MemoryResult[] = [];
   if (!fs.existsSync(dirPath)) return results;
 
@@ -193,7 +193,9 @@ function scanDirectory(
         try {
           const raw = fs.readFileSync(fullPath, 'utf-8');
           const parsed = parseFrontmatter(raw);
-          const relativePath = path.relative(baseDir, fullPath).replace(/\\/g, '/');
+          const relativePath = path
+            .relative(baseDir, fullPath)
+            .replace(/\\/g, '/');
 
           // Derive entity and integration from path
           const parts = relativePath.split('/');
@@ -307,7 +309,9 @@ export class FileSystemMemoryProvider implements MemoryProvider {
 
     const filename = entry.file || generateFilename(entry.content);
     const fullPath = path.join(integrationDir, filename);
-    const relativePath = path.relative(MEMORY_DIR, fullPath).replace(/\\/g, '/');
+    const relativePath = path
+      .relative(MEMORY_DIR, fullPath)
+      .replace(/\\/g, '/');
 
     // If file exists, update the 'updated' timestamp
     const frontmatter = buildFrontmatter(entry);
@@ -318,7 +322,11 @@ export class FileSystemMemoryProvider implements MemoryProvider {
     addToIndex(relativePath, entry.entity, entry.integration, entry.tags);
 
     logger.debug(
-      { file: relativePath, entity: entry.entity, integration: entry.integration },
+      {
+        file: relativePath,
+        entity: entry.entity,
+        integration: entry.integration,
+      },
       'Memory stored',
     );
 

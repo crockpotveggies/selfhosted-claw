@@ -421,9 +421,7 @@ export class ControlActionService {
   private outboundHandlers: OutboundHandlers = {};
   private approvalReplyClassifier?: ApprovalReplyClassifier;
 
-  constructor(
-    private readonly store: ControlStore = new ControlStore(),
-  ) {
+  constructor(private readonly store: ControlStore = new ControlStore()) {
     this.registerDefinitions();
   }
 
@@ -1174,14 +1172,18 @@ export class ControlActionService {
   getSignalComposeStatus(): SignalComposeStatus {
     const env = this.getSetupEnvironment();
     const settings = getIntegrationSettings('signal');
-    const account = (settings.account as string) || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT;
-    const rpcUrl = (settings.rpcUrl as string) || env.SIGNAL_RPC_URL || SIGNAL_RPC_URL;
+    const account =
+      (settings.account as string) || env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT;
+    const rpcUrl =
+      (settings.rpcUrl as string) || env.SIGNAL_RPC_URL || SIGNAL_RPC_URL;
     const dataDir = (settings.dataDir as string) || '';
     const svcStatus = getServiceStatus('signal');
     return {
       account,
       localRpcUrl: rpcUrl,
-      composeFile: svcStatus.configured ? 'scripts/signal-cli/docker-compose.yml' : '',
+      composeFile: svcStatus.configured
+        ? 'scripts/signal-cli/docker-compose.yml'
+        : '',
       envFile: svcStatus.configured ? 'scripts/signal-cli/.env' : '',
       dataDir,
       configured: svcStatus.configured,
@@ -1398,7 +1400,9 @@ export class ControlActionService {
     const def = getIntegration('signal');
     const setup = def?.service?.setup;
     if (!setup?.fetchLinkQr) {
-      throw new Error('Signal integration not registered or missing setup hooks');
+      throw new Error(
+        'Signal integration not registered or missing setup hooks',
+      );
     }
     const env = this.getSetupEnvironment();
     const rpcUrl = env.SIGNAL_RPC_URL || SIGNAL_RPC_URL;
@@ -1409,7 +1413,9 @@ export class ControlActionService {
     const def = getIntegration('signal');
     const setup = def?.service?.setup;
     if (!setup?.listAccounts) {
-      throw new Error('Signal integration not registered or missing setup hooks');
+      throw new Error(
+        'Signal integration not registered or missing setup hooks',
+      );
     }
     const env = this.getSetupEnvironment();
     return setup.listAccounts(rpcUrl || env.SIGNAL_RPC_URL || SIGNAL_RPC_URL);
@@ -1423,7 +1429,9 @@ export class ControlActionService {
     const def = getIntegration('signal');
     const setup = def?.service?.setup;
     if (!setup?.startRegistration) {
-      throw new Error('Signal integration not registered or missing setup hooks');
+      throw new Error(
+        'Signal integration not registered or missing setup hooks',
+      );
     }
     const env = this.getSetupEnvironment();
     return setup.startRegistration({
@@ -1441,7 +1449,9 @@ export class ControlActionService {
     const def = getIntegration('signal');
     const setup = def?.service?.setup;
     if (!setup?.verifyRegistration) {
-      throw new Error('Signal integration not registered or missing setup hooks');
+      throw new Error(
+        'Signal integration not registered or missing setup hooks',
+      );
     }
     const env = this.getSetupEnvironment();
     return setup.verifyRegistration({

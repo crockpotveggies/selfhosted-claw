@@ -13,8 +13,15 @@ import path from 'path';
 import { ADMIN_BIND_HOST, ADMIN_CONFIG_DIR, ADMIN_PORT } from '../config.js';
 
 import { registerIntegration } from './registry.js';
-import { getIntegrationSettings, saveIntegrationSettings } from './settings-store.js';
-import type { IntegrationDefinition, IntegrationTool } from './types.js';
+import {
+  getIntegrationSettings,
+  saveIntegrationSettings,
+} from './settings-store.js';
+import type {
+  IntegrationDefinition,
+  IntegrationNotification,
+  IntegrationTool,
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // Legacy OAuth state — read from the existing google-contacts-oauth.json
@@ -85,8 +92,7 @@ const calendarTools: IntegrationTool[] = [
   },
   {
     name: 'calendar_check_availability',
-    description:
-      'Check free/busy availability across one or more calendars.',
+    description: 'Check free/busy availability across one or more calendars.',
     parameters: {
       type: 'object',
       properties: {
@@ -191,7 +197,8 @@ const callbackPath = `/api/admin/integrations/google-calendar/setup/oauth/callba
 
 const calendarIntegration: IntegrationDefinition = {
   name: 'google-calendar',
-  description: 'Google Calendar event management — list, create, update, delete events',
+  description:
+    'Google Calendar event management — list, create, update, delete events',
   core: false,
   version: '1.0.0',
   credentials: [
@@ -218,7 +225,8 @@ const calendarIntegration: IntegrationDefinition = {
         defaultCalendarId: {
           type: 'string',
           title: 'Default Calendar ID',
-          description: 'Calendar ID used when none specified (e.g., "primary" or an email address)',
+          description:
+            'Calendar ID used when none specified (e.g., "primary" or an email address)',
           default: 'primary',
         },
         maxResults: {
@@ -245,9 +253,7 @@ const calendarIntegration: IntegrationDefinition = {
       // Check legacy OAuth state (shared google-contacts-oauth.json)
       const legacy = readLegacyOAuthState();
       if (legacy.accessToken && hasCalendarScope(legacy)) {
-        const expiry = legacy.expiryDate
-          ? new Date(legacy.expiryDate)
-          : null;
+        const expiry = legacy.expiryDate ? new Date(legacy.expiryDate) : null;
         const isExpired = expiry && expiry.getTime() < Date.now();
         if (isExpired && !legacy.refreshToken) {
           return {
@@ -284,6 +290,67 @@ const calendarIntegration: IntegrationDefinition = {
         message: 'Client ID set but OAuth flow not completed',
       };
     },
+    getNotifications: async () => {
+      const notifications: IntegrationNotification[] = [];
+      const legacy = readLegacyOAuthState();
+
+      // Check if user recently re-authenticated via integration OAuth
+      const settings = getIntegrationSettings('google-calendar');
+      const recentlyConnected = settings.oauthConnectedAt
+        ? Date.now() - new Date(settings.oauthConnectedAt as string).getTime() < 7 * 24 * 60 * 60 * 1000
+        : false;
+
+      if (recentlyConnected) {
+        // User re-authenticated recently — don't show expired legacy token warning
+      } else if (legacy.accessToken && hasCalendarScope(legacy)) {
+        const expiry = legacy.expiryDate
+          ? new Date(legacy.expiryDate)
+          : null;
+        const isExpired = expiry && expiry.getTime() < Date.now();
+        if (isExpired) {
+          try {
+            const testUrl =
+              'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1';
+            const resp = await fetch(testUrl, {
+              headers: { Authorization: `Bearer ${legacy.accessToken}` },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (resp.status === 401) {
+              notifications.push({
+                id: 'google-calendar:oauth-expired',
+                integration: 'google-calendar',
+                severity: 'error',
+                title: 'Google OAuth Token Expired',
+                message:
+                  'The Google access token has expired or been revoked. Re-authenticate from the integration setup page.',
+              });
+            }
+          } catch {
+            notifications.push({
+              id: 'google-calendar:oauth-unreachable',
+              integration: 'google-calendar',
+              severity: 'warning',
+              title: 'Google API Unreachable',
+              message:
+                'Could not reach Google APIs to verify the OAuth token.',
+            });
+          }
+        }
+      } else if (!legacy.accessToken && !recentlyConnected) {
+        if (!settings.oauthConnectedAt) {
+          notifications.push({
+            id: 'google-calendar:not-connected',
+            integration: 'google-calendar',
+            severity: 'info',
+            title: 'Google Calendar Not Connected',
+            message:
+              'Connect your Google account from the integration setup page.',
+          });
+        }
+      }
+
+      return notifications;
+    },
   },
 
   tools: calendarTools,
@@ -310,8 +377,12 @@ const calendarIntegration: IntegrationDefinition = {
           // This will be wired to ControlActionService.startGoogleContactsOAuth
           // or a new calendar-specific OAuth flow
           const settings = getIntegrationSettings('google-calendar');
+          // Read from .env via readEnvFile (process.env doesn't contain .env values)
+          const { readEnvFile } = await import('../env.js');
+          const envVars = readEnvFile(['GOOGLE_CLIENT_ID']);
           const clientId =
             process.env.GOOGLE_CLIENT_ID ||
+            envVars.GOOGLE_CLIENT_ID ||
             (settings.googleClientId as string) ||
             '';
           if (!clientId) {
@@ -329,17 +400,113 @@ const calendarIntegration: IntegrationDefinition = {
           return { url, state };
         },
         completeAuth: async ({ code, state, origin }) => {
-          // Exchange code for token — delegate to existing OAuth completion
-          // For now, store the auth code; full token exchange would be wired here
-          const { saveIntegrationSettings } = await import(
-            './settings-store.js'
+          // Exchange authorization code for access + refresh tokens
+          const { readEnvFile } = await import('../env.js');
+          const envVars = readEnvFile([
+            'GOOGLE_CLIENT_ID',
+            'GOOGLE_CLIENT_SECRET',
+          ]);
+          const clientId =
+            process.env.GOOGLE_CLIENT_ID ||
+            envVars.GOOGLE_CLIENT_ID ||
+            '';
+          const clientSecret =
+            process.env.GOOGLE_CLIENT_SECRET ||
+            envVars.GOOGLE_CLIENT_SECRET ||
+            '';
+          const redirectUri = `${origin}${callbackPath}`;
+
+          const tokenResponse = await fetch(
+            'https://oauth2.googleapis.com/token',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+              },
+              body: new URLSearchParams({
+                code,
+                client_id: clientId,
+                client_secret: clientSecret,
+                redirect_uri: redirectUri,
+                grant_type: 'authorization_code',
+              }),
+            },
           );
+          const tokenData = (await tokenResponse
+            .json()
+            .catch(() => ({}))) as {
+            access_token?: string;
+            refresh_token?: string;
+            expires_in?: number;
+            scope?: string;
+            token_type?: string;
+            error?: string;
+            error_description?: string;
+          };
+
+          if (!tokenResponse.ok || !tokenData.access_token) {
+            throw new Error(
+              tokenData.error_description ||
+                tokenData.error ||
+                `Token exchange failed with ${tokenResponse.status}`,
+            );
+          }
+
+          const now = new Date();
+          const expiryDate = new Date(
+            now.getTime() +
+              Math.max(60, tokenData.expires_in || 3600) * 1000,
+          ).toISOString();
+
+          // Update the legacy OAuth file so the rest of the system
+          // (calendar tools, contact resolution) picks up the new token
+          const legacyPath = path.join(
+            ADMIN_CONFIG_DIR,
+            'google-contacts-oauth.json',
+          );
+          let legacyState: Record<string, unknown> = {};
+          try {
+            legacyState = JSON.parse(
+              fs.readFileSync(legacyPath, 'utf-8'),
+            );
+          } catch {
+            // No existing file
+          }
+          const updatedLegacy = {
+            ...legacyState,
+            accessToken: tokenData.access_token,
+            refreshToken:
+              tokenData.refresh_token ||
+              (legacyState.refreshToken as string) ||
+              '',
+            expiryDate,
+            scope:
+              tokenData.scope ||
+              (legacyState.scope as string) ||
+              '',
+            tokenType: tokenData.token_type || 'Bearer',
+            connectedAt: now.toISOString(),
+            oauthState: '',
+            oauthStateCreatedAt: '',
+          };
+          fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+          const tmpPath = `${legacyPath}.tmp`;
+          fs.writeFileSync(
+            tmpPath,
+            JSON.stringify(updatedLegacy, null, 2),
+            { mode: 0o600 },
+          );
+          fs.renameSync(tmpPath, legacyPath);
+
+          // Also save to integration settings
+          const { saveIntegrationSettings } =
+            await import('./settings-store.js');
           const existing = getIntegrationSettings('google-calendar');
           saveIntegrationSettings('google-calendar', {
             ...existing,
             oauthCode: code,
             oauthState: state,
-            oauthConnectedAt: new Date().toISOString(),
+            oauthConnectedAt: now.toISOString(),
           });
         },
         isComplete: async () => {
@@ -354,7 +521,9 @@ const calendarIntegration: IntegrationDefinition = {
     ],
     getStatus: async () => {
       const legacy = readLegacyOAuthState();
-      const legacyDone = Boolean(legacy.accessToken && hasCalendarScope(legacy));
+      const legacyDone = Boolean(
+        legacy.accessToken && hasCalendarScope(legacy),
+      );
       const settings = getIntegrationSettings('google-calendar');
       const integrationDone = Boolean(
         settings.oauthCode || settings.oauthConnectedAt,

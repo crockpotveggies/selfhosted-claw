@@ -3,6 +3,7 @@ import { ADMIN_DATA_DIR, SIGNAL_ACCOUNT, SIGNAL_RPC_URL } from '../config.js';
 import { registerIntegration } from './registry.js';
 import type {
   IntegrationDefinition,
+  IntegrationNotification,
   SetupStatus,
   CredentialInputStep,
   QrCodeSetupStep,
@@ -51,13 +52,10 @@ function parseJsonMessage(text: string): string {
 function getSettings(): { account: string; rpcUrl: string; dataDir: string } {
   const settings = getIntegrationSettings('signal');
   return {
-    account:
-      (settings.account as string) || SIGNAL_ACCOUNT || '',
-    rpcUrl:
-      (settings.rpcUrl as string) || SIGNAL_RPC_URL || DEFAULT_RPC_URL,
+    account: (settings.account as string) || SIGNAL_ACCOUNT || '',
+    rpcUrl: (settings.rpcUrl as string) || SIGNAL_RPC_URL || DEFAULT_RPC_URL,
     dataDir:
-      (settings.dataDir as string) ||
-      `${ADMIN_DATA_DIR}/signal-cli-managed`,
+      (settings.dataDir as string) || `${ADMIN_DATA_DIR}/signal-cli-managed`,
   };
 }
 
@@ -263,6 +261,44 @@ const signalIntegration: IntegrationDefinition = {
         return { state: 'offline', message: 'Signal bridge unreachable' };
       }
     },
+    getNotifications: async () => {
+      const notifications: IntegrationNotification[] = [];
+      const s = getSettings();
+      if (!s.account) {
+        notifications.push({
+          id: 'signal:not-configured',
+          integration: 'signal',
+          severity: 'warning',
+          title: 'Signal Not Configured',
+          message: 'No Signal account configured. Run setup from the Integrations page.',
+        });
+        return notifications;
+      }
+      try {
+        const rpcUrl = parseRpcUrl(s.rpcUrl).toString().replace(/\/$/, '');
+        const response = await fetch(new URL('/v1/accounts', rpcUrl), {
+          signal: AbortSignal.timeout(3000),
+        });
+        if (!response.ok) {
+          notifications.push({
+            id: 'signal:bridge-degraded',
+            integration: 'signal',
+            severity: 'warning',
+            title: 'Signal Bridge Degraded',
+            message: `RPC returned status ${response.status}`,
+          });
+        }
+      } catch {
+        notifications.push({
+          id: 'signal:bridge-offline',
+          integration: 'signal',
+          severity: 'error',
+          title: 'Signal Bridge Offline',
+          message: 'Cannot reach the signal-cli RPC. Check the service status.',
+        });
+      }
+      return notifications;
+    },
   },
 
   // NOTE: channel is deliberately NOT set here.
@@ -275,14 +311,12 @@ const signalIntegration: IntegrationDefinition = {
     serviceName: 'signal-cli',
     buildEnv: (settings) => ({
       SIGNAL_ACCOUNT: (settings.account as string) || '',
-      SIGNAL_RPC_URL:
-        (settings.rpcUrl as string) || DEFAULT_RPC_URL,
+      SIGNAL_RPC_URL: (settings.rpcUrl as string) || DEFAULT_RPC_URL,
       SIGNAL_CLI_PORT: portFromRpcUrl(
         (settings.rpcUrl as string) || DEFAULT_RPC_URL,
       ),
       SIGNAL_CLI_DATA_DIR:
-        (settings.dataDir as string) ||
-        `${ADMIN_DATA_DIR}/signal-cli-managed`,
+        (settings.dataDir as string) || `${ADMIN_DATA_DIR}/signal-cli-managed`,
     }),
     healthCheck: {
       url: `${SIGNAL_RPC_URL || DEFAULT_RPC_URL}/v1/accounts`,
@@ -303,9 +337,7 @@ const signalIntegration: IntegrationDefinition = {
           .map((item) =>
             typeof item === 'string'
               ? item
-              : typeof item === 'object' &&
-                  item !== null &&
-                  'number' in item
+              : typeof item === 'object' && item !== null && 'number' in item
                 ? String((item as { number: unknown }).number)
                 : '',
           )
@@ -329,17 +361,13 @@ const signalIntegration: IntegrationDefinition = {
           body: JSON.stringify(body),
         });
         const text = await response.text();
-        if (
-          response.status === 402 ||
-          (text && /captcha/i.test(text))
-        ) {
+        if (response.status === 402 || (text && /captcha/i.test(text))) {
           return {
             message:
               parseJsonMessage(text) ||
               'Captcha required before Signal will send the verification code.',
             captchaRequired: true,
-            captchaUrl:
-              'https://signalcaptchas.org/registration/generate.html',
+            captchaUrl: 'https://signalcaptchas.org/registration/generate.html',
           };
         }
         if (!response.ok) {
@@ -349,8 +377,7 @@ const signalIntegration: IntegrationDefinition = {
           );
         }
         return {
-          message:
-            parseJsonMessage(text) || 'Signal registration started.',
+          message: parseJsonMessage(text) || 'Signal registration started.',
         };
       },
       verifyRegistration: async (input) => {
@@ -368,8 +395,7 @@ const signalIntegration: IntegrationDefinition = {
           );
         }
         return {
-          message:
-            parseJsonMessage(text) || 'Signal registration verified.',
+          message: parseJsonMessage(text) || 'Signal registration verified.',
         };
       },
     },

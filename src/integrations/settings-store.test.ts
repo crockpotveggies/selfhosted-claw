@@ -8,15 +8,21 @@ vi.mock('../config.js', () => {
   const p = require('path');
   const o = require('os');
   return {
-    ADMIN_CONFIG_DIR: p.join(
-      o.tmpdir(),
-      'nanoclaw-settings-test',
-    ),
+    ADMIN_CONFIG_DIR: p.join(o.tmpdir(), 'nanoclaw-settings-test'),
   };
 });
 
 // Mock registry to return integration definitions
-const mockDefs = new Map<string, { core: boolean; settings?: { defaults: Record<string, unknown>; validate?: (v: Record<string, unknown>) => Record<string, string> | null } }>();
+const mockDefs = new Map<
+  string,
+  {
+    core: boolean;
+    settings?: {
+      defaults: Record<string, unknown>;
+      validate?: (v: Record<string, unknown>) => Record<string, string> | null;
+    };
+  }
+>();
 vi.mock('./registry.js', () => ({
   getIntegration: (name: string) => mockDefs.get(name),
   registerChannel: vi.fn(),
@@ -122,9 +128,9 @@ describe('Integration Settings Store', () => {
         },
       },
     });
-    expect(() =>
-      saveIntegrationSettings('strict', { name: '' }),
-    ).toThrow('Validation failed');
+    expect(() => saveIntegrationSettings('strict', { name: '' })).toThrow(
+      'Validation failed',
+    );
   });
 
   it('writes atomically via temp file', () => {
@@ -135,8 +141,6 @@ describe('Integration Settings Store', () => {
     const tmpFile = path.join(settingsDir, 'settings.json.tmp');
     expect(fs.existsSync(tmpFile)).toBe(false);
     // But the actual file should exist
-    expect(
-      fs.existsSync(path.join(settingsDir, 'settings.json')),
-    ).toBe(true);
+    expect(fs.existsSync(path.join(settingsDir, 'settings.json'))).toBe(true);
   });
 });

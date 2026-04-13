@@ -61,15 +61,11 @@ function runPrune(): void {
 
     // 1. Time-based deletion
     const timeResult = db
-      .prepare(
-        `DELETE FROM logs WHERE time < datetime('now', ?)`,
-      )
+      .prepare(`DELETE FROM logs WHERE time < datetime('now', ?)`)
       .run(`-${settings.retentionDays} days`);
 
     const timeDeleted =
-      typeof timeResult.changes === 'number'
-        ? timeResult.changes
-        : 0;
+      typeof timeResult.changes === 'number' ? timeResult.changes : 0;
 
     if (timeDeleted > 0) {
       logger.info(
@@ -118,10 +114,7 @@ function runPrune(): void {
       }
     }
   } catch (err) {
-    logger.error(
-      { err: String(err) },
-      'Log pruner error',
-    );
+    logger.error({ err: String(err) }, 'Log pruner error');
   } finally {
     try {
       db?.close();

@@ -12,11 +12,7 @@ import {
   STORE_DIR,
 } from './config.js';
 import { ControlActionService } from './control-actions.js';
-import {
-  getAllChats,
-  getAllRegisteredGroups,
-  getAllTasks,
-} from './db.js';
+import { getAllChats, getAllRegisteredGroups, getAllTasks } from './db.js';
 import {
   getRegisteredIntegrations,
   getIntegration,
@@ -181,10 +177,7 @@ export function startAdminServer(
       }
 
       // Dashboard stats
-      if (
-        req.method === 'GET' &&
-        url.pathname === '/api/admin/dashboard'
-      ) {
+      if (req.method === 'GET' && url.pathname === '/api/admin/dashboard') {
         const registeredGroups = getAllRegisteredGroups();
         const groups = Object.values(registeredGroups);
         const chats = getAllChats();
@@ -243,10 +236,9 @@ export function startAdminServer(
           is_from_me: number;
         }> = [];
         try {
-          const messagesDb = new Database(
-            path.join(STORE_DIR, 'messages.db'),
-            { readonly: true },
-          );
+          const messagesDb = new Database(path.join(STORE_DIR, 'messages.db'), {
+            readonly: true,
+          });
           recentMessages = messagesDb
             .prepare(
               `SELECT m.sender_name, m.content, m.timestamp, m.is_from_me,
@@ -271,7 +263,8 @@ export function startAdminServer(
             chats: chats.length,
             contacts: contacts.length,
             pendingApprovals: pending.length,
-            activeTasks: getAllTasks().filter((t) => t.status === 'active').length,
+            activeTasks: getAllTasks().filter((t) => t.status === 'active')
+              .length,
             integrations: integrations.length,
             logEventsLast24h: messagesLast24h,
             logEventsLast7d: messagesLast7d,
@@ -298,6 +291,67 @@ export function startAdminServer(
         return;
       }
 
+      // Notifications — separate from setup-status to avoid blocking the wizard
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/notifications'
+      ) {
+        const integrations = getRegisteredIntegrations();
+        const notifications: Array<{
+          id: string;
+          integration: string;
+          severity: string;
+          title: string;
+          message: string;
+        }> = [];
+
+        for (const def of integrations) {
+          if (!def.adminPage?.getNotifications) continue;
+          if (!isIntegrationEnabled(def.name)) continue;
+          try {
+            const settings = getIntegrationSettings(def.name);
+            const ctx = {
+              settings,
+              groupSettings: () => settings,
+              hasCredential: (key: string) =>
+                Boolean(
+                      process.env[key] ||
+                      options.service.getSetupEnvironment()[key] ||
+                      settings[key],
+                    ),
+            };
+            const items = await def.adminPage.getNotifications(ctx);
+            notifications.push(...items);
+          } catch {
+            // Per-integration failure — skip, don't crash
+          }
+        }
+
+        // Also check service health (circuit breaker open)
+        for (const def of integrations) {
+          if (!def.service) continue;
+          if (!isIntegrationEnabled(def.name)) continue;
+          try {
+            const status = getServiceStatus(def.name);
+            if (status.circuitOpen) {
+              notifications.push({
+                id: `${def.name}:circuit-open`,
+                integration: def.name,
+                severity: 'error',
+                title: `${def.name} Service Circuit Breaker Open`,
+                message:
+                  'Service has failed repeatedly and auto-restart is disabled. Manual restart required.',
+              });
+            }
+          } catch {
+            // Skip
+          }
+        }
+
+        sendJson(res, 200, notifications);
+        return;
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/admin/tasks') {
         const tasks = getAllTasks();
         sendJson(res, 200, tasks);
@@ -307,7 +361,22 @@ export function startAdminServer(
       if (req.method === 'GET' && url.pathname === '/api/admin/setup-status') {
         const env = options.service.getSetupEnvironment();
         const signalCompose = options.service.getSignalComposeStatus();
-        const providers = await options.service.getProviderAvailability();
+        let providers;
+        try {
+          providers = await options.service.getProviderAvailability();
+        } catch {
+          // Provider check failed (e.g., expired OAuth token) — use safe defaults
+          providers = {
+            onecliConfigured: false,
+            onecliReachable: false,
+            googleContactsAvailable: false,
+            googleContactsSource: 'none' as const,
+            signalOutboundAvailable: false,
+            smsOutboundAvailable: false,
+            emailOutboundAvailable: false,
+            contactResolutionAvailable: false,
+          };
+        }
         const signalConfigured = Boolean(
           env.SIGNAL_ACCOUNT && env.SIGNAL_RPC_URL,
         );
@@ -862,15 +931,16 @@ export function startAdminServer(
         if (handled) return;
       }
 
-      if (
-        req.method === 'GET' &&
-        url.pathname === '/api/admin/integrations'
-      ) {
+      if (req.method === 'GET' && url.pathname === '/api/admin/integrations') {
         const integrations = getRegisteredIntegrations();
         const results = await Promise.all(
           integrations.map(async (def) => {
             const enabled = isIntegrationEnabled(def.name);
-            let status: { state: string; message: string; serviceRunning?: boolean } = {
+            let status: {
+              state: string;
+              message: string;
+              serviceRunning?: boolean;
+            } = {
               state: 'unconfigured',
               message: 'No status check',
             };
@@ -882,7 +952,9 @@ export function startAdminServer(
                   groupSettings: () => settings,
                   hasCredential: (key) =>
                     Boolean(
-                      process.env[key] || settings[key],
+                      process.env[key] ||
+                      options.service.getSetupEnvironment()[key] ||
+                      settings[key],
                     ),
                 });
               } catch {
@@ -929,9 +1001,7 @@ export function startAdminServer(
       // GET /api/admin/integrations/:name
       const integrationDetailMatch =
         req.method === 'GET' &&
-        url.pathname.match(
-          /^\/api\/admin\/integrations\/([^/]+)$/,
-        );
+        url.pathname.match(/^\/api\/admin\/integrations\/([^/]+)$/);
       if (integrationDetailMatch) {
         const name = integrationDetailMatch[1];
         const def = getIntegration(name);
@@ -940,9 +1010,7 @@ export function startAdminServer(
           return;
         }
         const settings = getIntegrationSettings(name);
-        const svcStatus = def.service
-          ? getServiceStatus(name)
-          : undefined;
+        const svcStatus = def.service ? getServiceStatus(name) : undefined;
         let status;
         try {
           status = def.adminPage?.getStatus
@@ -950,7 +1018,11 @@ export function startAdminServer(
                 settings,
                 groupSettings: () => settings,
                 hasCredential: (key) =>
-                  Boolean(process.env[key] || settings[key]),
+                  Boolean(
+                      process.env[key] ||
+                      options.service.getSetupEnvironment()[key] ||
+                      settings[key],
+                    ),
               })
             : { state: 'unconfigured', message: '' };
         } catch {
@@ -971,16 +1043,19 @@ export function startAdminServer(
             schema: def.settings?.schema || null,
             values: settings,
           },
-          credentials: def.credentials.map((c) => ({
+          credentials: def.credentials.map((c) => {
+            const envValues = options.service.getSetupEnvironment();
+            return {
             key: c.key,
             label: c.label,
             type: c.type,
             configured: Boolean(
               c.envVar
-                ? process.env[c.envVar] || settings[c.key]
+                ? process.env[c.envVar] || envValues[c.envVar] || settings[c.key]
                 : settings[c.key],
             ),
-          })),
+          };
+          }),
           capabilities: {
             hasChannel: Boolean(def.channel),
             tools: def.tools?.map((t) => ({
@@ -1000,9 +1075,7 @@ export function startAdminServer(
       // GET /api/admin/integrations/:name/settings
       const integrationSettingsGetMatch =
         req.method === 'GET' &&
-        url.pathname.match(
-          /^\/api\/admin\/integrations\/([^/]+)\/settings$/,
-        );
+        url.pathname.match(/^\/api\/admin\/integrations\/([^/]+)\/settings$/);
       if (integrationSettingsGetMatch) {
         const name = integrationSettingsGetMatch[1];
         sendJson(res, 200, getIntegrationSettings(name));
@@ -1012,14 +1085,13 @@ export function startAdminServer(
       // POST /api/admin/integrations/:name/settings
       const integrationSettingsPostMatch =
         req.method === 'POST' &&
-        url.pathname.match(
-          /^\/api\/admin\/integrations\/([^/]+)\/settings$/,
-        );
+        url.pathname.match(/^\/api\/admin\/integrations\/([^/]+)\/settings$/);
       if (integrationSettingsPostMatch) {
         const name = integrationSettingsPostMatch[1];
-        const body = JSON.parse(
-          (await readBody(req)) || '{}',
-        ) as Record<string, unknown>;
+        const body = JSON.parse((await readBody(req)) || '{}') as Record<
+          string,
+          unknown
+        >;
         try {
           const def = getIntegration(name);
           const prev = getIntegrationSettings(name);
@@ -1030,10 +1102,7 @@ export function startAdminServer(
           sendJson(res, 200, { ok: true });
         } catch (err) {
           sendJson(res, 400, {
-            error:
-              err instanceof Error
-                ? err.message
-                : 'save_failed',
+            error: err instanceof Error ? err.message : 'save_failed',
           });
         }
         return;
@@ -1042,23 +1111,18 @@ export function startAdminServer(
       // POST /api/admin/integrations/:name/toggle
       const integrationToggleMatch =
         req.method === 'POST' &&
-        url.pathname.match(
-          /^\/api\/admin\/integrations\/([^/]+)\/toggle$/,
-        );
+        url.pathname.match(/^\/api\/admin\/integrations\/([^/]+)\/toggle$/);
       if (integrationToggleMatch) {
         const name = integrationToggleMatch[1];
-        const body = JSON.parse(
-          (await readBody(req)) || '{}',
-        ) as { enabled?: boolean };
+        const body = JSON.parse((await readBody(req)) || '{}') as {
+          enabled?: boolean;
+        };
         try {
           setIntegrationEnabled(name, body.enabled ?? false);
           sendJson(res, 200, { ok: true });
         } catch (err) {
           sendJson(res, 400, {
-            error:
-              err instanceof Error
-                ? err.message
-                : 'toggle_failed',
+            error: err instanceof Error ? err.message : 'toggle_failed',
           });
         }
         return;
@@ -1072,24 +1136,19 @@ export function startAdminServer(
         );
       if (svcStartMatch) {
         const name = svcStartMatch[1];
-        const body = JSON.parse(
-          (await readBody(req)) || '{}',
-        ) as Record<string, string>;
+        const body = JSON.parse((await readBody(req)) || '{}') as Record<
+          string,
+          string
+        >;
         try {
           resetCircuitBreaker(name);
           // If body has values, use as bootstrap input
           const hasBootstrap = Object.keys(body).length > 0;
-          const status = startService(
-            name,
-            hasBootstrap ? body : undefined,
-          );
+          const status = startService(name, hasBootstrap ? body : undefined);
           sendJson(res, 200, status);
         } catch (err) {
           sendJson(res, 500, {
-            error:
-              err instanceof Error
-                ? err.message
-                : 'start_failed',
+            error: err instanceof Error ? err.message : 'start_failed',
           });
         }
         return;
@@ -1108,10 +1167,7 @@ export function startAdminServer(
           sendJson(res, 200, status);
         } catch (err) {
           sendJson(res, 500, {
-            error:
-              err instanceof Error
-                ? err.message
-                : 'stop_failed',
+            error: err instanceof Error ? err.message : 'stop_failed',
           });
         }
         return;
@@ -1197,20 +1253,13 @@ export function startAdminServer(
           }
 
           const where =
-            conditions.length > 0
-              ? `WHERE ${conditions.join(' AND ')}`
-              : '';
+            conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
           const limit = Math.min(
-            parseInt(
-              url.searchParams.get('limit') || '100',
-              10,
-            ) || 100,
+            parseInt(url.searchParams.get('limit') || '100', 10) || 100,
             500,
           );
-          const offset = parseInt(
-            url.searchParams.get('offset') || '0',
-            10,
-          ) || 0;
+          const offset =
+            parseInt(url.searchParams.get('offset') || '0', 10) || 0;
 
           const rows = logDb
             .prepare(
@@ -1221,10 +1270,7 @@ export function startAdminServer(
           sendJson(res, 200, rows);
         } catch (err) {
           sendJson(res, 500, {
-            error:
-              err instanceof Error
-                ? err.message
-                : 'log_query_failed',
+            error: err instanceof Error ? err.message : 'log_query_failed',
           });
         } finally {
           try {
@@ -1236,10 +1282,7 @@ export function startAdminServer(
         return;
       }
 
-      if (
-        req.method === 'GET' &&
-        url.pathname === '/api/admin/logs/stats'
-      ) {
+      if (req.method === 'GET' && url.pathname === '/api/admin/logs/stats') {
         const logDbPath = path.join(STORE_DIR, 'logs.db');
         if (!fs.existsSync(logDbPath)) {
           sendJson(res, 200, { total: 0, byLevel: {}, byIntegration: {} });
@@ -1249,9 +1292,9 @@ export function startAdminServer(
         try {
           logDb = new Database(logDbPath, { readonly: true });
           const total = (
-            logDb
-              .prepare('SELECT count(*) as cnt FROM logs')
-              .get() as { cnt: number }
+            logDb.prepare('SELECT count(*) as cnt FROM logs').get() as {
+              cnt: number;
+            }
           ).cnt;
           const byLevel = logDb
             .prepare(
@@ -1275,10 +1318,7 @@ export function startAdminServer(
           });
         } catch (err) {
           sendJson(res, 500, {
-            error:
-              err instanceof Error
-                ? err.message
-                : 'stats_failed',
+            error: err instanceof Error ? err.message : 'stats_failed',
           });
         } finally {
           try {
@@ -1290,10 +1330,7 @@ export function startAdminServer(
         return;
       }
 
-      if (
-        req.method === 'GET' &&
-        url.pathname === '/api/admin/logs/settings'
-      ) {
+      if (req.method === 'GET' && url.pathname === '/api/admin/logs/settings') {
         sendJson(res, 200, getLogSettings());
         return;
       }
@@ -1302,9 +1339,10 @@ export function startAdminServer(
         req.method === 'POST' &&
         url.pathname === '/api/admin/logs/settings'
       ) {
-        const body = JSON.parse(
-          (await readBody(req)) || '{}',
-        ) as Record<string, unknown>;
+        const body = JSON.parse((await readBody(req)) || '{}') as Record<
+          string,
+          unknown
+        >;
         saveLogSettings(body as Parameters<typeof saveLogSettings>[0]);
         sendJson(res, 200, getLogSettings());
         return;

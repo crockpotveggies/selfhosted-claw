@@ -58,9 +58,7 @@ function groupSettingsPath(
 // Default resolution
 // ---------------------------------------------------------------------------
 
-function getDefaults(
-  integrationName: string,
-): Record<string, unknown> {
+function getDefaults(integrationName: string): Record<string, unknown> {
   const def = getIntegration(integrationName);
   return def?.settings?.defaults ?? {};
 }
@@ -88,9 +86,7 @@ export function saveIntegrationSettings(
   if (def?.settings?.validate) {
     const errors = def.settings.validate(values);
     if (errors) {
-      throw new Error(
-        `Validation failed: ${JSON.stringify(errors)}`,
-      );
+      throw new Error(`Validation failed: ${JSON.stringify(errors)}`);
     }
   }
   writeJsonFile(settingsPath(integrationName), values);
@@ -135,10 +131,10 @@ export function isIntegrationEnabled(integrationName: string): boolean {
   // Core integrations are always enabled.
   if (def?.core) return true;
 
-  const state = readJsonFile<IntegrationState>(
-    statePath(integrationName),
-    { enabled: false, updatedAt: '' },
-  );
+  const state = readJsonFile<IntegrationState>(statePath(integrationName), {
+    enabled: false,
+    updatedAt: '',
+  });
   return state.enabled;
 }
 
@@ -148,9 +144,7 @@ export function setIntegrationEnabled(
 ): void {
   const def = getIntegration(integrationName);
   if (def?.core) {
-    throw new Error(
-      `Cannot disable core integration: ${integrationName}`,
-    );
+    throw new Error(`Cannot disable core integration: ${integrationName}`);
   }
   writeJsonFile(statePath(integrationName), {
     enabled,

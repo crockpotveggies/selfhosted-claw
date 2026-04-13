@@ -25,8 +25,7 @@ const STORE_DIR_RESOLVED = path.resolve(PROJECT_ROOT, 'store');
 // ---------------------------------------------------------------------------
 
 const isDev =
-  process.env.NODE_ENV !== 'production' &&
-  process.env.NODE_ENV !== 'test';
+  process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test';
 const isTest =
   process.env.NODE_ENV === 'test' ||
   typeof (globalThis as Record<string, unknown>).vi !== 'undefined';

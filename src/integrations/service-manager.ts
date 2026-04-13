@@ -4,10 +4,7 @@ import path from 'path';
 
 import { logger } from '../logger.js';
 
-import {
-  getIntegrationsWithService,
-  getIntegration,
-} from './registry.js';
+import { getIntegrationsWithService, getIntegration } from './registry.js';
 import {
   getIntegrationSettings,
   isIntegrationEnabled,
@@ -28,10 +25,7 @@ interface ComposeResult {
   status: number | null;
 }
 
-export type ComposeRunner = (
-  args: string[],
-  cwd: string,
-) => ComposeResult;
+export type ComposeRunner = (args: string[], cwd: string) => ComposeResult;
 
 const defaultRunner: ComposeRunner = (args, cwd) => {
   const result = spawnSync('docker', ['compose', ...args], {
@@ -50,10 +44,7 @@ const defaultRunner: ComposeRunner = (args, cwd) => {
 // Env file writer
 // ---------------------------------------------------------------------------
 
-function writeEnvFile(
-  filePath: string,
-  values: Record<string, string>,
-): void {
+function writeEnvFile(filePath: string, values: Record<string, string>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const content = Object.entries(values)
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
@@ -162,7 +153,9 @@ export function startService(
 
   if (result.status !== 0) {
     const msg = (
-      result.stderr || result.stdout || 'docker compose up failed'
+      result.stderr ||
+      result.stdout ||
+      'docker compose up failed'
     ).trim();
     logger.error(
       { integration: integrationName, error: msg },
@@ -233,10 +226,7 @@ export function getServiceStatus(integrationName: string): ServiceStatus {
   let running = false;
   let lastError = '';
 
-  if (
-    fs.existsSync(composeFile) &&
-    fs.existsSync(envFile)
-  ) {
+  if (fs.existsSync(composeFile) && fs.existsSync(envFile)) {
     const result = runner(
       [
         '-f',
@@ -257,7 +247,9 @@ export function getServiceStatus(integrationName: string): ServiceStatus {
         .includes(svc.serviceName);
     } else {
       lastError = (
-        result.stderr || result.stdout || 'docker compose ps failed'
+        result.stderr ||
+        result.stdout ||
+        'docker compose ps failed'
       ).trim();
     }
   }
@@ -267,9 +259,7 @@ export function getServiceStatus(integrationName: string): ServiceStatus {
   return {
     integrationName,
     serviceName: svc.serviceName,
-    configured:
-      fs.existsSync(composeFile) &&
-      fs.existsSync(envFile),
+    configured: fs.existsSync(composeFile) && fs.existsSync(envFile),
     running,
     lastError,
     circuitOpen: health.circuitOpen,
@@ -303,10 +293,7 @@ export async function ensureServicesRunning(): Promise<void> {
 
     const status = getServiceStatus(def.name);
     if (status.running) {
-      logger.debug(
-        { integration: def.name },
-        'Service already running',
-      );
+      logger.debug({ integration: def.name }, 'Service already running');
       continue;
     }
 
@@ -426,10 +413,7 @@ export function startHealthMonitor(): void {
     void runHealthChecks();
   }, interval);
 
-  logger.info(
-    { intervalMs: interval },
-    'Service health monitor started',
-  );
+  logger.info({ intervalMs: interval }, 'Service health monitor started');
 }
 
 export function stopHealthMonitor(): void {
@@ -445,8 +429,5 @@ export function stopHealthMonitor(): void {
  */
 export function resetCircuitBreaker(integrationName: string): void {
   resetHealthState(integrationName);
-  logger.info(
-    { integration: integrationName },
-    'Circuit breaker reset',
-  );
+  logger.info({ integration: integrationName }, 'Circuit breaker reset');
 }

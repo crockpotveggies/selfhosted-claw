@@ -344,7 +344,8 @@ export function useAdminDashboard() {
     assistantSignalConfigured: false,
     wizardComplete: false,
   };
-  const setupBlocked = !setupChecks.wizardComplete;
+  // Don't show setup overlay while still loading — prevents flash on page refresh
+  const setupBlocked = setupState.data != null && !setupChecks.wizardComplete;
 
   const errorBanner = [
     actionError,

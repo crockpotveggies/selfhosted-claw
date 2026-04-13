@@ -9,16 +9,13 @@ const mockRegistry = new Map<string, unknown>();
 vi.mock('./registry.js', () => ({
   getIntegration: (name: string) => mockRegistry.get(name),
   getIntegrationsWithService: () =>
-    [...mockRegistry.values()].filter(
-      (d: any) => d.service != null,
-    ),
+    [...mockRegistry.values()].filter((d: any) => d.service != null),
   registerChannel: vi.fn(),
 }));
 
 const mockSettings = new Map<string, Record<string, unknown>>();
 vi.mock('./settings-store.js', () => ({
-  getIntegrationSettings: (name: string) =>
-    mockSettings.get(name) || {},
+  getIntegrationSettings: (name: string) => mockSettings.get(name) || {},
   isIntegrationEnabled: () => true,
 }));
 
@@ -90,7 +87,10 @@ describe('Service Manager', () => {
   it('starts a service with saved settings', () => {
     const def = makeServiceDef('test');
     mockRegistry.set('test', def);
-    mockSettings.set('test', { account: '+1555', url: 'http://localhost:8080' });
+    mockSettings.set('test', {
+      account: '+1555',
+      url: 'http://localhost:8080',
+    });
 
     startService('test');
     expect(runnerMock).toHaveBeenCalled();
