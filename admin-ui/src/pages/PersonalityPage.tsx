@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import {
   CButton,
   CCard,
@@ -12,12 +13,22 @@ import {
 import { PencilSquare, ArrowCounterclockwise } from 'react-bootstrap-icons';
 
 import type { PersonalityScope } from '../admin/types';
+import { apiFetch } from '../admin/api';
 import { useAdminDashboardContext } from '../admin/context';
+import { IntegrationProfileCard } from '../components/IntegrationProfileCard';
+
+interface IntegrationProfileSummary {
+  name: string;
+  label: string;
+}
 
 export function PersonalityPage() {
   const dashboard = useAdminDashboardContext();
   const saveKey = 'personality-save';
   const resetKey = 'personality-reset';
+  const [profileIntegrations, setProfileIntegrations] = useState<
+    IntegrationProfileSummary[]
+  >([]);
 
   const updateField = (field: string, value: string) => {
     dashboard.setPersonalityForm({
@@ -26,6 +37,20 @@ export function PersonalityPage() {
       scope: dashboard.scope,
     });
   };
+
+  // Load integrations that have profiles
+  useEffect(() => {
+    void (async () => {
+      try {
+        const data = await apiFetch<IntegrationProfileSummary[]>(
+          '/api/admin/integration-profiles',
+        );
+        setProfileIntegrations(data);
+      } catch {
+        // Ignore
+      }
+    })();
+  }, []);
 
   return (
     <CRow className="g-3">
@@ -44,13 +69,14 @@ export function PersonalityPage() {
             >
               <option value="global">Global</option>
               <option value="main">Main group</option>
-              {/* Group-specific scopes would be listed dynamically */}
             </CFormSelect>
           </CCardHeader>
           <CCardBody>
             <div className="d-flex flex-column gap-3">
               <div>
-                <label className="form-label small fw-semibold">Display name</label>
+                <label className="form-label small fw-semibold">
+                  Display name
+                </label>
                 <CFormInput
                   size="sm"
                   value={dashboard.personalityForm.displayName}
@@ -79,15 +105,21 @@ export function PersonalityPage() {
 
               <CRow className="g-3">
                 <CCol sm={6}>
-                  <label className="form-label small fw-semibold">Communication style</label>
+                  <label className="form-label small fw-semibold">
+                    Communication style
+                  </label>
                   <CFormInput
                     size="sm"
                     value={dashboard.personalityForm.communicationStyle}
-                    onChange={(e) => updateField('communicationStyle', e.target.value)}
+                    onChange={(e) =>
+                      updateField('communicationStyle', e.target.value)
+                    }
                   />
                 </CCol>
                 <CCol sm={6}>
-                  <label className="form-label small fw-semibold">Initiative</label>
+                  <label className="form-label small fw-semibold">
+                    Initiative
+                  </label>
                   <CFormInput
                     size="sm"
                     value={dashboard.personalityForm.initiative}
@@ -97,7 +129,9 @@ export function PersonalityPage() {
               </CRow>
 
               <div>
-                <label className="form-label small fw-semibold">About the agent</label>
+                <label className="form-label small fw-semibold">
+                  About the agent
+                </label>
                 <CFormTextarea
                   rows={4}
                   placeholder="The agent's own backstory and personality facts — where it 'lives', what it enjoys, quirks, fun facts."
@@ -107,21 +141,29 @@ export function PersonalityPage() {
               </div>
 
               <div>
-                <label className="form-label small fw-semibold">About the controller</label>
+                <label className="form-label small fw-semibold">
+                  About the controller
+                </label>
                 <CFormTextarea
                   rows={4}
                   placeholder="Facts about you — location, job, hobbies, preferences. The agent uses these to personalize conversations."
                   value={dashboard.personalityForm.aboutController}
-                  onChange={(e) => updateField('aboutController', e.target.value)}
+                  onChange={(e) =>
+                    updateField('aboutController', e.target.value)
+                  }
                 />
               </div>
 
               <div>
-                <label className="form-label small fw-semibold">Custom instructions</label>
+                <label className="form-label small fw-semibold">
+                  Custom instructions
+                </label>
                 <CFormTextarea
                   rows={8}
                   value={dashboard.personalityForm.customInstructions}
-                  onChange={(e) => updateField('customInstructions', e.target.value)}
+                  onChange={(e) =>
+                    updateField('customInstructions', e.target.value)
+                  }
                 />
               </div>
 
@@ -162,7 +204,9 @@ export function PersonalityPage() {
                   }}
                 >
                   <ArrowCounterclockwise size={12} className="me-1" />
-                  {dashboard.isPending(resetKey) ? 'Resetting...' : 'Reset scope'}
+                  {dashboard.isPending(resetKey)
+                    ? 'Resetting...'
+                    : 'Reset scope'}
                 </CButton>
               </div>
             </div>
@@ -170,107 +214,12 @@ export function PersonalityPage() {
         </CCard>
       </CCol>
 
-      {/* Right column */}
+      {/* Right column — integration profiles + preview */}
       <CCol lg={5}>
-        {/* Signal Profile */}
-        <CCard className="mb-3">
-          <CCardHeader>
-            <strong>Signal Profile</strong>
-          </CCardHeader>
-          <CCardBody>
-            <div className="d-flex flex-column gap-3">
-              <div>
-                <label className="form-label small fw-semibold">Signal account</label>
-                <CFormInput
-                  size="sm"
-                  value={dashboard.signalProfileDraft.account}
-                  onChange={(e) =>
-                    dashboard.setSignalProfileDraft({
-                      ...dashboard.signalProfileDraft,
-                      account: e.target.value,
-                    })
-                  }
-                  placeholder="+15555550123"
-                />
-              </div>
-              <div>
-                <label className="form-label small fw-semibold">Profile name</label>
-                <CFormInput
-                  size="sm"
-                  value={dashboard.signalProfileDraft.name}
-                  onChange={(e) =>
-                    dashboard.setSignalProfileDraft({
-                      ...dashboard.signalProfileDraft,
-                      name: e.target.value,
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <label className="form-label small fw-semibold">About</label>
-                <CFormInput
-                  size="sm"
-                  value={dashboard.signalProfileDraft.about}
-                  onChange={(e) =>
-                    dashboard.setSignalProfileDraft({
-                      ...dashboard.signalProfileDraft,
-                      about: e.target.value,
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <label className="form-label small fw-semibold">Avatar image</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  className="form-control form-control-sm"
-                  onChange={(e) => void dashboard.handleSignalAvatarSelected(e)}
-                />
-                <div className="small text-body-secondary mt-1">
-                  Center-cropped and resized to 512x512 PNG.
-                </div>
-              </div>
-              {dashboard.signalProfileDraft.avatarDataUrl && (
-                <div className="d-flex align-items-center gap-3">
-                  <img
-                    src={dashboard.signalProfileDraft.avatarDataUrl}
-                    alt="Avatar preview"
-                    style={{
-                      width: 64,
-                      height: 64,
-                      objectFit: 'cover',
-                      borderRadius: 12,
-                    }}
-                  />
-                  <CButton
-                    size="sm"
-                    color="secondary"
-                    variant="outline"
-                    onClick={() => {
-                      if (!window.confirm('Remove avatar preview?')) return;
-                      dashboard.setSignalProfileDraft((c) => ({ ...c, avatarDataUrl: '' }));
-                    }}
-                  >
-                    Remove
-                  </CButton>
-                </div>
-              )}
-              <CButton
-                size="sm"
-                color="primary"
-                disabled={dashboard.isPending('signal-profile-save')}
-                onClick={() =>
-                  void dashboard.runWithUiState('signal-profile-save', () =>
-                    dashboard.saveSignalProfile(),
-                  )
-                }
-              >
-                {dashboard.isPending('signal-profile-save') ? 'Saving...' : 'Save Signal Profile'}
-              </CButton>
-            </div>
-          </CCardBody>
-        </CCard>
+        {/* Dynamic integration profile cards */}
+        {profileIntegrations.map((p) => (
+          <IntegrationProfileCard key={p.name} integrationName={p.name} />
+        ))}
 
         {/* Rendered Preview */}
         <CCard>

@@ -82,6 +82,13 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+export interface ChannelGroupLookupResult {
+  id: string;
+  name: string;
+  members: string[];
+  jid?: string;
+}
+
 // --- Channel abstraction ---
 
 export interface Channel {
@@ -95,6 +102,18 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: resolve an outbound recipient within this channel.
+  resolveRecipient?(name: string): Promise<string>;
+  // Optional: group-management capabilities.
+  findGroupByName?(name: string): Promise<ChannelGroupLookupResult | null>;
+  getGroups?(): Promise<ChannelGroupLookupResult[]>;
+  createGroup?(input: {
+    title: string;
+    members: string[];
+    message?: string;
+  }): Promise<{ jid: string; title: string }>;
+  addMembers?(groupId: string, members: string[]): Promise<void>;
+  leaveGroup?(groupId: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages

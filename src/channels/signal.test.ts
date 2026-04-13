@@ -132,7 +132,7 @@ describe('SignalChannel', () => {
       jid: 'signal:group:group.Z3JvdXAtMTIz',
       title: 'Lunch plans',
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(String(fetchMock.mock.calls[0][0])).toBe(
       'http://127.0.0.1:8080/v1/groups/%2B15555550123',
     );
@@ -147,7 +147,7 @@ describe('SignalChannel', () => {
       'signal',
       true,
     );
-    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toMatchObject({
       recipients: ['group.Z3JvdXAtMTIz'],
       message: 'Can we do lunch next Monday?',
     });

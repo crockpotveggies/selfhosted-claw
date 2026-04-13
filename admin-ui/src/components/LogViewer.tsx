@@ -25,6 +25,7 @@ interface LogEntry {
   group_folder: string | null;
   entity: string | null;
   run_id: string | null;
+  tool: string | null;
   data: string | null;
 }
 
@@ -164,6 +165,7 @@ export function LogViewer({
                       )}
                       <CTableDataCell className="small">
                         {log.msg}
+                        {log.tool && <CBadge color="info" className="ms-1" size="sm">{log.tool}</CBadge>}
                         {log.group_folder && <CBadge color="dark" className="ms-1" size="sm">{log.group_folder}</CBadge>}
                       </CTableDataCell>
                     </CTableRow>

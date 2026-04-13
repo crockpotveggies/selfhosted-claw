@@ -1,9 +1,19 @@
-import { ADMIN_DATA_DIR, SIGNAL_ACCOUNT, SIGNAL_RPC_URL } from '../config.js';
+import fs from 'fs';
+import path from 'path';
+
+import {
+  ADMIN_CONFIG_DIR,
+  ADMIN_DATA_DIR,
+  SIGNAL_ACCOUNT,
+  SIGNAL_RPC_URL,
+} from '../config.js';
+import { logger } from '../logger.js';
 
 import { registerIntegration } from './registry.js';
 import type {
   IntegrationDefinition,
   IntegrationNotification,
+  IntegrationProfile,
   SetupStatus,
   CredentialInputStep,
   QrCodeSetupStep,
@@ -306,6 +316,113 @@ const signalIntegration: IntegrationDefinition = {
   // Signal channel is registered via the legacy path (src/channels/signal.ts)
   // to avoid double-registration. See plan: "Phase 1 Signal has NO channel property."
 
+  tools: [
+    {
+      name: 'signal.send_message',
+      description: 'Send a Signal message to a person or group.',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient name, phone number, or Signal JID' },
+          text: { type: 'string', description: 'Message text' },
+        },
+        required: ['to', 'text'],
+      },
+      location: 'host' as const,
+      controllerOnly: true,
+      execute: async (args, ctx) => {
+        const to = args.to as string;
+        const text = args.text as string;
+        if (!ctx.resolveRecipient || !ctx.sendMessage) {
+          throw new Error('Messaging context not available');
+        }
+        const jid = to.startsWith('signal:') ? to : await ctx.resolveRecipient(to);
+        await ctx.sendMessage(jid, text);
+        return JSON.stringify({ status: 'sent', to: jid });
+      },
+    },
+    {
+      name: 'signal.reply',
+      description: 'Reply in the current Signal conversation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Reply text' },
+        },
+        required: ['text'],
+      },
+      location: 'host' as const,
+      execute: async (args, ctx) => {
+        const text = args.text as string;
+        if (!ctx.chatJid || !ctx.sendMessage) {
+          throw new Error('Chat context not available');
+        }
+        await ctx.sendMessage(ctx.chatJid, text);
+        return JSON.stringify({ status: 'sent' });
+      },
+    },
+    {
+      name: 'signal.create_group',
+      description: 'Create a new Signal group with the specified members.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Group name' },
+          members: { type: 'array', items: { type: 'string' }, description: 'Member names or phone numbers' },
+          message: { type: 'string', description: 'Optional initial message' },
+        },
+        required: ['members'],
+      },
+      location: 'host' as const,
+      controllerOnly: true,
+      execute: async (args, ctx) => {
+        const ch = ctx.channels?.find((c) => c.name === 'signal') as any;
+        if (!ch?.createGroup) throw new Error('Signal channel not connected');
+        const result = await ch.createGroup({
+          title: args.title as string,
+          members: args.members as string[],
+          message: args.message as string | undefined,
+        });
+        return JSON.stringify(result);
+      },
+    },
+    {
+      name: 'signal.add_group_members',
+      description: 'Add members to an existing Signal group.',
+      parameters: {
+        type: 'object',
+        properties: {
+          groupName: { type: 'string', description: 'Group name to search for' },
+          members: { type: 'array', items: { type: 'string' }, description: 'Members to add' },
+        },
+        required: ['groupName', 'members'],
+      },
+      location: 'host' as const,
+      controllerOnly: true,
+      execute: async (args, ctx) => {
+        const ch = ctx.channels?.find((c) => c.name === 'signal') as any;
+        if (!ch?.findGroupByName || !ch?.addMembers) throw new Error('Signal channel not connected');
+        const group = await ch.findGroupByName(args.groupName as string);
+        if (!group) throw new Error(`Signal group "${args.groupName}" not found`);
+        await ch.addMembers(group.id, args.members as string[]);
+        return JSON.stringify({ status: 'members_added', group: group.name });
+      },
+    },
+    {
+      name: 'signal.list_groups',
+      description: 'List all Signal groups.',
+      parameters: { type: 'object', properties: {} },
+      location: 'host' as const,
+      controllerOnly: true,
+      execute: async (_args, ctx) => {
+        const ch = ctx.channels?.find((c) => c.name === 'signal') as any;
+        if (!ch?.getGroups) throw new Error('Signal channel not connected');
+        const groups = await ch.getGroups();
+        return JSON.stringify(groups);
+      },
+    },
+  ],
+
   service: {
     composeFile: 'scripts/signal-cli/docker-compose.yml',
     envFile: 'scripts/signal-cli/.env',
@@ -404,6 +521,91 @@ const signalIntegration: IntegrationDefinition = {
 
   memory: {
     contextChars: 200,
+  },
+
+  profile: {
+    label: 'Signal Profile',
+    fields: [
+      { key: 'account', label: 'Signal Account', type: 'text', placeholder: '+15555550123' },
+      { key: 'name', label: 'Profile Name', type: 'text' },
+      { key: 'about', label: 'About', type: 'text' },
+      { key: 'avatarDataUrl', label: 'Avatar', type: 'image' },
+    ],
+    getProfile: async () => {
+      // Read from the control store's signal-profile.json
+      const profilePath = path.join(ADMIN_CONFIG_DIR, 'signal-profile.json');
+      try {
+        const data = JSON.parse(fs.readFileSync(profilePath, 'utf-8')) as Record<string, string>;
+        return {
+          account: data.account || getSettings().account || '',
+          name: data.name || '',
+          about: data.about || '',
+          avatarDataUrl: data.avatarDataUrl || '',
+        };
+      } catch {
+        return {
+          account: getSettings().account || '',
+          name: '',
+          about: '',
+          avatarDataUrl: '',
+        };
+      }
+    },
+    saveProfile: async (values) => {
+      const s = getSettings();
+      const account = values.account || s.account;
+      const rpcUrl = s.rpcUrl || DEFAULT_RPC_URL;
+
+      if (!account) {
+        throw new Error('Signal account is required');
+      }
+
+      // Normalize avatar: extract base64 from data URL
+      let base64Avatar = '';
+      if (values.avatarDataUrl) {
+        const match = values.avatarDataUrl.match(/^data:[^;]+;base64,(.+)/);
+        base64Avatar = match ? match[1] : values.avatarDataUrl;
+      }
+
+      // Update via signal-cli REST API
+      const profileUrl = new URL(
+        `/v1/profiles/${encodeURIComponent(account)}`,
+        parseRpcUrl(rpcUrl).toString(),
+      );
+      const response = await fetch(profileUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: values.name || '',
+          about: values.about || '',
+          ...(base64Avatar ? { base64_avatar: base64Avatar } : {}),
+        }),
+      });
+      if (response.status !== 204 && !response.ok) {
+        throw new Error(
+          `Signal profile update failed with ${response.status}`,
+        );
+      }
+
+      // Persist to local store
+      const profilePath = path.join(ADMIN_CONFIG_DIR, 'signal-profile.json');
+      fs.mkdirSync(path.dirname(profilePath), { recursive: true });
+      const tmpPath = `${profilePath}.tmp`;
+      fs.writeFileSync(
+        tmpPath,
+        JSON.stringify({
+          account,
+          name: values.name || '',
+          about: values.about || '',
+          avatarDataUrl: values.avatarDataUrl || '',
+          updatedAt: new Date().toISOString(),
+        }, null, 2),
+        { mode: 0o600 },
+      );
+      fs.renameSync(tmpPath, profilePath);
+
+      logger.info({ integration: 'signal' }, 'Signal profile updated');
+    },
   },
 
   setup: {

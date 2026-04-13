@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import {
   _initTestDatabase,
@@ -54,6 +54,8 @@ beforeEach(() => {
   deps = {
     sendMessage: async () => {},
     resolveRecipient: async () => 'mock@jid',
+    resolveRecipientForChannel: async (channel, name) =>
+      `${channel}:${name}@resolved`,
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {
       groups[jid] = group;
@@ -253,6 +255,128 @@ describe('resume_task authorization', () => {
       deps,
     );
     expect(getTaskById('task-paused')!.status).toBe('paused');
+  });
+});
+
+describe('WhatsApp group IPC tools', () => {
+  it('lists WhatsApp groups through IPC', async () => {
+    const sendMessage = vi.fn(async () => {});
+    deps.sendMessage = sendMessage;
+    deps.whatsappListGroups = async () => [
+      {
+        id: 'family@g.us',
+        name: 'Family',
+        members: ['15551234567@s.whatsapp.net', '15557654321@s.whatsapp.net'],
+      },
+    ];
+
+    await processTaskIpc(
+      { type: 'whatsapp_list_groups', chatJid: 'main@g.us' },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      'main@g.us',
+      expect.stringContaining('WhatsApp groups:\n'),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(
+      'main@g.us',
+      expect.stringContaining('Family'),
+    );
+  });
+
+  it('creates and auto-registers WhatsApp groups through IPC', async () => {
+    deps.resolveRecipientForChannel = async (channel, name) => {
+      expect(channel).toBe('whatsapp');
+      if (name === 'Alice') return '15551234567@s.whatsapp.net';
+      throw new Error(`unexpected member ${name}`);
+    };
+    deps.whatsappCreateGroup = async (input) => {
+      expect(input.members).toEqual(['15551234567@s.whatsapp.net']);
+      return { jid: 'new-group@g.us', title: input.title };
+    };
+
+    await processTaskIpc(
+      {
+        type: 'whatsapp_create_group',
+        title: 'Project Chat',
+        members: ['Alice'],
+        chatJid: 'main@g.us',
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+
+    const registered = getRegisteredGroup('new-group@g.us');
+    expect(registered?.name).toBe('Project Chat');
+    expect(registered?.requiresTrigger).toBe(false);
+  });
+
+  it('routes member resolution through the requested channel', async () => {
+    const resolveRecipientForChannel = vi.fn(
+      async (channel: 'signal' | 'whatsapp' | 'sms' | 'email', name: string) =>
+        channel === 'signal'
+          ? `signal:user:+15551234567`
+          : `${channel}:${name}@resolved`,
+    );
+    deps.resolveRecipientForChannel = resolveRecipientForChannel;
+    deps.signalCreateGroup = async (input) => ({
+      jid: 'signal:group:abc123',
+      title: input.title,
+    });
+
+    await processTaskIpc(
+      {
+        type: 'signal_create_group',
+        title: 'Signal Crew',
+        members: ['Alice'],
+        chatJid: 'main@g.us',
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+
+    expect(resolveRecipientForChannel).toHaveBeenCalledWith('signal', 'Alice');
+  });
+
+  it('prefers the source channel when a group name exists on multiple channels', async () => {
+    groups['signal:group:family'] = {
+      name: 'Family',
+      folder: 'signal-family',
+      trigger: '',
+      added_at: '2024-01-01T00:00:00.000Z',
+    };
+    groups['family@g.us'] = {
+      name: 'Family',
+      folder: 'whatsapp_main',
+      trigger: '',
+      added_at: '2024-01-01T00:00:00.000Z',
+    };
+
+    const resolveMessageRecipient = vi.fn(async (sourceGroup: string, name: string) => {
+      expect(sourceGroup).toBe('whatsapp_main');
+      expect(name).toBe('Family');
+      return 'family@g.us';
+    });
+    deps.resolveMessageRecipient = resolveMessageRecipient;
+    const sendMessage = vi.fn(async () => {});
+    deps.sendMessage = sendMessage;
+
+    await processTaskIpc(
+      {
+        type: 'whatsapp_list_groups',
+        chatJid: 'main@g.us',
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+
+    expect(resolveMessageRecipient).not.toHaveBeenCalled();
   });
 });
 

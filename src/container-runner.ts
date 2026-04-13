@@ -23,6 +23,8 @@ import {
   TIMEZONE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
+import { getRegisteredIntegrations } from './integrations/registry.js';
+import { isIntegrationEnabled } from './integrations/settings-store.js';
 import { logger } from './logger.js';
 import {
   CONTAINER_RUNTIME_BIN,
@@ -754,4 +756,46 @@ export function writeGroupsSnapshot(
       2,
     ),
   );
+}
+
+/**
+ * Write integration tools manifest for the container agent-runner.
+ * Only includes host-side tools from enabled integrations.
+ * The agent-runner reads this and registers dynamic IPC-backed tool stubs.
+ */
+export function writeIntegrationToolsManifest(
+  groupFolder: string,
+  isMain: boolean,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  const integrations = getRegisteredIntegrations();
+  const tools: Array<{
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    integration: string;
+    controllerOnly?: boolean;
+  }> = [];
+
+  for (const def of integrations) {
+    if (!isIntegrationEnabled(def.name)) continue;
+    if (!def.tools) continue;
+    for (const tool of def.tools) {
+      if (tool.location !== 'host') continue;
+      // Filter controller-only tools for non-main groups
+      if (tool.controllerOnly && !isMain) continue;
+      tools.push({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+        integration: def.name,
+        controllerOnly: tool.controllerOnly,
+      });
+    }
+  }
+
+  const manifestFile = path.join(groupIpcDir, 'integration_tools.json');
+  fs.writeFileSync(manifestFile, JSON.stringify(tools, null, 2));
 }

@@ -274,7 +274,6 @@ const TOOL_RATE_LIMITS: Record<string, number> = {
   web_fetch: 3,
   web_search: 3,
   shell: 10,
-  send_external_message: 5,
 };
 
 function writeOutput(output: ContainerOutput): void {
@@ -456,17 +455,18 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
       : `You are ${containerInput.assistantName || 'the assistant'}, running inside NanoClaw. You use an OpenAI-compatible chat completions backend and NanoClaw-native tools.`,
     `Use tools when they materially improve the answer. Prefer concise responses.`,
     hasExternalAudience
-      ? `RESPONSE ROUTING (GROUP CHAT — CRITICAL): Your normal text response goes to the GROUP CHAT where EVERYONE can see it. ONLY put things a friend would say in conversation: direct answers, friendly replies, social messages. EVERYTHING ELSE must go through send_internal_message, which goes PRIVATELY to the controller. This includes: calendar checks, scheduling logistics, availability questions, confirmation requests, status updates, clarifying questions about tasks, error reports, "what's the context" questions, approval requests — ALL of these MUST use send_internal_message. If in doubt, use send_internal_message. To message other people or groups, use send_external_message. NEVER repeat the message content in your text response after calling either tool.`
-      : `To message external people or groups, use the send_external_message tool with "to" set to the recipient's name, phone number, or group name. To reply to the controller (the user you are chatting with), use send_internal_message. Your normal text response is also delivered to the controller — only use send_internal_message for interim updates during multi-step tasks. NEVER repeat the message content in your text response after calling either tool.`,
-    `To create a new Signal group, use the signal_create_group tool. Always provide a descriptive title — never leave it blank. After creating a group, use send_external_message with "to" set to the group's title to send follow-up messages.`,
-    `To add people to a Signal group, use the signal_add_group_members tool with the group name and member phone numbers or UUIDs. To leave a Signal group, use the signal_leave_group tool. Use signal_list_groups to discover existing groups before sending messages or modifying them.`,
-    `To interact with Google Calendar, use the calendar_* tools. Use ISO 8601 timestamps with timezone offsets (e.g. "2026-04-07T12:30:00-04:00"). When creating events with attendees, use their email addresses. If an attendee's email is unavailable, ask them for it via send_external_message.`,
+      ? `RESPONSE ROUTING (GROUP CHAT — CRITICAL): Your normal text response goes to the GROUP CHAT where EVERYONE can see it. ONLY put things a friend would say in conversation: direct answers, friendly replies, social messages. EVERYTHING ELSE must go through notify_controller, which goes PRIVATELY to the controller. This includes: calendar checks, scheduling logistics, availability questions, confirmation requests, status updates, clarifying questions about tasks, error reports, "what's the context" questions, approval requests — ALL of these MUST use notify_controller. If in doubt, use notify_controller. To message other people or groups, use the channel-specific send tools (signal.send_message, whatsapp.send_message, etc.). NEVER repeat the message content in your text response after calling a tool.`
+      : `To message external people or groups, use the channel-specific send tools (signal.send_message, whatsapp.send_message, etc.) with "to" set to the recipient's name, phone number, or group name. Use notify_controller for private interim updates to the controller during multi-step tasks. Your normal text response is also delivered to the controller. NEVER repeat the message content in your text response after calling a tool.`,
+    `To create groups, use the channel-specific tools: signal.create_group, whatsapp.create_group, etc. Always provide a descriptive title.`,
+    `To add people to groups, use signal.add_group_members, whatsapp.add_group_members, etc.`,
+    `For grounded group messaging, first call signal.list_groups or whatsapp.list_groups, read the exact returned group JID/ID, then use the channel-specific send tool with that exact ID in "to". Do not guess group IDs.`,
+    `To interact with Google Calendar, use the calendar_* tools. Use ISO 8601 timestamps with timezone offsets (e.g. "2026-04-07T12:30:00-04:00"). When creating events with attendees, use their email addresses. If an attendee's email is unavailable, ask them via the channel-specific send tool.`,
     // Calendar scheduling policy
-    `CALENDAR SCHEDULING POLICY: Before creating any calendar event you MUST: (1) check the controller's calendar for conflicts using calendar_list_events or calendar_check_availability, (2) confirm availability with all external participants via conversation, (3) present the full event details (title, date, time, duration, location, attendees) to the controller for approval via send_internal_message, and (4) only call calendar_create_event AFTER the controller explicitly confirms. The same confirmation flow applies to calendar_update_event and calendar_delete_event. NEVER post internal scheduling logistics or confirmation requests in group chats — always use send_internal_message for controller-facing updates. After creating/updating/deleting an event, notify external participants via send_external_message.`,
+    `CALENDAR SCHEDULING POLICY: Before creating any calendar event you MUST: (1) check the controller's calendar for conflicts using calendar_list_events or calendar_check_availability, (2) confirm availability with all external participants via conversation, (3) present the full event details (title, date, time, duration, location, attendees) to the controller for approval via notify_controller, and (4) only call calendar_create_event AFTER the controller explicitly confirms. The same confirmation flow applies to calendar_update_event and calendar_delete_event. NEVER post internal scheduling logistics or confirmation requests in group chats — always use notify_controller for controller-facing updates. After creating/updating/deleting an event, notify external participants via the channel-specific send tool.`,
     hasExternalAudience
       ? `CALENDAR PRIVACY (HARD RULE): When sharing availability with anyone other than the controller, ONLY share free/busy time blocks — NEVER reveal event titles, descriptions, attendees, locations, or any other event details. Say "busy 9-10am" NOT "busy 9-10am - Tree Trimming". Say "free after 7:15pm" NOT "free after the BISCUT Demo". Event details are private. The ONLY acceptable format is generic time blocks: "busy 7:30-8am, 9-10am, 6:15-7:15pm" or "free 10am-6:15pm". If someone asks what the events are, say that's private.`
       : `Sharing full calendar details with the controller is fine — they own the calendar.`,
-    `ERROR ESCALATION: If a tool call fails, you hit a permission error, or you cannot complete a requested action (e.g. missing event ID, API error, blocked operation), immediately notify the controller via send_internal_message with a clear explanation of what went wrong and what you need. Do NOT just tell the group chat that something failed — always escalate to the controller directly so they can help resolve it.`,
+    `ERROR ESCALATION: If a tool call fails, you hit a permission error, or you cannot complete a requested action (e.g. missing event ID, API error, blocked operation), immediately notify the controller via notify_controller with a clear explanation of what went wrong and what you need. Do NOT just tell the group chat that something failed — always escalate to the controller directly so they can help resolve it.`,
     `If recipient, channel, or content is ambiguous, ask a clarifying question instead of guessing.`,
     `Do not mention OneCLI or secrets unless directly relevant; host-side credentials may be managed outside the container.`,
     containerInput.controlSignalJid
@@ -482,7 +482,7 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
       : '',
     // Operational restrictions for non-controller external chats
     !containerInput.isMain && !containerInput.controllerTriggered
-      ? `EXTERNAL CHAT RESTRICTIONS: You are talking to someone other than the controller. Be friendly, conversational, and helpful. You can answer questions, have casual conversations, and assist with general information. However, you MUST NOT perform sensitive operations (creating/modifying/deleting calendar events, sending emails, accessing private calendar details, or any action that modifies the controller's data) without routing the request through the controller for approval. If someone asks you to do something sensitive, explain that you need to check with the controller first, then use send_internal_message to ask the controller.`
+      ? `EXTERNAL CHAT RESTRICTIONS: You are talking to someone other than the controller. Be friendly, conversational, and helpful. You can answer questions, have casual conversations, and assist with general information. However, you MUST NOT perform sensitive operations (creating/modifying/deleting calendar events, sending emails, accessing private calendar details, or any action that modifies the controller's data) without routing the request through the controller for approval. If someone asks you to do something sensitive, explain that you need to check with the controller first, then use notify_controller to ask the controller.`
       : '',
     `Your current working directory is ${GROUP_DIR}.`,
     `Current time: ${new Date().toISOString()}.`,
@@ -1200,54 +1200,22 @@ async function runShellCommand(command: string, timeoutMs: number): Promise<stri
 }
 
 const TOOL_REGISTRY: Record<string, ToolSpec> = {
-  send_external_message: {
+  notify_controller: {
     description:
-      'Send a message to an external person or group — NOT the controller. Use this to message other people, Signal groups, etc.',
+      'Send a PRIVATE message to the controller (your owner). In group chats this goes to the controller\'s DM, NOT to the group. Use for: scheduling logistics, approval requests, error reports, status updates, anything not meant for the group.',
     parameters: {
       type: 'object',
       properties: {
-        to: {
-          type: 'string',
-          description:
-            'Recipient: a person name, phone number, or group name (e.g. "Lunch Meeting").',
-        },
-        text: { type: 'string', description: 'Message text to send.' },
-      },
-      required: ['to', 'text'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const text = String(args.text || '').trim();
-      if (!text) throw new Error('send_external_message requires non-empty text');
-      const to = String(args.to || '').trim();
-      if (!to) throw new Error('send_external_message requires a recipient in "to"');
-      writeIpcFile(MESSAGES_DIR, {
-        type: 'message',
-        to,
-        text,
-        groupFolder: ctx.containerInput.groupFolder,
-        timestamp: new Date().toISOString(),
-      });
-      return `Message sent to ${to}.`;
-    },
-  },
-  send_internal_message: {
-    description:
-      'Send a reply back to the controller (the user you are talking to). Use this when you need to send an interim update or a separate message to the controller during a multi-step task.',
-    parameters: {
-      type: 'object',
-      properties: {
-        text: { type: 'string', description: 'Message text to send to the controller.' },
+        text: { type: 'string', description: 'Message text to send privately to the controller.' },
       },
       required: ['text'],
       additionalProperties: false,
     },
     execute: async (args, ctx) => {
       const text = String(args.text || '').trim();
-      if (!text) throw new Error('send_internal_message requires non-empty text');
-      // In group chats, internal messages MUST go to the controller's DM,
-      // NOT back to the group.  controlSignalJid is the controller's private
-      // JID; fall back to chatJid only when it is already a DM (isMain).
+      if (!text) throw new Error('notify_controller requires non-empty text');
+      // In non-main groups, route to the controller's private DM.
+      // In main/DM conversations, send to the current chat.
       const targetJid =
         !ctx.containerInput.isMain && ctx.containerInput.controlSignalJid
           ? ctx.containerInput.controlSignalJid
@@ -1261,7 +1229,7 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
         groupFolder: ctx.containerInput.groupFolder,
         timestamp: new Date().toISOString(),
       });
-      return 'Reply sent to controller.';
+      return 'Message sent to controller.';
     },
   },
   shell: {
@@ -1864,6 +1832,139 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
       return `Request to create Signal group "${title}" submitted.`;
     },
   },
+  whatsapp_add_group_members: {
+    controllerOnly: true,
+    description:
+      'Add one or more people to an existing WhatsApp group. Members can be phone numbers or WhatsApp JIDs.',
+    parameters: {
+      type: 'object',
+      properties: {
+        group_name: {
+          type: 'string',
+          description: 'The name of the WhatsApp group to add members to.',
+        },
+        members: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'People to add, as names, phone numbers, or WhatsApp JIDs.',
+        },
+      },
+      required: ['group_name', 'members'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const groupName = String(args.group_name || '').trim();
+      if (!groupName) throw new Error('group_name is required');
+      const members = Array.isArray(args.members) ? args.members : [];
+      if (members.length === 0) throw new Error('At least one member is required');
+      writeIpcFile(TASKS_DIR, {
+        type: 'whatsapp_add_group_members',
+        groupName,
+        members: members.map((m: unknown) => String(m).trim()),
+        chatJid: ctx.containerInput.chatJid,
+        groupFolder: ctx.containerInput.groupFolder,
+        isMain: ctx.containerInput.isMain,
+        timestamp: new Date().toISOString(),
+      });
+      return `Request to add ${members.length} member(s) to WhatsApp group "${groupName}" submitted.`;
+    },
+  },
+  whatsapp_leave_group: {
+    controllerOnly: true,
+    description:
+      'Leave a WhatsApp group. The agent will no longer receive or respond to messages in that group.',
+    parameters: {
+      type: 'object',
+      properties: {
+        group_name: {
+          type: 'string',
+          description: 'The name of the WhatsApp group to leave.',
+        },
+      },
+      required: ['group_name'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const groupName = String(args.group_name || '').trim();
+      if (!groupName) throw new Error('group_name is required');
+      writeIpcFile(TASKS_DIR, {
+        type: 'whatsapp_leave_group',
+        groupName,
+        chatJid: ctx.containerInput.chatJid,
+        groupFolder: ctx.containerInput.groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+      return `Request to leave WhatsApp group "${groupName}" submitted.`;
+    },
+  },
+  whatsapp_list_groups: {
+    controllerOnly: true,
+    description:
+      'List all WhatsApp groups with their exact group IDs/JIDs, names, and members. Use this before messaging or modifying a WhatsApp group.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const requestId = `wa-groups-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await writeIpcTaskAndWaitForResponse(
+        {
+          type: 'whatsapp_list_groups',
+          chatJid: ctx.containerInput.chatJid,
+          groupFolder: ctx.containerInput.groupFolder,
+          timestamp: new Date().toISOString(),
+        },
+        requestId,
+      );
+      return truncate(JSON.stringify(result, null, 2));
+    },
+  },
+  whatsapp_create_group: {
+    controllerOnly: true,
+    description:
+      'Create a new WhatsApp group with the specified members and optionally send an initial message.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description:
+            'A short, descriptive name for the group. Required — never leave blank.',
+        },
+        members: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'People to add to the group, as names, phone numbers, or WhatsApp JIDs.',
+        },
+        message: {
+          type: 'string',
+          description:
+            'Optional first message to post in the group after it is created.',
+        },
+      },
+      required: ['title', 'members'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const title = String(args.title || '').trim();
+      if (!title) throw new Error('A descriptive group title is required');
+      const members = Array.isArray(args.members) ? args.members : [];
+      if (members.length === 0) throw new Error('At least one member is required');
+      writeIpcFile(TASKS_DIR, {
+        type: 'whatsapp_create_group',
+        title,
+        members: members.map((m: unknown) => String(m).trim()),
+        message: typeof args.message === 'string' ? String(args.message).trim() : undefined,
+        chatJid: ctx.containerInput.chatJid,
+        groupFolder: ctx.containerInput.groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+      return `Request to create WhatsApp group "${title}" submitted.`;
+    },
+  },
   // ── Google Calendar tools (request-response IPC) ─────────────────
   calendar_list_events: {
     controllerOnly: true,
@@ -2182,6 +2283,61 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
     },
   },
 };
+
+// ---------------------------------------------------------------------------
+// Dynamic integration tools — loaded from manifest written by the host
+// ---------------------------------------------------------------------------
+
+function loadIntegrationTools(): void {
+  const manifestPath = path.join(IPC_DIR, 'integration_tools.json');
+  if (!fs.existsSync(manifestPath)) return;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Array<{
+      name: string;
+      description: string;
+      parameters: Record<string, unknown>;
+      integration: string;
+      controllerOnly?: boolean;
+    }>;
+    for (const tool of manifest) {
+      // Skip if already in TOOL_REGISTRY (hardcoded tools take precedence)
+      if (TOOL_REGISTRY[tool.name]) continue;
+      TOOL_REGISTRY[tool.name] = {
+        description: tool.description,
+        parameters: tool.parameters,
+        controllerOnly: tool.controllerOnly,
+        execute: async (args, ctx) => {
+          const requestId = `intg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          const result = await writeIpcTaskAndWaitForResponse(
+            {
+              type: 'integration_tool',
+              integration: tool.integration,
+              tool: tool.name,
+              args,
+              chatJid: ctx.containerInput.chatJid,
+              groupFolder: ctx.containerInput.groupFolder,
+              requestId,
+            },
+            requestId,
+          );
+          if (typeof result === 'object' && result !== null && 'error' in result) {
+            throw new Error(String((result as { error: string }).error));
+          }
+          const resultData = typeof result === 'object' && result !== null && 'result' in result
+            ? (result as { result: unknown }).result
+            : result;
+          return typeof resultData === 'string' ? resultData : JSON.stringify(resultData);
+        },
+      };
+    }
+    log(`Loaded ${manifest.length} integration tools from manifest`);
+  } catch (err) {
+    log(`Failed to load integration tools manifest: ${err}`);
+  }
+}
+
+// Load integration tools on startup
+loadIntegrationTools();
 
 function buildOpenAITools(
   controllerTriggered: boolean,

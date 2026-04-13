@@ -117,13 +117,22 @@ export function createChildLogger(
 // ---------------------------------------------------------------------------
 
 process.on('uncaughtException', (err) => {
-  logger.fatal({ err }, 'Uncaught exception');
+  try {
+    logger.fatal({ err }, 'Uncaught exception');
+  } catch {
+    // If logger itself is broken (e.g., transport worker died), fall back to stderr
+    process.stderr.write(`[FATAL] Uncaught exception: ${err?.message || err}\n`);
+  }
   setTimeout(() => process.exit(1), 200);
 });
 
 process.on('unhandledRejection', (reason) => {
-  logger.error(
-    { err: reason instanceof Error ? reason : new Error(String(reason)) },
-    'Unhandled rejection',
-  );
+  try {
+    logger.error(
+      { err: reason instanceof Error ? reason : new Error(String(reason)) },
+      'Unhandled rejection',
+    );
+  } catch {
+    process.stderr.write(`[ERROR] Unhandled rejection: ${reason}\n`);
+  }
 });

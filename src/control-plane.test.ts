@@ -228,197 +228,9 @@ describe('control plane parity', () => {
     expect(harness.service.getSignalProfile().name).toBe('Lena');
   });
 
-  it('supports approval-gated outbound sends for new conversations', async () => {
-    const harness = createHarness();
-    const sendSignalMessage = vi.fn().mockResolvedValue(undefined);
-    harness.service.setOutboundHandlers({ sendSignalMessage });
-
-    const pending = harness.service.previewAction(
-      'outbound.send',
-      {
-        channel: 'signal',
-        target: '+15552223333',
-        message: 'Hello there',
-        resolvedSignalJid: 'signal:user:+15552223333',
-        requiresConfirmation: true,
-      },
-      { actorIdentity: 'agent:nanoclaw', source: 'agent' },
-    );
-
-    expect(pending.summary).toContain('Start a new signal conversation');
-
-    await harness.service.executeAction(
-      'verified.add',
-      { identity: '+15550001111', label: 'Owner' },
-      { actorIdentity: 'ui:local-admin', source: 'ui' },
-    );
-
-    const approval = await harness.service.approvePending(pending.id, {
-      actorIdentity: '+15550001111',
-      source: 'signal_control',
-    });
-
-    expect(approval.message).toContain('Approved');
-    expect(sendSignalMessage).toHaveBeenCalledWith(
-      'signal:user:+15552223333',
-      'Hello there',
-    );
-  });
-
-  it('supports approval-gated Signal group creation', async () => {
-    const harness = createHarness();
-    const createSignalGroup = vi.fn().mockResolvedValue({
-      jid: 'signal:group:lunch123',
-      title: 'Lunch plans',
-    });
-    harness.service.setOutboundHandlers({ createSignalGroup });
-
-    const pending = harness.service.previewAction(
-      'outbound.createGroup',
-      {
-        channel: 'signal',
-        title: 'Lunch plans',
-        message: 'Can we do lunch next Monday?',
-        members: ['Elyssa'],
-        resolvedMemberTargets: ['+15552223333'],
-        resolvedMemberDisplayNames: ['Elyssa'],
-      },
-      { actorIdentity: 'agent:nanoclaw', source: 'agent' },
-    );
-
-    await harness.service.executeAction(
-      'verified.add',
-      { identity: '+15550001111', label: 'Owner' },
-      { actorIdentity: 'ui:local-admin', source: 'ui' },
-    );
-
-    const approval = await harness.service.approvePending(pending.id, {
-      actorIdentity: '+15550001111',
-      source: 'signal_control',
-    });
-
-    expect(approval.message).toContain('Approved');
-    expect(createSignalGroup).toHaveBeenCalledWith({
-      title: 'Lunch plans',
-      members: ['+15552223333'],
-      message: 'Can we do lunch next Monday?',
-    });
-  });
-
-  it('lists pending approvals through the shared service and signal command surface', async () => {
-    const harness = createHarness();
-    harness.service.previewAction(
-      'outbound.delete',
-      {
-        channel: 'email',
-        target: 'Draft to Sam',
-        reason: 'duplicate draft',
-      },
-      { actorIdentity: 'agent:nanoclaw', source: 'agent' },
-    );
-
-    expect(harness.service.listPendingActions(10)).toHaveLength(1);
-
-    await harness.service.executeAction(
-      'verified.add',
-      { identity: '+15550001111', label: 'Owner' },
-      { actorIdentity: 'ui:local-admin', source: 'ui' },
-    );
-
-    const result = await harness.parser.handle(
-      'signal:user:+15550009999',
-      makeMessage('+15550001111', '/pending list 5'),
-    );
-
-    expect(result.handled).toBe(true);
-    expect(harness.sent.at(-1)?.text).toContain('Draft to Sam');
-  });
-
-  it('approves a single pending action from a natural yes reply in the same chat', async () => {
-    const harness = createHarness();
-    const sendSignalMessage = vi.fn().mockResolvedValue(undefined);
-    harness.service.setOutboundHandlers({ sendSignalMessage });
-    harness.service.setApprovalReplyClassifier(async () => ({
-      decision: 'approve',
-      reason: 'The user clearly approved sending it.',
-    }));
-
-    const pending = harness.service.previewAction(
-      'outbound.send',
-      {
-        channel: 'signal',
-        target: '+15552223333',
-        message: 'Hello there',
-        resolvedSignalJid: 'signal:user:+15552223333',
-        requiresConfirmation: true,
-      },
-      { actorIdentity: 'agent:nanoclaw', source: 'agent' },
-      { chatJid: 'signal:user:+15550009999' },
-    );
-
-    await harness.service.executeAction(
-      'verified.add',
-      { identity: '+15550001111', label: 'Owner' },
-      { actorIdentity: 'ui:local-admin', source: 'ui' },
-    );
-
-    const result = await harness.service.handleNaturalApprovalReply(
-      'signal:user:+15550009999',
-      'yeah, go ahead and send that',
-      { actorIdentity: '+15550001111', source: 'signal_control' },
-    );
-
-    expect(result.handled).toBe(true);
-    expect(result.message).toContain(`Approved ${pending.summary}`);
-    expect(sendSignalMessage).toHaveBeenCalledWith(
-      'signal:user:+15552223333',
-      'Hello there',
-    );
-  });
-
-  it('keeps a pending action open when the follow-up reply asks for revisions', async () => {
-    const harness = createHarness();
-    const sendSignalMessage = vi.fn().mockResolvedValue(undefined);
-    harness.service.setOutboundHandlers({ sendSignalMessage });
-    harness.service.setApprovalReplyClassifier(async () => ({
-      decision: 'revise',
-      reason: 'The user asked to make it friendlier before sending.',
-    }));
-
-    const pending = harness.service.previewAction(
-      'outbound.send',
-      {
-        channel: 'signal',
-        target: '+15552223333',
-        message: 'Hello there',
-        resolvedSignalJid: 'signal:user:+15552223333',
-        requiresConfirmation: true,
-      },
-      { actorIdentity: 'agent:nanoclaw', source: 'agent' },
-      { chatJid: 'signal:user:+15550009999' },
-    );
-
-    await harness.service.executeAction(
-      'verified.add',
-      { identity: '+15550001111', label: 'Owner' },
-      { actorIdentity: 'ui:local-admin', source: 'ui' },
-    );
-
-    const result = await harness.service.handleNaturalApprovalReply(
-      'signal:user:+15550009999',
-      'make it a bit friendlier first',
-      { actorIdentity: '+15550001111', source: 'signal_control' },
-    );
-
-    expect(result.handled).toBe(true);
-    expect(result.message).toContain('I kept that pending');
-    expect(sendSignalMessage).not.toHaveBeenCalled();
-    expect(
-      harness.service
-        .listPendingActions()
-        .find((item) => item.id === pending.id)?.status,
-    ).toBe('pending');
-  });
+  // Outbound action tests removed — outbound.send, outbound.createGroup,
+  // outbound.updateGroup, outbound.delete replaced by channel-specific
+  // integration tools (signal.send_message, whatsapp.send_message, etc.)
 
   it('treats Signal UUID identities consistently across raw and signal:user forms', () => {
     const uuid = '5396f050-7ac2-4610-8c5f-c8f1be353fec';
@@ -507,5 +319,67 @@ describe('control plane parity', () => {
 
     expect(result.handled).toBe(true);
     expect(harness.sent.at(-1)?.text).toContain('No providers are paused.');
+  });
+
+  it('refreshes the stored Google token and retries calendar requests after a 401', async () => {
+    const harness = createHarness();
+    harness.store.saveGoogleContactsOAuth({
+      accessToken: 'expired-stored-token',
+      refreshToken: 'refresh-token',
+      expiryDate: new Date(0).toISOString(),
+      scope: 'https://www.googleapis.com/auth/calendar.events',
+      tokenType: 'Bearer',
+      connectedAt: new Date().toISOString(),
+      oauthState: '',
+      oauthStateCreatedAt: '',
+    });
+
+    vi
+      .spyOn(harness.service as any, 'loadProviderEnvironment')
+      .mockResolvedValue({
+        GOOGLE_CALENDAR_ACCESS_TOKEN: 'stale-direct-token',
+      });
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        text: async () => 'invalid_grant',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          access_token: 'refreshed-token',
+          expires_in: 3600,
+          token_type: 'Bearer',
+          scope: 'https://www.googleapis.com/auth/calendar.events',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [{ id: 'evt-1' }] }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = (await harness.service.calendarListEvents({
+      calendarId: 'primary',
+      timeMin: '2026-04-13T09:00:00Z',
+      timeMax: '2026-04-13T17:00:00Z',
+      maxResults: 10,
+    })) as { items: Array<{ id: string }> };
+
+    expect(result.items[0].id).toBe('evt-1');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+      Authorization: 'Bearer stale-direct-token',
+    });
+    expect(fetchMock.mock.calls[2][1]?.headers).toMatchObject({
+      Authorization: 'Bearer refreshed-token',
+    });
+    expect(harness.store.getGoogleContactsOAuth().accessToken).toBe(
+      'refreshed-token',
+    );
   });
 });

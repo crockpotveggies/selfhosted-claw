@@ -5,7 +5,7 @@ import {
   SIGNAL_RPC_URL,
 } from '../config.js';
 import { logger } from '../logger.js';
-import { Channel, NewMessage } from '../types.js';
+import { Channel, ChannelGroupLookupResult, NewMessage } from '../types.js';
 import { ChannelOpts, registerChannel } from './registry.js';
 
 interface SignalMention {
@@ -425,7 +425,7 @@ export class SignalChannel implements Channel {
 
   async findGroupByName(
     name: string,
-  ): Promise<{ id: string; name: string; members: string[] } | null> {
+  ): Promise<ChannelGroupLookupResult | null> {
     const groups = await this.listGroups();
     const normalized = name.toLowerCase().trim();
     const match = groups.find((g: any) => {
@@ -439,6 +439,7 @@ export class SignalChannel implements Channel {
       id: String(match.id || match.groupId || ''),
       name: String(match.name || match.title || match.groupName || ''),
       members: Array.isArray(match.members) ? (match.members as string[]) : [],
+      jid: `signal:group:${String(match.id || match.groupId || '')}`,
     };
   }
 

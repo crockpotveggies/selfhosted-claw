@@ -13,6 +13,8 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { deriveGroupFolder, isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { getIntegration } from './integrations/registry.js';
+import { getIntegrationSettings } from './integrations/settings-store.js';
 import { RegisteredGroup } from './types.js';
 
 /** Dedup recent IPC messages — suppress identical (jid+text) within a short window. */
@@ -37,6 +39,16 @@ function isDuplicateIpcMessage(chatJid: string, text: string): boolean {
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
   resolveRecipient: (name: string) => Promise<string>;
+  resolveMessageRecipient?: (
+    sourceGroup: string,
+    name: string,
+  ) => Promise<string>;
+  resolveRecipientForChannel?: (
+    channel: 'signal' | 'whatsapp' | 'sms' | 'email',
+    name: string,
+  ) => Promise<string>;
+  /** All connected channel instances (for integration tool dispatch). */
+  channels?: () => import('./types.js').Channel[];
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -60,6 +72,19 @@ export interface IpcDeps {
   signalLeaveGroup?: (groupId: string) => Promise<void>;
   unregisterGroup?: (jid: string) => void;
   signalListGroups?: () => Promise<
+    { name: string; id: string; members: string[] }[]
+  >;
+  whatsappFindGroup?: (
+    name: string,
+  ) => Promise<{ id: string; name: string; members: string[] } | null>;
+  whatsappAddMembers?: (groupId: string, members: string[]) => Promise<void>;
+  whatsappCreateGroup?: (input: {
+    title: string;
+    members: string[];
+    message?: string;
+  }) => Promise<{ jid: string; title: string }>;
+  whatsappLeaveGroup?: (groupId: string) => Promise<void>;
+  whatsappListGroups?: () => Promise<
     { name: string; id: string; members: string[] }[]
   >;
   calendarListEvents?: (params: {
@@ -105,8 +130,12 @@ export interface IpcDeps {
 
 /** Resolve a list of member identifiers (names, phone numbers, JIDs) to Signal-ready targets. */
 async function resolveMembers(
+  channel: 'signal' | 'whatsapp' | 'sms' | 'email',
   members: string[],
-  resolveRecipient: (name: string) => Promise<string>,
+  resolveRecipient: (
+    channel: 'signal' | 'whatsapp' | 'sms' | 'email',
+    name: string,
+  ) => Promise<string>,
 ): Promise<string[]> {
   const resolved: string[] = [];
   for (const member of members) {
@@ -124,13 +153,16 @@ async function resolveMembers(
     }
     // Name — resolve via contact resolution chain
     try {
-      const jid = await resolveRecipient(trimmed);
-      // Extract phone number from signal:user:+15551234567 format
-      const phoneMatch = jid.match(/^signal:user:(\+\d+)$/);
-      resolved.push(phoneMatch ? phoneMatch[1] : jid);
+      const jid = await resolveRecipient(channel, trimmed);
+      if (channel === 'signal') {
+        const phoneMatch = jid.match(/^signal:user:(\+\d+)$/);
+        resolved.push(phoneMatch ? phoneMatch[1] : jid);
+        continue;
+      }
+      resolved.push(jid);
     } catch (err) {
       logger.warn(
-        { member: trimmed, err: String(err) },
+        { member: trimmed, channel, err: String(err) },
         'Failed to resolve member — skipping',
       );
     }
@@ -240,30 +272,14 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 let chatJid: string = data.chatJid || '';
                 if (!chatJid && data.to) {
                   try {
-                    chatJid = await deps.resolveRecipient(data.to);
+                    chatJid = deps.resolveMessageRecipient
+                      ? await deps.resolveMessageRecipient(sourceGroup, data.to)
+                      : await deps.resolveRecipient(data.to);
                   } catch (err) {
                     logger.warn(
                       { to: data.to, sourceGroup, err: String(err) },
                       'IPC message recipient resolution failed',
                     );
-                  }
-                  // Fallback: try Signal group lookup via RPC if standard resolution failed
-                  if (!chatJid && deps.signalFindGroup) {
-                    try {
-                      const group = await deps.signalFindGroup(data.to);
-                      if (group) {
-                        chatJid = `signal:group:${group.id}`;
-                        logger.info(
-                          { to: data.to, resolvedJid: chatJid },
-                          'IPC message recipient resolved via Signal group RPC',
-                        );
-                      }
-                    } catch (err) {
-                      logger.warn(
-                        { to: data.to, err: String(err) },
-                        'Signal group RPC fallback failed',
-                      );
-                    }
                   }
                 }
                 if (!chatJid) {
@@ -386,11 +402,15 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
-    // For signal_add_group_members / signal_create_group
+    // For signal_* / whatsapp_* group operations
     groupName?: string;
     members?: string[];
     title?: string;
     message?: string;
+    // For integration_tool dispatch
+    integration?: string;
+    tool?: string;
+    args?: Record<string, unknown>;
     // For request-response IPC (calendar tools, etc.)
     requestId?: string;
     // For calendar tools
@@ -735,8 +755,10 @@ export async function processTaskIpc(
           break;
         }
         const resolvedAddMembers = await resolveMembers(
+          'signal',
           data.members,
-          deps.resolveRecipient,
+          deps.resolveRecipientForChannel ||
+            (async (_channel, name) => deps.resolveRecipient(name)),
         );
         if (resolvedAddMembers.length === 0) {
           logger.warn(
@@ -778,20 +800,24 @@ export async function processTaskIpc(
 
     case 'signal_list_groups':
       if (!deps.signalListGroups) {
-        logger.warn(
-          { sourceGroup },
-          'signal_list_groups: Signal channel not available',
-        );
+        if (data.requestId) {
+          writeIpcResponse(sourceGroup, data.requestId, {
+            error: 'Signal is not configured.',
+          });
+          break;
+        }
+        logger.warn({ sourceGroup }, 'signal_list_groups: Signal channel not available');
         if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            'Signal is not configured — cannot list groups.',
-          );
+          await deps.sendMessage(data.chatJid, 'Signal is not configured — cannot list groups.');
         }
         break;
       }
       try {
         const groups = await deps.signalListGroups();
+        if (data.requestId) {
+          writeIpcResponse(sourceGroup, data.requestId, { groups });
+          break;
+        }
         const summary =
           groups.length === 0
             ? 'No Signal groups found.'
@@ -806,6 +832,12 @@ export async function processTaskIpc(
         }
       } catch (err) {
         logger.error({ err }, 'Failed to list Signal groups');
+        if (data.requestId) {
+          writeIpcResponse(sourceGroup, data.requestId, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          break;
+        }
         if (data.chatJid) {
           await deps.sendMessage(
             data.chatJid,
@@ -904,8 +936,10 @@ export async function processTaskIpc(
       }
       try {
         const resolvedCreateMembers = await resolveMembers(
+          'signal',
           data.members,
-          deps.resolveRecipient,
+          deps.resolveRecipientForChannel ||
+            (async (_channel, name) => deps.resolveRecipient(name)),
         );
         if (resolvedCreateMembers.length === 0) {
           logger.warn(
@@ -960,6 +994,284 @@ export async function processTaskIpc(
         logger.error(
           { err, title: data.title },
           'Failed to create Signal group',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to create group "${data.title}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      break;
+
+    case 'whatsapp_add_group_members':
+      if (!data.groupName || !data.members || data.members.length === 0) {
+        logger.warn(
+          { data },
+          'Invalid whatsapp_add_group_members request - missing groupName or members',
+        );
+        break;
+      }
+      if (
+        !deps.whatsappFindGroup ||
+        !deps.whatsappAddMembers ||
+        !deps.resolveRecipientForChannel
+      ) {
+        logger.warn(
+          { sourceGroup },
+          'whatsapp_add_group_members: WhatsApp channel not available',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            'WhatsApp is not configured — cannot add group members.',
+          );
+        }
+        break;
+      }
+      try {
+        const group = await deps.whatsappFindGroup(data.groupName);
+        if (!group) {
+          logger.warn(
+            { groupName: data.groupName },
+            'whatsapp_add_group_members: group not found',
+          );
+          if (data.chatJid) {
+            await deps.sendMessage(
+              data.chatJid,
+              `No WhatsApp group found matching "${data.groupName}".`,
+            );
+          }
+          break;
+        }
+        const resolvedAddMembers = await resolveMembers(
+          'whatsapp',
+          data.members,
+          deps.resolveRecipientForChannel,
+        );
+        if (resolvedAddMembers.length === 0) {
+          logger.warn(
+            { members: data.members },
+            'whatsapp_add_group_members: no members resolved',
+          );
+          if (data.chatJid) {
+            await deps.sendMessage(
+              data.chatJid,
+              'Could not resolve any of the specified members.',
+            );
+          }
+          break;
+        }
+        await deps.whatsappAddMembers(group.id, resolvedAddMembers);
+        logger.info(
+          { groupName: group.name, groupId: group.id, members: data.members },
+          'Members added to WhatsApp group via IPC',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Added ${data.members.length} member(s) to WhatsApp group "${group.name}".`,
+          );
+        }
+      } catch (err) {
+        logger.error(
+          { err, groupName: data.groupName },
+          'Failed to add members to WhatsApp group',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to add members to group "${data.groupName}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      break;
+
+    case 'whatsapp_list_groups':
+      if (!deps.whatsappListGroups) {
+        if (data.requestId) {
+          writeIpcResponse(sourceGroup, data.requestId, {
+            error: 'WhatsApp is not configured.',
+          });
+          break;
+        }
+        logger.warn({ sourceGroup }, 'whatsapp_list_groups: WhatsApp channel not available');
+        if (data.chatJid) {
+          await deps.sendMessage(data.chatJid, 'WhatsApp is not configured — cannot list groups.');
+        }
+        break;
+      }
+      try {
+        const groups = await deps.whatsappListGroups();
+        if (data.requestId) {
+          writeIpcResponse(sourceGroup, data.requestId, { groups });
+          break;
+        }
+        const summary =
+          groups.length === 0
+            ? 'No WhatsApp groups found.'
+            : groups
+                .map(
+                  (g) =>
+                    `• ${g.name} (${g.members.length} members: ${g.members.join(', ')})`,
+                )
+                .join('\n');
+        if (data.chatJid) {
+          await deps.sendMessage(data.chatJid, `WhatsApp groups:\n${summary}`);
+        }
+      } catch (err) {
+        logger.error({ err }, 'Failed to list WhatsApp groups');
+        if (data.requestId) {
+          writeIpcResponse(sourceGroup, data.requestId, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          break;
+        }
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to list groups: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      break;
+
+    case 'whatsapp_leave_group': {
+      const groupName = String(data.groupName || '').trim();
+      if (!groupName) {
+        logger.warn(
+          { data },
+          'Invalid whatsapp_leave_group request - missing groupName',
+        );
+        break;
+      }
+      if (!deps.whatsappFindGroup || !deps.whatsappLeaveGroup) {
+        logger.warn(
+          { sourceGroup },
+          'whatsapp_leave_group: WhatsApp channel not available',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            'WhatsApp is not configured — cannot leave group.',
+          );
+        }
+        break;
+      }
+      try {
+        const group = await deps.whatsappFindGroup(groupName);
+        if (!group) {
+          logger.warn({ groupName }, 'whatsapp_leave_group: group not found');
+          if (data.chatJid) {
+            await deps.sendMessage(
+              data.chatJid,
+              `No WhatsApp group found matching "${groupName}".`,
+            );
+          }
+          break;
+        }
+        await deps.whatsappLeaveGroup(group.id);
+        markIpcSideEffect(sourceGroup);
+        logger.info(
+          { groupName: group.name, groupId: group.id },
+          'Left WhatsApp group via IPC',
+        );
+        if (deps.unregisterGroup) {
+          deps.unregisterGroup(group.id);
+          logger.info({ jid: group.id }, 'Unregistered WhatsApp group after leaving');
+        }
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Left WhatsApp group "${group.name}".`,
+          );
+        }
+      } catch (err) {
+        logger.error({ err, groupName }, 'Failed to leave WhatsApp group');
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to leave group "${groupName}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      break;
+    }
+
+    case 'whatsapp_create_group':
+      if (!data.title || !data.members || data.members.length === 0) {
+        logger.warn(
+          { data },
+          'Invalid whatsapp_create_group request - missing title or members',
+        );
+        break;
+      }
+      if (!deps.whatsappCreateGroup || !deps.resolveRecipientForChannel) {
+        logger.warn(
+          { sourceGroup },
+          'whatsapp_create_group: WhatsApp channel not available',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            'WhatsApp is not configured — cannot create group.',
+          );
+        }
+        break;
+      }
+      try {
+        const resolvedCreateMembers = await resolveMembers(
+          'whatsapp',
+          data.members,
+          deps.resolveRecipientForChannel,
+        );
+        if (resolvedCreateMembers.length === 0) {
+          logger.warn(
+            { members: data.members },
+            'whatsapp_create_group: no members resolved',
+          );
+          if (data.chatJid) {
+            await deps.sendMessage(
+              data.chatJid,
+              `Could not resolve any of the specified members for group "${data.title}".`,
+            );
+          }
+          break;
+        }
+        const result = await deps.whatsappCreateGroup({
+          title: data.title,
+          members: resolvedCreateMembers,
+          message: data.message,
+        });
+        markIpcSideEffect(sourceGroup);
+        logger.info(
+          { title: result.title, jid: result.jid, members: data.members },
+          'WhatsApp group created via IPC',
+        );
+
+        const newGroupFolder = deriveGroupFolder(result.title);
+        deps.registerGroup(result.jid, {
+          name: result.title,
+          folder: newGroupFolder,
+          trigger: '',
+          added_at: new Date().toISOString(),
+          requiresTrigger: false,
+        });
+        logger.info(
+          { jid: result.jid, folder: newGroupFolder },
+          'Auto-registered WhatsApp group created via IPC',
+        );
+
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Created WhatsApp group "${result.title}".`,
+          );
+        }
+      } catch (err) {
+        logger.error(
+          { err, title: data.title },
+          'Failed to create WhatsApp group',
         );
         if (data.chatJid) {
           await deps.sendMessage(
@@ -1179,6 +1491,59 @@ export async function processTaskIpc(
           'Calendar event deleted via IPC',
         );
       } catch (err) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      break;
+    }
+
+    case 'integration_tool': {
+      if (!data.requestId || !data.integration || !data.tool) {
+        logger.warn(
+          { type: data.type, integration: data.integration, tool: data.tool },
+          'integration_tool missing required fields',
+        );
+        break;
+      }
+      const intDef = getIntegration(data.integration);
+      const toolDef = intDef?.tools?.find((t) => t.name === data.tool);
+      if (!toolDef?.execute) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: `Tool ${data.tool} not found on integration ${data.integration}`,
+        });
+        break;
+      }
+      try {
+        const settings = getIntegrationSettings(data.integration);
+        logger.info(
+          { integration: data.integration, tool: data.tool, group_folder: sourceGroup },
+          `Integration tool called: ${data.tool}`,
+        );
+        const result = await toolDef.execute(data.args || {}, {
+          settings,
+          sourceGroup,
+          isMain,
+          calendarAccess,
+          chatJid: data.chatJid,
+          sendMessage: deps.sendMessage,
+          resolveRecipient: deps.resolveRecipient,
+          channels: deps.channels?.() || [],
+        });
+        writeIpcResponse(sourceGroup, data.requestId, {
+          ok: true,
+          result,
+        });
+        markIpcSideEffect(sourceGroup);
+        logger.info(
+          { integration: data.integration, tool: data.tool, group_folder: sourceGroup },
+          `Integration tool completed: ${data.tool}`,
+        );
+      } catch (err) {
+        logger.error(
+          { integration: data.integration, tool: data.tool, group_folder: sourceGroup, err: String(err) },
+          `Integration tool failed: ${data.tool}`,
+        );
         writeIpcResponse(sourceGroup, data.requestId, {
           error: err instanceof Error ? err.message : String(err),
         });

@@ -41,6 +41,7 @@ const INDEXED_KEYS = new Set([
   'group_folder',
   'entity',
   'run_id',
+  'tool',
 ]);
 
 interface TransportOptions {
@@ -70,6 +71,7 @@ export default function buildTransport(options: TransportOptions) {
       group_folder TEXT,
       entity TEXT,
       run_id TEXT,
+      tool TEXT,
       data TEXT,
       created_at REAL DEFAULT (unixepoch('subsec'))
     );
@@ -81,9 +83,23 @@ export default function buildTransport(options: TransportOptions) {
     CREATE INDEX IF NOT EXISTS idx_logs_run ON logs(run_id);
   `);
 
+  // Migration: add tool column if missing (existing DBs)
+  try {
+    db.exec(`ALTER TABLE logs ADD COLUMN tool TEXT`);
+  } catch {
+    // Column already exists
+  }
+
+  // Create tool index after migration ensures column exists
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_logs_tool ON logs(tool)`);
+  } catch {
+    // Index already exists
+  }
+
   const insert = db.prepare(`
-    INSERT INTO logs (time, level, level_label, msg, integration, channel, group_folder, entity, run_id, data)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO logs (time, level, level_label, msg, integration, channel, group_folder, entity, run_id, tool, data)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const minLevelNum = LEVEL_NUMBERS[options.minLevel || 'info'] ?? 30;
@@ -130,6 +146,7 @@ export default function buildTransport(options: TransportOptions) {
         const groupFolder = (obj.group_folder as string) || null;
         const entity = (obj.entity as string) || null;
         const runId = (obj.run_id as string) || null;
+        const tool = (obj.tool as string) || null;
 
         // Everything else goes to data blob
         const data: Record<string, unknown> = {};
@@ -157,6 +174,7 @@ export default function buildTransport(options: TransportOptions) {
           groupFolder,
           entity,
           runId,
+          tool,
           Object.keys(data).length > 0 ? JSON.stringify(data) : null,
         ]);
 

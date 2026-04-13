@@ -61,6 +61,42 @@ export function deriveGroupFolder(displayName: string): string {
   return folder;
 }
 
+function sanitizeFolderHint(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+export function deriveUniqueGroupFolder(
+  displayName: string,
+  existingFolders: Iterable<string>,
+  uniquenessHint?: string,
+): string {
+  const used = new Set(
+    Array.from(existingFolders, (folder) => folder.trim().toLowerCase()),
+  );
+  const base = deriveGroupFolder(displayName);
+  if (!used.has(base.toLowerCase())) return base;
+
+  const hint = sanitizeFolderHint(uniquenessHint || '');
+  if (hint) {
+    const hinted = deriveGroupFolder(`${displayName}-${hint}`);
+    if (!used.has(hinted.toLowerCase())) return hinted;
+  }
+
+  for (let i = 2; i <= 999; i++) {
+    const candidate = deriveGroupFolder(`${displayName}-${hint || 'chat'}-${i}`);
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+
+  return deriveGroupFolder(
+    `${displayName}-${hint || 'chat'}-${Date.now().toString(36)}`,
+  );
+}
+
 export function resolveGroupIpcPath(folder: string): string {
   assertValidGroupFolder(folder);
   const ipcBaseDir = path.resolve(DATA_DIR, 'ipc');

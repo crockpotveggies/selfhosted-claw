@@ -303,24 +303,54 @@ export function startAdminServer(
         }> = [];
 
         for (const def of integrations) {
-          if (!def.adminPage?.getNotifications) continue;
           if (!isIntegrationEnabled(def.name)) continue;
-          try {
-            const settings = getIntegrationSettings(def.name);
-            const ctx = {
-              settings,
-              groupSettings: () => settings,
-              hasCredential: (key: string) =>
-                Boolean(
-                  process.env[key] ||
+          const settings = getIntegrationSettings(def.name);
+          const ctx = {
+            settings,
+            groupSettings: () => settings,
+            hasCredential: (key: string) =>
+              Boolean(
+                process.env[key] ||
                   options.service.getSetupEnvironment()[key] ||
                   settings[key],
-                ),
-            };
-            const items = await def.adminPage.getNotifications(ctx);
-            notifications.push(...items);
+              ),
+          };
+
+          if (def.adminPage?.getNotifications) {
+            try {
+              const items = await def.adminPage.getNotifications(ctx);
+              notifications.push(...items);
+            } catch {
+              // Per-integration failure — skip, don't crash
+            }
+          }
+
+          try {
+            if (!def.adminPage?.getStatus) continue;
+            const status = await def.adminPage.getStatus(ctx);
+            const hasIntegrationNotification = notifications.some(
+              (item) => item.integration === def.name,
+            );
+            if (!hasIntegrationNotification && status.state === 'degraded') {
+              notifications.push({
+                id: `${def.name}:status-degraded`,
+                integration: def.name,
+                severity: 'error',
+                title: `${def.name} needs attention`,
+                message: status.message,
+              });
+            }
+            if (!hasIntegrationNotification && status.state === 'offline') {
+              notifications.push({
+                id: `${def.name}:status-offline`,
+                integration: def.name,
+                severity: 'warning',
+                title: `${def.name} is offline`,
+                message: status.message,
+              });
+            }
           } catch {
-            // Per-integration failure — skip, don't crash
+            // Status fallback failed — skip
           }
         }
 
@@ -984,6 +1014,12 @@ export function startAdminServer(
               capabilities: {
                 hasChannel: Boolean(def.channel),
                 toolCount: def.tools?.length ?? 0,
+                tools: def.tools?.map((t) => ({
+                  name: t.name,
+                  description: t.description,
+                  controllerOnly: t.controllerOnly,
+                  location: t.location,
+                })),
                 hasSkills: (def.skills?.length ?? 0) > 0,
                 hasMemory: Boolean(def.memory),
                 hasSetup: Boolean(def.setup),
@@ -1185,6 +1221,82 @@ export function startAdminServer(
       }
 
       // -----------------------------------------------------------------
+      // Integration profile routes
+      // -----------------------------------------------------------------
+
+      // GET /api/admin/integrations/:name/profile
+      const profileGetMatch =
+        req.method === 'GET' &&
+        url.pathname.match(
+          /^\/api\/admin\/integrations\/([^/]+)\/profile$/,
+        );
+      if (profileGetMatch) {
+        const name = profileGetMatch[1];
+        const def = getIntegration(name);
+        if (!def?.profile) {
+          sendJson(res, 404, { error: 'no_profile' });
+          return;
+        }
+        try {
+          const values = await def.profile.getProfile();
+          sendJson(res, 200, {
+            label: def.profile.label,
+            fields: def.profile.fields,
+            values,
+          });
+        } catch (err) {
+          sendJson(res, 500, {
+            error: err instanceof Error ? err.message : 'profile_load_failed',
+          });
+        }
+        return;
+      }
+
+      // POST /api/admin/integrations/:name/profile
+      const profilePostMatch =
+        req.method === 'POST' &&
+        url.pathname.match(
+          /^\/api\/admin\/integrations\/([^/]+)\/profile$/,
+        );
+      if (profilePostMatch) {
+        const name = profilePostMatch[1];
+        const def = getIntegration(name);
+        if (!def?.profile) {
+          sendJson(res, 404, { error: 'no_profile' });
+          return;
+        }
+        const body = JSON.parse(
+          (await readBody(req)) || '{}',
+        ) as Record<string, string>;
+        try {
+          await def.profile.saveProfile(body);
+          sendJson(res, 200, { ok: true });
+        } catch (err) {
+          sendJson(res, 500, {
+            error: err instanceof Error ? err.message : 'profile_save_failed',
+          });
+        }
+        return;
+      }
+
+      // GET /api/admin/integration-profiles (list all integrations with profiles)
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/integration-profiles'
+      ) {
+        const integrations = getRegisteredIntegrations();
+        const profiles = integrations
+          .filter((def) => def.profile && isIntegrationEnabled(def.name))
+          .map((def) => ({
+            name: def.name,
+            label: def.profile!.label,
+            fields: def.profile!.fields,
+          }));
+        sendJson(res, 200, profiles);
+        return;
+      }
+
+      // -----------------------------------------------------------------
       // Log API routes
       // -----------------------------------------------------------------
 
@@ -1262,7 +1374,7 @@ export function startAdminServer(
 
           const rows = logDb
             .prepare(
-              `SELECT id, time, level, level_label, msg, integration, channel, group_folder, entity, run_id, data FROM logs ${where} ORDER BY time DESC LIMIT ? OFFSET ?`,
+              `SELECT id, time, level, level_label, msg, integration, channel, group_folder, entity, run_id, tool, data FROM logs ${where} ORDER BY time DESC LIMIT ? OFFSET ?`,
             )
             .all(...params, limit, offset);
 

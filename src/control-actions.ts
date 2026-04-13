@@ -131,56 +131,6 @@ interface SignalProfileInput {
   avatarDataUrl?: string;
 }
 
-export interface OutboundSendInput {
-  channel: 'signal' | 'sms' | 'email';
-  target: string;
-  message: string;
-  requiresConfirmation: boolean;
-  confirmationReason?: string;
-  resolvedSignalJid?: string;
-  resolvedTarget?: string;
-  resolvedDisplayName?: string;
-  resolutionSource?: string;
-}
-
-export interface OutboundCreateGroupInput {
-  channel: 'signal';
-  title?: string;
-  message: string;
-  members: string[];
-  resolvedMemberTargets: string[];
-  resolvedMemberDisplayNames: string[];
-}
-
-export interface OutboundDeleteInput {
-  channel: 'signal' | 'sms' | 'email' | 'calendar';
-  target: string;
-  reason: string;
-}
-
-export interface OutboundUpdateGroupInput {
-  channel: 'signal';
-  groupName: string;
-  groupId: string;
-  action: 'add_member' | 'remove_member' | 'rename';
-  resolvedMemberTargets: string[];
-  resolvedMemberDisplayNames: string[];
-  newName?: string;
-}
-
-interface OutboundHandlers {
-  sendSignalMessage?: (jid: string, text: string) => Promise<void>;
-  createSignalGroup?: (input: {
-    title?: string;
-    members: string[];
-    message?: string;
-  }) => Promise<{ jid: string; title: string }>;
-  updateSignalGroup?: (input: OutboundUpdateGroupInput) => Promise<void>;
-  deleteResource?: (input: OutboundDeleteInput) => Promise<string>;
-  /** Called after a successful outbound send so the host can auto-register the target. */
-  onOutboundSend?: (input: OutboundSendInput) => void;
-}
-
 export type ApprovalReplyDecision = 'approve' | 'reject' | 'revise' | 'unclear';
 
 interface ApprovalReplyClassification {
@@ -418,7 +368,6 @@ export class ControlActionService {
     string,
     ControlActionDefinition<any, any>
   >();
-  private outboundHandlers: OutboundHandlers = {};
   private approvalReplyClassifier?: ApprovalReplyClassifier;
 
   constructor(private readonly store: ControlStore = new ControlStore()) {
@@ -948,164 +897,6 @@ export class ControlActionService {
       },
     });
 
-    this.register<OutboundSendInput, { status: string }>({
-      name: 'outbound.send',
-      requiredTrust: 'owner_verified',
-      commandableAction: false,
-      previewable: true,
-      toolType: 'outbound',
-      iconKey: 'send',
-      summarizeInput: (input) =>
-        input.requiresConfirmation
-          ? `Start a new ${input.channel} conversation with ${input.resolvedDisplayName || input.target}`
-          : `Send ${input.channel} message to ${input.resolvedDisplayName || input.target}`,
-      execute: async (input) => {
-        const beforeState = stableStringify({
-          status: 'pending',
-          channel: input.channel,
-          target: input.resolvedTarget || input.target,
-        });
-        if (input.channel === 'signal') {
-          if (!input.resolvedSignalJid) {
-            throw new Error('Signal target could not be resolved for approval');
-          }
-          if (!this.outboundHandlers.sendSignalMessage) {
-            throw new Error('Signal delivery is not configured');
-          }
-          await this.outboundHandlers.sendSignalMessage(
-            input.resolvedSignalJid,
-            input.message,
-          );
-          // Notify host so it can auto-register the target for inbound monitoring
-          this.outboundHandlers.onOutboundSend?.(input);
-          return {
-            result: { status: 'sent' },
-            beforeState,
-            afterState: stableStringify({
-              status: 'sent',
-              channel: input.channel,
-              target: input.resolvedTarget || input.target,
-            }),
-          };
-        }
-        if (input.channel === 'email') {
-          throw new Error(
-            'Email delivery is not configured yet. Configure an email provider first.',
-          );
-        }
-        throw new Error(
-          'SMS delivery is not configured yet. Configure an SMS provider first.',
-        );
-      },
-    });
-
-    this.register<OutboundDeleteInput, { status: string }>({
-      name: 'outbound.delete',
-      requiredTrust: 'owner_verified',
-      commandableAction: false,
-      previewable: true,
-      toolType: 'outbound',
-      iconKey: 'send',
-      summarizeInput: (input) =>
-        `Delete ${input.channel} item "${input.target}"`,
-      execute: async (input) => {
-        if (!this.outboundHandlers.deleteResource) {
-          throw new Error(`Deletion is not configured for ${input.channel}.`);
-        }
-        const result = await this.outboundHandlers.deleteResource(input);
-        return {
-          result: { status: result || 'deleted' },
-          beforeState: stableStringify({
-            status: 'pending',
-            channel: input.channel,
-            target: input.target,
-          }),
-          afterState: stableStringify({
-            status: result || 'deleted',
-            channel: input.channel,
-            target: input.target,
-          }),
-        };
-      },
-    });
-
-    this.register<OutboundCreateGroupInput, { status: string; jid: string }>({
-      name: 'outbound.createGroup',
-      requiredTrust: 'owner_verified',
-      commandableAction: false,
-      previewable: true,
-      toolType: 'outbound',
-      iconKey: 'send',
-      summarizeInput: (input) =>
-        `Create a new ${input.channel} group with ${input.resolvedMemberDisplayNames.join(', ')}`,
-      execute: async (input) => {
-        if (input.channel !== 'signal') {
-          throw new Error(
-            'Only Signal group creation is implemented right now.',
-          );
-        }
-        if (!this.outboundHandlers.createSignalGroup) {
-          throw new Error('Signal group creation is not configured.');
-        }
-
-        const created = await this.outboundHandlers.createSignalGroup({
-          title: input.title,
-          members: input.resolvedMemberTargets,
-          message: input.message,
-        });
-        return {
-          result: { status: 'created', jid: created.jid },
-          beforeState: stableStringify({
-            status: 'pending',
-            channel: input.channel,
-            members: input.resolvedMemberTargets,
-            title: input.title || '',
-          }),
-          afterState: stableStringify({
-            status: 'created',
-            channel: input.channel,
-            jid: created.jid,
-            title: created.title,
-          }),
-        };
-      },
-    });
-
-    this.register<OutboundUpdateGroupInput, { status: string }>({
-      name: 'outbound.updateGroup',
-      requiredTrust: 'owner_verified',
-      commandableAction: false,
-      previewable: true,
-      toolType: 'outbound',
-      iconKey: 'send',
-      summarizeInput: (input) => {
-        if (input.action === 'rename') {
-          return `Rename Signal group "${input.groupName}" to "${input.newName}"`;
-        }
-        const verb = input.action === 'add_member' ? 'Add' : 'Remove';
-        const prep = input.action === 'add_member' ? 'to' : 'from';
-        return `${verb} ${input.resolvedMemberDisplayNames.join(', ')} ${prep} Signal group "${input.groupName}"`;
-      },
-      execute: async (input) => {
-        if (!this.outboundHandlers.updateSignalGroup) {
-          throw new Error('Signal group management is not configured.');
-        }
-        await this.outboundHandlers.updateSignalGroup(input);
-        return {
-          result: { status: 'updated' },
-          beforeState: stableStringify({
-            groupName: input.groupName,
-            action: input.action,
-          }),
-          afterState: stableStringify({
-            groupName:
-              input.action === 'rename' ? input.newName : input.groupName,
-            action: input.action,
-            members: input.resolvedMemberTargets,
-          }),
-        };
-      },
-    });
   }
 
   private register<TInput, TResult>(
@@ -1129,10 +920,6 @@ export class ControlActionService {
         iconKey: definition.iconKey,
       }))
       .sort((left, right) => left.name.localeCompare(right.name));
-  }
-
-  setOutboundHandlers(handlers: OutboundHandlers): void {
-    this.outboundHandlers = handlers;
   }
 
   getSettings(): ControlSettings {
@@ -1804,6 +1591,26 @@ export class ControlActionService {
     return refreshed.accessToken;
   }
 
+  private async refreshStoredGoogleAccessToken(
+    env: Record<string, string>,
+  ): Promise<string> {
+    const stored = this.store.getGoogleContactsOAuth();
+    if (
+      !stored.refreshToken ||
+      !env.GOOGLE_CLIENT_ID ||
+      !env.GOOGLE_CLIENT_SECRET
+    ) {
+      return '';
+    }
+    const refreshed = await this.refreshGoogleContactsAccessToken(
+      stored.refreshToken,
+      env.GOOGLE_CLIENT_ID,
+      env.GOOGLE_CLIENT_SECRET,
+      stored,
+    );
+    return refreshed.accessToken;
+  }
+
   private async refreshGoogleContactsAccessToken(
     refreshToken: string,
     clientId: string,
@@ -1885,6 +1692,7 @@ export class ControlActionService {
     urlOrPath: string,
     init?: RequestInit,
   ): Promise<unknown> {
+    const env = this.getSetupEnvironment();
     const token = await this.ensureGoogleCalendarAccessToken();
     if (!token) {
       throw new Error(
@@ -1894,14 +1702,28 @@ export class ControlActionService {
     const url = urlOrPath.startsWith('https://')
       ? urlOrPath
       : `https://www.googleapis.com${urlOrPath}`;
-    const response = await fetch(url, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        ...((init?.headers as Record<string, string>) || {}),
-      },
-    });
+    const makeRequest = (accessToken: string) =>
+      fetch(url, {
+        ...init,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          ...((init?.headers as Record<string, string>) || {}),
+        },
+      });
+
+    let response = await makeRequest(token);
+    if (response.status === 401) {
+      try {
+        const refreshedToken = await this.refreshStoredGoogleAccessToken(env);
+        if (refreshedToken && refreshedToken !== token) {
+          response = await makeRequest(refreshedToken);
+        }
+      } catch {
+        // Preserve the original 401 response body below when refresh fails.
+      }
+    }
+
     if (!response.ok) {
       const body = await response.text();
       throw new Error(`Calendar API ${response.status}: ${body}`);

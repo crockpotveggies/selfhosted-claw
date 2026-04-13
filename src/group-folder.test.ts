@@ -3,6 +3,7 @@ import path from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  deriveUniqueGroupFolder,
   isValidGroupFolder,
   resolveGroupFolderPath,
   resolveGroupIpcPath,
@@ -39,5 +40,25 @@ describe('group folder validation', () => {
   it('throws for unsafe folder names', () => {
     expect(() => resolveGroupFolderPath('../../etc')).toThrow();
     expect(() => resolveGroupIpcPath('/tmp')).toThrow();
+  });
+
+  it('keeps the base folder when unused', () => {
+    expect(deriveUniqueGroupFolder('Justin', [])).toBe('justin');
+  });
+
+  it('uses the uniqueness hint when the base folder already exists', () => {
+    expect(
+      deriveUniqueGroupFolder('Justin', ['justin'], 'whatsapp-123456789'),
+    ).toBe('justin-whatsapp-123456789');
+  });
+
+  it('falls back to numbered suffixes when the hinted folder is taken', () => {
+    expect(
+      deriveUniqueGroupFolder(
+        'Justin',
+        ['justin', 'justin-whatsapp', 'justin-whatsapp-2'],
+        'whatsapp',
+      ),
+    ).toBe('justin-whatsapp-3');
   });
 });

@@ -75,6 +75,14 @@ export interface ToolContext {
   sourceGroup: string;
   isMain: boolean;
   calendarAccess: boolean;
+  /** Chat JID of the group that triggered this container run. */
+  chatJid?: string;
+  /** Send a message to any JID (channel-agnostic routing via ownsJid). */
+  sendMessage?: (jid: string, text: string) => Promise<void>;
+  /** Resolve a name/phone to a channel-specific JID. */
+  resolveRecipient?: (name: string) => Promise<string>;
+  /** All connected channel instances (for channel-specific operations). */
+  channels?: Channel[];
 }
 
 export interface IntegrationTool {
@@ -349,6 +357,28 @@ export interface IntegrationContext {
 }
 
 // ---------------------------------------------------------------------------
+// Channel profile (displayed on Personality page)
+// ---------------------------------------------------------------------------
+
+export interface ProfileField {
+  key: string;
+  label: string;
+  type: 'text' | 'textarea' | 'image';
+  placeholder?: string;
+}
+
+export interface IntegrationProfile {
+  /** Display label for the profile section (e.g., "WhatsApp Profile"). */
+  label: string;
+  /** Fields the user can edit. */
+  fields: ProfileField[];
+  /** Load current profile values. */
+  getProfile: () => Promise<Record<string, string>>;
+  /** Save updated profile values. */
+  saveProfile: (values: Record<string, string>) => Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
 // Top-level integration definition
 // ---------------------------------------------------------------------------
 
@@ -372,6 +402,8 @@ export interface IntegrationDefinition {
   service?: IntegrationService;
   memory?: IntegrationMemory;
   setup?: IntegrationSetupFlow;
+  /** Channel profile — editable on the Personality page. */
+  profile?: IntegrationProfile;
 
   lifecycle?: {
     onEnable?: (ctx: IntegrationContext) => Promise<void>;

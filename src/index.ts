@@ -36,6 +36,7 @@ import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
+  writeIntegrationToolsManifest,
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
@@ -63,13 +64,10 @@ import { GroupQueue } from './group-queue.js';
 import { ControlActionService } from './control-actions.js';
 import type {
   ApprovalReplyDecision,
-  OutboundCreateGroupInput,
-  OutboundDeleteInput,
-  OutboundSendInput,
-  OutboundUpdateGroupInput,
 } from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
 import {
+  deriveUniqueGroupFolder,
   deriveGroupFolder,
   isValidGroupFolder,
   resolveGroupFolderPath,
@@ -208,6 +206,16 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     { jid, name: group.name, folder: group.folder },
     'Group registered',
   );
+}
+
+function inferGroupFolderHint(chatJid: string): string {
+  if (chatJid.startsWith('signal:')) {
+    return chatJid.slice('signal:'.length);
+  }
+  if (chatJid.includes('@')) {
+    return chatJid.replace(/@/g, '-');
+  }
+  return chatJid;
 }
 
 function buildConfiguredMainGroup(
@@ -543,6 +551,9 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
+  // Write integration tools manifest so the agent-runner can register dynamic tools
+  writeIntegrationToolsManifest(group.folder, isMain);
+
   try {
     const output = await runContainerAgent(
       group,
@@ -858,83 +869,6 @@ async function main(): Promise<void> {
     const text = formatOutbound(rawText);
     if (text) await channel.sendMessage(jid, text);
   };
-  controlService.setOutboundHandlers({
-    sendSignalMessage: async (jid, text) => {
-      await sendHostMessage(jid, text);
-    },
-    createSignalGroup: async ({ title, members, message }) => {
-      const signalChannel = channels.find(
-        (channel) => channel.name === 'signal',
-      ) as
-        | (Channel & {
-            createGroup?: (input: {
-              title?: string;
-              members: string[];
-              message?: string;
-            }) => Promise<{ jid: string; title: string }>;
-          })
-        | undefined;
-      if (!signalChannel?.createGroup) {
-        throw new Error('Signal group creation is not available.');
-      }
-      return signalChannel.createGroup({ title, members, message });
-    },
-    onOutboundSend: (input) => {
-      // Auto-register the target so inbound replies get monitored
-      const jid = input.resolvedSignalJid || input.resolvedTarget;
-      if (!jid || registeredGroups[jid]) return;
-      const folder = deriveGroupFolder(
-        input.resolvedDisplayName || input.target,
-      );
-      const folderInUse = Object.values(registeredGroups).some(
-        (g) => g.folder === folder,
-      );
-      if (folderInUse) return;
-      registerGroup(jid, {
-        name: input.resolvedDisplayName || input.target,
-        folder,
-        trigger: '',
-        added_at: new Date().toISOString(),
-        requiresTrigger: false,
-      });
-      logger.info(
-        { jid, folder, displayName: input.resolvedDisplayName },
-        'Auto-registered target after outbound send',
-      );
-    },
-    updateSignalGroup: async (input) => {
-      const signalChannel = channels.find((c) => c.name === 'signal') as
-        | (Channel & {
-            addMembers?: (groupId: string, members: string[]) => Promise<void>;
-            removeMembers?: (
-              groupId: string,
-              members: string[],
-            ) => Promise<void>;
-            updateGroupName?: (groupId: string, name: string) => Promise<void>;
-          })
-        | undefined;
-      if (!signalChannel) throw new Error('Signal channel is not available.');
-      if (input.action === 'add_member') {
-        if (!signalChannel.addMembers)
-          throw new Error('addMembers not available.');
-        await signalChannel.addMembers(
-          input.groupId,
-          input.resolvedMemberTargets,
-        );
-      } else if (input.action === 'remove_member') {
-        if (!signalChannel.removeMembers)
-          throw new Error('removeMembers not available.');
-        await signalChannel.removeMembers(
-          input.groupId,
-          input.resolvedMemberTargets,
-        );
-      } else if (input.action === 'rename') {
-        if (!signalChannel.updateGroupName)
-          throw new Error('updateGroupName not available.');
-        await signalChannel.updateGroupName(input.groupId, input.newName || '');
-      }
-    },
-  });
   executeAgentDirective = async (
     directive: ReturnType<typeof parseAgentOutput>['directives'][number],
     sourceChatJid: string,
@@ -949,7 +883,7 @@ async function main(): Promise<void> {
           'signal',
           directive.to,
         );
-        const input: OutboundSendInput = {
+        const input: Record<string, unknown> = {
           channel: 'signal',
           target: directive.to,
           message: directive.message,
@@ -971,10 +905,9 @@ async function main(): Promise<void> {
           );
           return `Confirmation required before starting a new Signal conversation with ${target.displayName} (${target.resolvedTarget}).\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
         }
-        await controlService.executeAction<
-          OutboundSendInput,
-          { status: string }
-        >('outbound.send', input, agentContext);
+        await controlService.executeAction(
+          'outbound.send' as string, input, agentContext,
+        );
         return `Sent via Signal to ${target.displayName} (${target.resolvedTarget}).`;
       }
       if (directive.channel === 'email') {
@@ -994,7 +927,7 @@ async function main(): Promise<void> {
             requiresConfirmation: true,
             confirmationReason:
               'Starting a new email thread requires approval.',
-          } satisfies OutboundSendInput,
+          },
           agentContext,
           { chatJid: sourceChatJid },
         );
@@ -1016,7 +949,7 @@ async function main(): Promise<void> {
           requiresConfirmation: true,
           confirmationReason:
             'Starting a new SMS conversation requires approval.',
-        } satisfies OutboundSendInput,
+        },
         agentContext,
         { chatJid: sourceChatJid },
       );
@@ -1055,7 +988,7 @@ async function main(): Promise<void> {
           resolvedMemberDisplayNames: members.map(
             (member) => member.displayName,
           ),
-        } satisfies OutboundCreateGroupInput,
+        },
         agentContext,
         { chatJid: sourceChatJid },
       );
@@ -1096,7 +1029,7 @@ async function main(): Promise<void> {
             resolvedMemberTargets: [],
             resolvedMemberDisplayNames: [],
             newName: directive.newName,
-          } satisfies OutboundUpdateGroupInput,
+          },
           agentContext,
           { chatJid: sourceChatJid },
         );
@@ -1121,7 +1054,7 @@ async function main(): Promise<void> {
           action: directive.action,
           resolvedMemberTargets: members.map((m) => m.resolvedTarget),
           resolvedMemberDisplayNames: members.map((m) => m.displayName),
-        } satisfies OutboundUpdateGroupInput,
+        },
         agentContext,
         { chatJid: sourceChatJid },
       );
@@ -1132,7 +1065,7 @@ async function main(): Promise<void> {
     }
     if (directive.kind === 'inspect_group') {
       const signalChannel = channels.find((c) => c.name === 'signal') as
-        | (Channel & { getGroups?: () => Promise<any[]> })
+        | Channel
         | undefined;
       if (!signalChannel?.getGroups) {
         return 'Signal is not configured.';
@@ -1141,34 +1074,25 @@ async function main(): Promise<void> {
       if (!directive.groupName) {
         if (groups.length === 0) return 'You are not in any Signal groups.';
         const list = groups
-          .map((g: any) => {
-            const name = String(g.name || g.title || g.groupName || 'Unnamed');
-            const count = Array.isArray(g.members) ? g.members.length : 0;
-            return `• ${name} (${count} members)`;
+          .map((g) => {
+            const name = String(g.name || 'Unnamed');
+            return `• ${name} (${g.members.length} members)`;
           })
           .join('\n');
         return `Signal groups (${groups.length}):\n${list}`;
       }
       const normalized = directive.groupName.toLowerCase().trim();
-      const group = groups.find((g: any) => {
-        const name = String(
-          g.name || g.title || g.groupName || '',
-        ).toLowerCase();
+      const group = groups.find((g) => {
+        const name = g.name.toLowerCase();
         return name === normalized || name.includes(normalized);
       });
       if (!group) {
         return `No Signal group found matching "${directive.groupName}".`;
       }
-      const groupMembers = Array.isArray(group.members)
-        ? (group.members as string[])
+      const admins = Array.isArray((group as { admins?: string[] }).admins)
+        ? ((group as { admins?: string[] }).admins as string[])
         : [];
-      const admins = Array.isArray(group.admins)
-        ? (group.admins as string[])
-        : [];
-      const groupName = String(
-        group.name || group.title || group.groupName || 'Unnamed',
-      );
-      return `Group: ${groupName}\nMembers (${groupMembers.length}): ${groupMembers.join(', ')}\nAdmins: ${admins.join(', ')}`;
+      return `Group: ${group.name}\nMembers (${group.members.length}): ${group.members.join(', ')}\nAdmins: ${admins.join(', ')}`;
     }
     const pending = controlService.previewAction(
       'outbound.delete',
@@ -1176,7 +1100,7 @@ async function main(): Promise<void> {
         channel: directive.channel,
         target: directive.target,
         reason: directive.reason,
-      } satisfies OutboundDeleteInput,
+      },
       agentContext,
       { chatJid: sourceChatJid },
     );
@@ -1315,23 +1239,22 @@ async function main(): Promise<void> {
           msg.sender_name && msg.sender_name !== msg.sender
             ? msg.sender_name
             : chatJid;
-        const folder = deriveGroupFolder(displayName);
-        const folderInUse = Object.values(registeredGroups).some(
-          (g) => g.folder === folder,
+        const folder = deriveUniqueGroupFolder(
+          displayName,
+          Object.values(registeredGroups).map((g) => g.folder),
+          inferGroupFolderHint(chatJid),
         );
-        if (!folderInUse) {
-          registerGroup(chatJid, {
-            name: displayName,
-            folder,
-            trigger: '',
-            added_at: new Date().toISOString(),
-            requiresTrigger: false,
-          });
-          logger.info(
-            { jid: chatJid, folder, displayName },
-            'Auto-registered chat on first inbound message',
-          );
-        }
+        registerGroup(chatJid, {
+          name: displayName,
+          folder,
+          trigger: '',
+          added_at: new Date().toISOString(),
+          requiresTrigger: false,
+        });
+        logger.info(
+          { jid: chatJid, folder, displayName },
+          'Auto-registered chat on first inbound message',
+        );
       }
 
       // Remote control commands — intercept before storage
@@ -1456,27 +1379,177 @@ async function main(): Promise<void> {
       queue.registerProcess(groupJid, proc, containerName, groupFolder),
     sendMessage: (jid, rawText) => sendHostMessage(jid, rawText),
   });
-  const getSignalChannel = () =>
-    channels.find((c) => c.name === 'signal') as
-      | (Channel & {
-          createGroup?: (input: {
-            title: string;
-            members: string[];
-            message?: string;
-          }) => Promise<{ jid: string; title: string }>;
-          findGroupByName?: (
-            name: string,
-          ) => Promise<{ id: string; name: string; members: string[] } | null>;
-          addMembers?: (groupId: string, members: string[]) => Promise<void>;
-          leaveGroup?: (groupId: string) => Promise<void>;
-          getGroups?: () => Promise<any[]>;
-        })
-      | undefined;
+  const getChannelByName = (name: string): Channel | undefined =>
+    channels.find((c) => c.name === name);
+  const findLiveGroupByName = async (
+    channelName: string,
+    name: string,
+  ): Promise<string | null> => {
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+    const channel = getChannelByName(channelName);
+    const group = await channel?.findGroupByName?.(trimmed);
+    return group ? group.jid || group.id : null;
+  };
+  const findLiveGroupAcrossChannels = async (
+    name: string,
+    preferredChannelName?: string | null,
+  ): Promise<{ jid: string; channelName: string; displayName: string } | null> => {
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+    const candidateChannels = channels.filter((channel) => channel.findGroupByName);
+    const orderedChannels = preferredChannelName
+      ? [
+          ...candidateChannels.filter((channel) => channel.name === preferredChannelName),
+          ...candidateChannels.filter((channel) => channel.name !== preferredChannelName),
+        ]
+      : candidateChannels;
+    const matches: Array<{ channelName: string; jid: string; displayName: string }> = [];
+    for (const channel of orderedChannels) {
+      const group = await channel.findGroupByName?.(trimmed);
+      if (!group) continue;
+      matches.push({
+        channelName: channel.name,
+        jid: group.jid || group.id,
+        displayName: group.name,
+      });
+    }
+    if (matches.length === 0) return null;
+    if (preferredChannelName) {
+      const preferredMatch = matches.find(
+        (match) => match.channelName === preferredChannelName,
+      );
+      if (preferredMatch) return preferredMatch;
+    }
+    const uniqueJids = [...new Set(matches.map((match) => match.jid))];
+    if (uniqueJids.length === 1) return matches[0];
+    throw new Error(
+      `Recipient "${name}" matches multiple live groups across channels.`,
+    );
+  };
+  const inferSourceChannel = (
+    sourceGroupFolder: string,
+  ): string | null => {
+    for (const [jid, group] of Object.entries(registeredGroups)) {
+      if (group.folder !== sourceGroupFolder) continue;
+      const channel = findChannel(channels, jid);
+      if (channel?.name) return channel.name;
+    }
+    return null;
+  };
+  const resolveIpcRecipientForChannel = async (
+    channelName: string,
+    name: string,
+  ): Promise<string> => {
+    const trimmed = name.trim();
+    const channel = getChannelByName(channelName);
+    if (channel?.resolveRecipient) {
+      return channel.resolveRecipient(trimmed);
+    }
+    if (channelName === 'whatsapp') {
+      if (
+        trimmed.endsWith('@s.whatsapp.net') ||
+        trimmed.endsWith('@lid') ||
+        trimmed.endsWith('@g.us')
+      ) {
+        return trimmed;
+      }
+      const digits = trimmed.replace(/[^\d]/g, '');
+      if (digits.length >= 7) {
+        return `${digits}@s.whatsapp.net`;
+      }
+      const target = await controlService.resolveOutboundTarget('sms', trimmed);
+      const resolvedDigits = target.resolvedTarget.replace(/[^\d]/g, '');
+      if (resolvedDigits.length < 7) {
+        throw new Error(`Could not resolve WhatsApp recipient "${name}"`);
+      }
+      return `${resolvedDigits}@s.whatsapp.net`;
+    }
+    const target = await controlService.resolveOutboundTarget('signal', trimmed);
+    return target.resolvedTarget;
+  };
+  const resolveIpcMessageRecipient = async (
+    sourceGroupFolder: string,
+    name: string,
+  ): Promise<string> => {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('Recipient cannot be empty');
+    const literalChannel = findChannel(channels, trimmed);
+    if (literalChannel) {
+      return trimmed;
+    }
+
+    const exactMatches = Object.entries(registeredGroups).filter(([, group]) =>
+      group.name.trim().toLowerCase() === trimmed.toLowerCase(),
+    );
+    const sourceChannel = inferSourceChannel(sourceGroupFolder);
+    if (sourceChannel) {
+      const sameChannelMatch = exactMatches.find(([jid]) => {
+        const channel = findChannel(channels, jid);
+        return channel?.name === sourceChannel;
+      });
+      if (sameChannelMatch) return sameChannelMatch[0];
+    }
+    if (exactMatches.length === 1) return exactMatches[0][0];
+    if (exactMatches.length > 1) {
+      throw new Error(
+        `Recipient "${name}" matches multiple registered chats across channels.`,
+      );
+    }
+
+    if (sourceChannel) {
+      const liveGroupMatch = await findLiveGroupAcrossChannels(
+        trimmed,
+        sourceChannel,
+      );
+      if (liveGroupMatch) {
+        const existingChat = getAllChats().find(
+          (chat) =>
+            chat.jid === liveGroupMatch.jid &&
+            chat.name.trim().toLowerCase() === liveGroupMatch.displayName.trim().toLowerCase(),
+        );
+        if (!existingChat) {
+          throw new Error(
+            `Recipient "${name}" resolved to an unverified ${liveGroupMatch.channelName} group (${liveGroupMatch.jid}). Ask the user to register or message that group first.`,
+          );
+        }
+        return liveGroupMatch.jid;
+      }
+      return resolveIpcRecipientForChannel(sourceChannel, trimmed);
+    }
+    const crossChannelLiveGroupMatch = await findLiveGroupAcrossChannels(trimmed);
+    if (crossChannelLiveGroupMatch) {
+      const existingChat = getAllChats().find(
+        (chat) =>
+          chat.jid === crossChannelLiveGroupMatch.jid &&
+          chat.name.trim().toLowerCase() === crossChannelLiveGroupMatch.displayName.trim().toLowerCase(),
+      );
+      if (!existingChat) {
+        throw new Error(
+          `Recipient "${name}" resolved to an unverified ${crossChannelLiveGroupMatch.channelName} group (${crossChannelLiveGroupMatch.jid}). Ask the user to register or message that group first.`,
+        );
+      }
+      return crossChannelLiveGroupMatch.jid;
+    }
+    return controlService.resolveOutboundTarget('signal', trimmed).then(
+      (target) => target.resolvedTarget,
+    );
+  };
 
   startIpcWatcher({
     sendMessage: (jid, text) => sendHostMessage(jid, text),
+    channels: () => channels,
     resolveRecipient: async (name: string) => {
       const target = await controlService.resolveOutboundTarget('signal', name);
+      return target.resolvedTarget;
+    },
+    resolveMessageRecipient: (sourceGroup, name) =>
+      resolveIpcMessageRecipient(sourceGroup, name),
+    resolveRecipientForChannel: async (channel, name: string) => {
+      if (channel === 'signal' || channel === 'whatsapp') {
+        return resolveIpcRecipientForChannel(channel, name);
+      }
+      const target = await controlService.resolveOutboundTarget(channel, name.trim());
       return target.resolvedTarget;
     },
     registeredGroups: () => registeredGroups,
@@ -1508,21 +1581,21 @@ async function main(): Promise<void> {
       }
     },
     signalFindGroup: async (name) => {
-      const ch = getSignalChannel();
+      const ch = getChannelByName('signal');
       return ch?.findGroupByName ? ch.findGroupByName(name) : null;
     },
     signalAddMembers: async (groupId, members) => {
-      const ch = getSignalChannel();
+      const ch = getChannelByName('signal');
       if (!ch?.addMembers) throw new Error('Signal addMembers not available');
       await ch.addMembers(groupId, members);
     },
     signalCreateGroup: async (input) => {
-      const ch = getSignalChannel();
+      const ch = getChannelByName('signal');
       if (!ch?.createGroup) throw new Error('Signal createGroup not available');
       return ch.createGroup(input);
     },
     signalLeaveGroup: async (groupId) => {
-      const ch = getSignalChannel();
+      const ch = getChannelByName('signal');
       if (!ch?.leaveGroup) throw new Error('Signal leaveGroup not available');
       await ch.leaveGroup(groupId);
     },
@@ -1532,8 +1605,32 @@ async function main(): Promise<void> {
       logger.info({ jid }, 'Group unregistered');
     },
     signalListGroups: async () => {
-      const ch = getSignalChannel();
+      const ch = getChannelByName('signal');
       if (!ch?.getGroups) throw new Error('Signal getGroups not available');
+      return ch.getGroups();
+    },
+    whatsappFindGroup: async (name) => {
+      const ch = getChannelByName('whatsapp');
+      return ch?.findGroupByName ? ch.findGroupByName(name) : null;
+    },
+    whatsappAddMembers: async (groupId, members) => {
+      const ch = getChannelByName('whatsapp');
+      if (!ch?.addMembers) throw new Error('WhatsApp addMembers not available');
+      await ch.addMembers(groupId, members);
+    },
+    whatsappCreateGroup: async (input) => {
+      const ch = getChannelByName('whatsapp');
+      if (!ch?.createGroup) throw new Error('WhatsApp createGroup not available');
+      return ch.createGroup(input);
+    },
+    whatsappLeaveGroup: async (groupId) => {
+      const ch = getChannelByName('whatsapp');
+      if (!ch?.leaveGroup) throw new Error('WhatsApp leaveGroup not available');
+      await ch.leaveGroup(groupId);
+    },
+    whatsappListGroups: async () => {
+      const ch = getChannelByName('whatsapp');
+      if (!ch?.getGroups) throw new Error('WhatsApp getGroups not available');
       return ch.getGroups();
     },
     calendarListEvents: (params) => controlService.calendarListEvents(params),

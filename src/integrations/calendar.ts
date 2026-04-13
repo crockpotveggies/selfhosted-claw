@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { ADMIN_BIND_HOST, ADMIN_CONFIG_DIR, ADMIN_PORT } from '../config.js';
+import { readEnvFile } from '../env.js';
 
 import { registerIntegration } from './registry.js';
 import {
@@ -33,6 +34,7 @@ interface LegacyOAuthState {
   refreshToken?: string;
   expiryDate?: string;
   scope?: string;
+  tokenType?: string;
   connectedAt?: string;
 }
 
@@ -45,12 +47,69 @@ function readLegacyOAuthState(): LegacyOAuthState {
   }
 }
 
+function writeLegacyOAuthState(state: LegacyOAuthState): void {
+  const filePath = path.join(ADMIN_CONFIG_DIR, 'google-contacts-oauth.json');
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), {
+    mode: 0o600,
+  });
+  fs.renameSync(tmpPath, filePath);
+}
+
 function hasCalendarScope(state: LegacyOAuthState): boolean {
   if (!state.scope) return false;
   return (
     state.scope.includes('calendar.readonly') ||
     state.scope.includes('calendar.events')
   );
+}
+
+async function tryRefreshLegacyOAuthState(
+  state: LegacyOAuthState,
+): Promise<LegacyOAuthState | null> {
+  if (!state.refreshToken) return null;
+
+  const env = readEnvFile(['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']);
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    return null;
+  }
+
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
+      refresh_token: state.refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as {
+    access_token?: string;
+    expires_in?: number;
+    scope?: string;
+    token_type?: string;
+  };
+
+  if (!response.ok || !payload.access_token) {
+    return null;
+  }
+
+  const next: LegacyOAuthState = {
+    ...state,
+    accessToken: payload.access_token,
+    expiryDate: new Date(
+      Date.now() + Math.max(60, payload.expires_in || 3600) * 1000,
+    ).toISOString(),
+    scope: payload.scope || state.scope || '',
+    tokenType: payload.token_type || state.tokenType || 'Bearer',
+    connectedAt: state.connectedAt || new Date().toISOString(),
+  };
+  writeLegacyOAuthState(next);
+  return next;
 }
 
 // ---------------------------------------------------------------------------
@@ -251,15 +310,22 @@ const calendarIntegration: IntegrationDefinition = {
     category: 'productivity',
     getStatus: async (ctx) => {
       // Check legacy OAuth state (shared google-contacts-oauth.json)
-      const legacy = readLegacyOAuthState();
+      let legacy = readLegacyOAuthState();
       if (legacy.accessToken && hasCalendarScope(legacy)) {
         const expiry = legacy.expiryDate ? new Date(legacy.expiryDate) : null;
         const isExpired = expiry && expiry.getTime() < Date.now();
-        if (isExpired && !legacy.refreshToken) {
-          return {
-            state: 'degraded',
-            message: 'OAuth token expired — needs re-authentication',
-          };
+        if (isExpired) {
+          const refreshed = await tryRefreshLegacyOAuthState(legacy).catch(
+            () => null,
+          );
+          if (refreshed?.accessToken) {
+            legacy = refreshed;
+          } else {
+            return {
+              state: 'degraded',
+              message: 'OAuth token expired or refresh failed — re-authenticate',
+            };
+          }
         }
         const calId = ctx.settings.defaultCalendarId || 'primary';
         return {
@@ -292,49 +358,30 @@ const calendarIntegration: IntegrationDefinition = {
     },
     getNotifications: async () => {
       const notifications: IntegrationNotification[] = [];
-      const legacy = readLegacyOAuthState();
-
-      // Check if user recently re-authenticated via integration OAuth
+      let legacy = readLegacyOAuthState();
       const settings = getIntegrationSettings('google-calendar');
-      const recentlyConnected = settings.oauthConnectedAt
-        ? Date.now() - new Date(settings.oauthConnectedAt as string).getTime() <
-          7 * 24 * 60 * 60 * 1000
-        : false;
 
-      if (recentlyConnected) {
-        // User re-authenticated recently — don't show expired legacy token warning
-      } else if (legacy.accessToken && hasCalendarScope(legacy)) {
+      if (legacy.accessToken && hasCalendarScope(legacy)) {
         const expiry = legacy.expiryDate ? new Date(legacy.expiryDate) : null;
         const isExpired = expiry && expiry.getTime() < Date.now();
         if (isExpired) {
-          try {
-            const testUrl =
-              'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1';
-            const resp = await fetch(testUrl, {
-              headers: { Authorization: `Bearer ${legacy.accessToken}` },
-              signal: AbortSignal.timeout(5000),
-            });
-            if (resp.status === 401) {
-              notifications.push({
-                id: 'google-calendar:oauth-expired',
-                integration: 'google-calendar',
-                severity: 'error',
-                title: 'Google OAuth Token Expired',
-                message:
-                  'The Google access token has expired or been revoked. Re-authenticate from the integration setup page.',
-              });
-            }
-          } catch {
+          const refreshed = await tryRefreshLegacyOAuthState(legacy).catch(
+            () => null,
+          );
+          if (refreshed?.accessToken) {
+            legacy = refreshed;
+          } else {
             notifications.push({
-              id: 'google-calendar:oauth-unreachable',
+              id: 'google-calendar:oauth-expired',
               integration: 'google-calendar',
-              severity: 'warning',
-              title: 'Google API Unreachable',
-              message: 'Could not reach Google APIs to verify the OAuth token.',
+              severity: 'error',
+              title: 'Google OAuth Token Expired',
+              message:
+                'The Google access token has expired or been revoked. Re-authenticate from the integration setup page.',
             });
           }
         }
-      } else if (!legacy.accessToken && !recentlyConnected) {
+      } else if (!legacy.accessToken && !settings.oauthConnectedAt) {
         if (!settings.oauthConnectedAt) {
           notifications.push({
             id: 'google-calendar:not-connected',

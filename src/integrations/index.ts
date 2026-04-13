@@ -3,3 +3,4 @@
 
 import './signal.js';
 import './calendar.js';
+import './whatsapp.js';
