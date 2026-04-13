@@ -207,10 +207,14 @@ export async function ensureGoogleContactsAccessToken(): Promise<string> {
   return stored.accessToken || '';
 }
 
-function pickDisplayName(person: GooglePerson | undefined, fallback: string): string {
+function pickDisplayName(
+  person: GooglePerson | undefined,
+  fallback: string,
+): string {
   return (
-    person?.names?.find((entry) => entry.displayName?.trim())?.displayName?.trim() ||
-    fallback
+    person?.names
+      ?.find((entry) => entry.displayName?.trim())
+      ?.displayName?.trim() || fallback
   );
 }
 
@@ -267,7 +271,11 @@ export async function searchGoogleContactsForChannel(
   query: string,
   maxResults: number,
 ): Promise<ContactSearchResult[]> {
-  const contacts = await searchGoogleContactsApi(accessToken, query, maxResults);
+  const contacts = await searchGoogleContactsApi(
+    accessToken,
+    query,
+    maxResults,
+  );
   return contacts
     .map((contact) => {
       const email = contact.emails[0] || '';
@@ -285,7 +293,9 @@ export async function searchGoogleContactsForChannel(
     .filter((contact): contact is ContactSearchResult => Boolean(contact));
 }
 
-export async function resolveGoogleContactsTarget<TChannel extends ContactsChannel>(
+export async function resolveGoogleContactsTarget<
+  TChannel extends ContactsChannel,
+>(
   channel: TChannel,
   query: string,
 ): Promise<{
@@ -298,7 +308,12 @@ export async function resolveGoogleContactsTarget<TChannel extends ContactsChann
 } | null> {
   const token = await ensureGoogleContactsAccessToken();
   if (!token) return null;
-  const results = await searchGoogleContactsForChannel(token, channel, query, 10);
+  const results = await searchGoogleContactsForChannel(
+    token,
+    channel,
+    query,
+    10,
+  );
   if (results.length === 0) return null;
   if (results.length > 1) {
     throw new Error(
@@ -319,7 +334,9 @@ export async function resolveGoogleContactsTarget<TChannel extends ContactsChann
   };
 }
 
-async function startAuth(origin: string): Promise<{ url: string; state: string }> {
+async function startAuth(
+  origin: string,
+): Promise<{ url: string; state: string }> {
   const { clientId, clientSecret } = getClientCredentials();
   if (!clientId || !clientSecret) {
     throw new Error(
@@ -363,7 +380,9 @@ async function completeAuth(input: {
 
   const stored = getStoredOAuthState();
   if (!stored.oauthState || stored.oauthState !== input.state) {
-    throw new Error('Google OAuth state did not match the active login request.');
+    throw new Error(
+      'Google OAuth state did not match the active login request.',
+    );
   }
 
   const redirectUri = `${input.origin.replace(/\/$/, '')}${CALLBACK_PATH}`;
@@ -444,7 +463,9 @@ const searchTool: IntegrationTool = {
     );
     const accessToken = await ensureGoogleContactsAccessToken();
     if (!accessToken) {
-      throw new Error('Google Contacts is not configured or requires re-authentication.');
+      throw new Error(
+        'Google Contacts is not configured or requires re-authentication.',
+      );
     }
     const results = await searchGoogleContactsForChannel(
       accessToken,
@@ -542,7 +563,8 @@ const googleContactsIntegration: IntegrationDefinition = {
           integration: 'google-contacts',
           severity: 'info',
           title: 'Google Contacts Not Connected',
-          message: 'Connect your Google account from the integration setup page.',
+          message:
+            'Connect your Google account from the integration setup page.',
         });
         return notifications;
       }
