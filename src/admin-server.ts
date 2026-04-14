@@ -4,6 +4,7 @@ import path from 'path';
 
 import Database from 'better-sqlite3';
 
+import { refreshIntegrationToolsManifests } from './container-runner.js';
 import {
   ADMIN_BIND_HOST,
   ADMIN_PORT,
@@ -77,6 +78,15 @@ function sendJson(
     'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
   });
   res.end(JSON.stringify(payload));
+}
+
+function refreshAllIntegrationToolManifests(): void {
+  refreshIntegrationToolsManifests(
+    Object.values(getAllRegisteredGroups()).map((group) => ({
+      folder: group.folder,
+      isMain: group.isMain === true,
+    })),
+  );
 }
 
 function isBasicAuthAuthorized(
@@ -1148,9 +1158,15 @@ export function startAdminServer(
           const def = getIntegration(name);
           const prev = getIntegrationSettings(name);
           saveIntegrationSettings(name, body);
-          if (def?.lifecycle?.onSettingsChange) {
-            await def.lifecycle.onSettingsChange(prev, body);
+          try {
+            if (def?.lifecycle?.onSettingsChange) {
+              await def.lifecycle.onSettingsChange(prev, body);
+            }
+          } catch (err) {
+            saveIntegrationSettings(name, prev);
+            throw err;
           }
+          refreshAllIntegrationToolManifests();
           sendJson(res, 200, { ok: true });
         } catch (err) {
           sendJson(res, 400, {
@@ -1170,7 +1186,28 @@ export function startAdminServer(
           enabled?: boolean;
         };
         try {
-          setIntegrationEnabled(name, body.enabled ?? false);
+          const enabled = body.enabled ?? false;
+          const def = getIntegration(name);
+          const wasEnabled = isIntegrationEnabled(name);
+          setIntegrationEnabled(name, enabled);
+          try {
+            if (enabled && !wasEnabled) {
+              const settings = getIntegrationSettings(name);
+              if (def?.lifecycle?.onEnable) {
+                await def.lifecycle.onEnable({
+                  settings,
+                  groupSettings: () => settings,
+                  hasCredential: (key) => Boolean(settings[key] || process.env[key]),
+                });
+              }
+            } else if (!enabled && wasEnabled && def?.lifecycle?.onDisable) {
+              await def.lifecycle.onDisable();
+            }
+          } catch (err) {
+            setIntegrationEnabled(name, wasEnabled);
+            throw err;
+          }
+          refreshAllIntegrationToolManifests();
           sendJson(res, 200, { ok: true });
         } catch (err) {
           sendJson(res, 400, {

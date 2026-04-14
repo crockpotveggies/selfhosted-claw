@@ -63,6 +63,7 @@ interface ToolSpec {
   execute: (args: Record<string, unknown>, ctx: ToolContext) => Promise<string>;
   /** When true, tool is only available when the controller triggered the session. */
   controllerOnly?: boolean;
+  dynamicIntegrationTool?: boolean;
 }
 
 interface ToolContext {
@@ -455,7 +456,7 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
       : `You are ${containerInput.assistantName || 'the assistant'}, running inside NanoClaw. You use an OpenAI-compatible chat completions backend and NanoClaw-native tools.`,
     `Use tools when they materially improve the answer. Prefer concise responses.`,
     hasExternalAudience
-      ? `RESPONSE ROUTING (GROUP CHAT — CRITICAL): Your normal text response goes to the GROUP CHAT where EVERYONE can see it. ONLY put things a friend would say in conversation: direct answers, friendly replies, social messages. EVERYTHING ELSE must go through notify_controller, which goes PRIVATELY to the controller. This includes: calendar checks, scheduling logistics, availability questions, confirmation requests, status updates, clarifying questions about tasks, error reports, "what's the context" questions, approval requests — ALL of these MUST use notify_controller. If in doubt, use notify_controller. To message other people or groups, use the channel-specific send tools (signal.send_message, whatsapp.send_message, etc.). NEVER repeat the message content in your text response after calling a tool.`
+      ? `RESPONSE ROUTING (GROUP CHAT — CRITICAL): Your normal text response goes to the GROUP CHAT where EVERYONE can see it. ONLY put things a friend would say in conversation: direct answers, friendly replies, social messages. EVERYTHING ELSE must go through notify_controller, which goes PRIVATELY to the controller. This includes: calendar checks, scheduling logistics, availability questions, confirmation requests, status updates, clarifying questions about tasks, error reports, "what's the context" questions, approval requests — ALL of these MUST use notify_controller. If in doubt, use notify_controller. To message other people or groups, use the channel-specific send tools (signal.send_message, whatsapp.send_message, etc.). NEVER repeat the message content in your text response after calling a tool. GROUP PRESENCE (CRITICAL): Every person whose name appears as a sender in the conversation messages IS PHYSICALLY PRESENT in this group chat and can already see your responses. If the controller asks you to find something for someone, help someone, or share information with someone, and that person has sent messages in this conversation, just respond in the group — DO NOT use a send tool to relay the information to them separately. They are right here.`
       : `To message external people or groups, use the channel-specific send tools (signal.send_message, whatsapp.send_message, etc.) with "to" set to the recipient's name, phone number, or group name. Use notify_controller for private interim updates to the controller during multi-step tasks. Your normal text response is also delivered to the controller. NEVER repeat the message content in your text response after calling a tool.`,
     `To create groups, use the channel-specific tools: signal.create_group, whatsapp.create_group, etc. Always provide a descriptive title.`,
     `To add people to groups, use signal.add_group_members, whatsapp.add_group_members, etc.`,
@@ -2289,6 +2290,11 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
 // ---------------------------------------------------------------------------
 
 function loadIntegrationTools(): void {
+  for (const [name, spec] of Object.entries(TOOL_REGISTRY)) {
+    if (spec.dynamicIntegrationTool) {
+      delete TOOL_REGISTRY[name];
+    }
+  }
   const manifestPath = path.join(IPC_DIR, 'integration_tools.json');
   if (!fs.existsSync(manifestPath)) return;
   try {
@@ -2306,6 +2312,7 @@ function loadIntegrationTools(): void {
         description: tool.description,
         parameters: tool.parameters,
         controllerOnly: tool.controllerOnly,
+        dynamicIntegrationTool: true,
         execute: async (args, ctx) => {
           const requestId = `intg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
           const result = await writeIpcTaskAndWaitForResponse(
@@ -2441,6 +2448,7 @@ async function runConversationTurn(
   containerInput: ContainerInput,
   systemPrompt: string,
 ): Promise<string | null> {
+  loadIntegrationTools();
   const history = loadHistory();
   const workingHistory: OpenAIMessage[] = [...history, { role: 'user', content: prompt }];
   const ctx: ToolContext = { containerInput };

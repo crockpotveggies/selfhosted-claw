@@ -5,3 +5,4 @@ import './signal.js';
 import './calendar.js';
 import './whatsapp.js';
 import './google-contacts.js';
+import './google-places.js';

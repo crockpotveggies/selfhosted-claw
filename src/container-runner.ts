@@ -799,3 +799,11 @@ export function writeIntegrationToolsManifest(
   const manifestFile = path.join(groupIpcDir, 'integration_tools.json');
   fs.writeFileSync(manifestFile, JSON.stringify(tools, null, 2));
 }
+
+export function refreshIntegrationToolsManifests(
+  groups: Array<{ folder: string; isMain?: boolean }>,
+): void {
+  for (const group of groups) {
+    writeIntegrationToolsManifest(group.folder, group.isMain === true);
+  }
+}
