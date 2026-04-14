@@ -1367,6 +1367,8 @@ async function main(): Promise<void> {
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  // Failed channels are retried with backoff to handle services still starting (e.g., signal-cli).
+  const failedChannels: Array<{ name: string; channel: Channel }> = [];
   for (const channelName of getRegisteredChannelNames()) {
     const factory = getChannelFactory(channelName)!;
     const channel = factory(channelOpts);
@@ -1381,12 +1383,46 @@ async function main(): Promise<void> {
       await channel.connect();
       channels.push(channel);
     } catch (err) {
-      logger.error(
+      logger.warn(
         { channel: channelName, err },
-        'Channel failed to connect at startup',
+        'Channel failed to connect at startup — will retry',
+      );
+      failedChannels.push({ name: channelName, channel });
+    }
+  }
+
+  // Retry failed channels with backoff (services like signal-cli may still be starting)
+  if (failedChannels.length > 0) {
+    const retryDelays = [5000, 10000, 20000]; // 5s, 10s, 20s
+    for (const delay of retryDelays) {
+      if (failedChannels.length === 0) break;
+      logger.info(
+        { channels: failedChannels.map((c) => c.name), delayMs: delay },
+        'Retrying failed channels',
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      for (let i = failedChannels.length - 1; i >= 0; i--) {
+        try {
+          await failedChannels[i].channel.connect();
+          channels.push(failedChannels[i].channel);
+          logger.info(
+            { channel: failedChannels[i].name },
+            'Channel connected on retry',
+          );
+          failedChannels.splice(i, 1);
+        } catch {
+          // Will try again on next delay
+        }
+      }
+    }
+    for (const failed of failedChannels) {
+      logger.error(
+        { channel: failed.name },
+        'Channel failed to connect after all retries',
       );
     }
   }
+
   if (channels.length === 0) {
     logger.fatal('No channels connected');
     process.exit(1);

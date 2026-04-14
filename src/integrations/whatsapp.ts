@@ -40,10 +40,7 @@ const { proto } = createRequire(import.meta.url)('@whiskeysockets/baileys') as {
 // @ts-expect-error no type declarations
 import QRCode from 'qrcode';
 
-import {
-  ASSISTANT_NAME,
-  STORE_DIR,
-} from '../config.js';
+import { ASSISTANT_NAME, STORE_DIR } from '../config.js';
 import {
   getLastGroupSync,
   getMessageContentById,
