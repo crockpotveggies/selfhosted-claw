@@ -41,7 +41,6 @@ const { proto } = createRequire(import.meta.url)('@whiskeysockets/baileys') as {
 import QRCode from 'qrcode';
 
 import {
-  ASSISTANT_HAS_OWN_NUMBER,
   ASSISTANT_NAME,
   STORE_DIR,
 } from '../config.js';
@@ -107,6 +106,17 @@ export function getReadReceiptKey(
     id: key.id,
     participant: key.participant,
   };
+}
+
+export function getOutgoingWhatsAppText(text: string): string {
+  return text;
+}
+
+export function isWhatsAppBotMessage(
+  fromMe: boolean,
+  content: string,
+): boolean {
+  return fromMe || content.startsWith(`${ASSISTANT_NAME}:`);
 }
 
 async function qrToDataUrl(qrData: string): Promise<string> {
@@ -383,9 +393,7 @@ class WhatsAppChannel implements Channel {
           const sender = rawSender ? await this.translateJid(rawSender) : '';
           const senderName = msg.pushName || sender.split('@')[0];
           const fromMe = msg.key.fromMe || false;
-          const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
-            ? fromMe
-            : content.startsWith(`${ASSISTANT_NAME}:`);
+          const isBotMessage = isWhatsAppBotMessage(fromMe, content);
 
           this.opts.onMessage(chatJid, {
             id: msg.key.id || '',
@@ -408,17 +416,15 @@ class WhatsAppChannel implements Channel {
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
-    const prefixed = ASSISTANT_HAS_OWN_NUMBER
-      ? text
-      : `${ASSISTANT_NAME}: ${text}`;
+    const outboundText = getOutgoingWhatsAppText(text);
 
     if (!this.connected) {
       log.warn({ jid }, 'WhatsApp not connected; queueing outbound message');
-      this.outgoingQueue.push({ jid, text: prefixed });
+      this.outgoingQueue.push({ jid, text: outboundText });
       return;
     }
     try {
-      const sent = await this.sock.sendMessage(jid, { text: prefixed });
+      const sent = await this.sock.sendMessage(jid, { text: outboundText });
       if (sent?.key?.id && sent.message) {
         this.sentMessageCache.set(sent.key.id, sent.message);
         if (this.sentMessageCache.size > 256) {

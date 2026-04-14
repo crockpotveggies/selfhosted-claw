@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   dataUrlToBuffer,
+  getOutgoingWhatsAppText,
   getReadReceiptKey,
   isWhatsAppJid,
+  isWhatsAppBotMessage,
 } from './whatsapp.js';
 
 describe('WhatsApp integration JID ownership', () => {
@@ -51,5 +53,14 @@ describe('WhatsApp integration JID ownership', () => {
   it('rejects non-image or malformed data URLs for profile uploads', () => {
     expect(dataUrlToBuffer('https://example.com/avatar.png')).toBeNull();
     expect(dataUrlToBuffer('data:image/png;base64,%%%')).toBeNull();
+  });
+
+  it('sends outbound text without prepending the assistant name', () => {
+    expect(getOutgoingWhatsAppText('hello there')).toBe('hello there');
+  });
+
+  it('treats fromMe messages as bot messages even without a name prefix', () => {
+    expect(isWhatsAppBotMessage(true, 'plain reply')).toBe(true);
+    expect(isWhatsAppBotMessage(false, 'plain reply')).toBe(false);
   });
 });
