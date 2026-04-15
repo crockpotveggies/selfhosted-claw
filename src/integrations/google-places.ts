@@ -163,10 +163,16 @@ function parseCoordinate(value: unknown, label: string): number {
 }
 
 async function parsePlacesError(response: Response): Promise<Error> {
-  const payload = (await response.json().catch(() => ({}))) as PlacesApiErrorPayload;
+  const payload = (await response
+    .json()
+    .catch(() => ({}))) as PlacesApiErrorPayload;
   const message =
-    payload.error?.message || response.statusText || 'Google Places request failed';
-  return new Error(`Google Places request failed (${response.status}): ${message}`);
+    payload.error?.message ||
+    response.statusText ||
+    'Google Places request failed';
+  return new Error(
+    `Google Places request failed (${response.status}): ${message}`,
+  );
 }
 
 async function placesFetch<TResponse>(
@@ -464,7 +470,9 @@ async function validateAndPersistApiKey(
   const validation = await validateApiKey(apiKey);
   saveValidationState(settings, validation);
   if (!validation.valid) {
-    throw new Error(validation.error || 'Google Places API key validation failed');
+    throw new Error(
+      validation.error || 'Google Places API key validation failed',
+    );
   }
 }
 
@@ -494,7 +502,8 @@ const credentialStep: CredentialInputStep = {
       [VALIDATION_ERROR_SETTING]: '',
     });
   },
-  isComplete: async () => Boolean(getApiKey(getIntegrationSettings(INTEGRATION_NAME))),
+  isComplete: async () =>
+    Boolean(getApiKey(getIntegrationSettings(INTEGRATION_NAME))),
 };
 
 const searchTool: IntegrationTool = {
@@ -506,7 +515,8 @@ const searchTool: IntegrationTool = {
     properties: {
       query: {
         type: 'string',
-        description: 'Natural language place query, such as "coffee near Gastown".',
+        description:
+          'Natural language place query, such as "coffee near Gastown".',
       },
       maxResults: {
         type: 'integer',
@@ -580,7 +590,8 @@ const nearbyTool: IntegrationTool = {
       },
       type: {
         type: 'string',
-        description: 'Optional Google place type, such as restaurant or gas_station.',
+        description:
+          'Optional Google place type, such as restaurant or gas_station.',
       },
       maxResults: {
         type: 'integer',
@@ -682,7 +693,8 @@ const googlePlacesIntegration: IntegrationDefinition = {
         defaultMaxResults: {
           type: 'integer',
           title: 'Default max results',
-          description: 'Default number of places returned when a tool call omits maxResults.',
+          description:
+            'Default number of places returned when a tool call omits maxResults.',
           default: DEFAULT_MAX_RESULTS,
           minimum: 1,
           maximum: MAX_RESULTS_LIMIT,
@@ -693,7 +705,10 @@ const googlePlacesIntegration: IntegrationDefinition = {
           description:
             'Essentials returns lower-cost place summaries. Pro adds hours, phone, and website fields.',
           enum: ['essentials', 'pro'],
-          enumLabels: ['Essentials (basic info)', 'Pro (hours, phone, website)'],
+          enumLabels: [
+            'Essentials (basic info)',
+            'Pro (hours, phone, website)',
+          ],
           default: 'pro',
         },
       },
@@ -723,7 +738,9 @@ const googlePlacesIntegration: IntegrationDefinition = {
         };
       }
 
-      const validationError = String(ctx.settings[VALIDATION_ERROR_SETTING] || '');
+      const validationError = String(
+        ctx.settings[VALIDATION_ERROR_SETTING] || '',
+      );
       const validatedAt = String(ctx.settings[VALIDATED_AT_SETTING] || '');
       if (validationError) {
         return {
@@ -749,12 +766,15 @@ const googlePlacesIntegration: IntegrationDefinition = {
           integration: INTEGRATION_NAME,
           severity: 'info',
           title: 'Google Maps API Key Missing',
-          message: 'Configure your Google Maps API key to enable Google Places tools.',
+          message:
+            'Configure your Google Maps API key to enable Google Places tools.',
         });
         return notifications;
       }
 
-      const validationError = String(ctx.settings[VALIDATION_ERROR_SETTING] || '');
+      const validationError = String(
+        ctx.settings[VALIDATION_ERROR_SETTING] || '',
+      );
       if (validationError) {
         notifications.push({
           id: 'google-places:invalid-api-key',

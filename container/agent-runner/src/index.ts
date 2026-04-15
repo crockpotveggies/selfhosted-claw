@@ -21,6 +21,7 @@ interface ContainerInput {
   script?: string;
   controlSignalJid?: string;
   controllerTriggered?: boolean;
+  mainGroupFolder?: string;
   calendarAvailability?: {
     timezone: string;
     windows: { days: number[]; startTime: string; endTime: string }[];
@@ -549,6 +550,16 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
       );
       break;
     }
+  }
+
+  // Controller notes: memory stored by the controller in their private group.
+  // Contains facts about contacts, addresses, preferences, etc. that should
+  // be available across all group chats.
+  const controllerNotesMemory = readCompatibleMemoryFile('/workspace/controller-notes');
+  if (controllerNotesMemory) {
+    sections.push(
+      `Controller notes (facts stored by your owner — use these to answer questions about people, places, preferences):\n${truncateMemory(controllerNotesMemory, MAX_SHARED_MEMORY_CHARS)}`,
+    );
   }
 
   // Load container skills (behavioral instructions, conversation patterns, etc.)

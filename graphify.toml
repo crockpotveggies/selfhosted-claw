@@ -1,0 +1,37 @@
+[graph]
+name = "selfhosted-claw"
+output = ".graphify/graph.json"
+
+[[sources]]
+path = "src"
+include = ["**/*.ts"]
+
+[[sources]]
+path = "admin-ui"
+include = ["**/*.ts", "**/*.tsx"]
+exclude = ["**/dist/**"]
+
+[[sources]]
+path = "scripts"
+include = ["**/*.js", "**/*.mjs"]
+
+[[sources]]
+path = "setup"
+include = ["**/*.ts"]
+
+[[sources]]
+path = "container"
+include = ["**/*.md", "**/*.sh", "**/*.py"]
+
+[[sources]]
+path = "docs"
+include = ["**/*.md"]
+
+[[sources]]
+path = "groups"
+include = ["**/*.md"]
+
+[[sources]]
+path = "."
+include = ["AGENTS.md", "README.md", "CLAUDE.md", "package.json"]
+depth = 1

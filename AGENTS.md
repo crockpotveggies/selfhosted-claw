@@ -39,6 +39,30 @@ Integrations are the primary extension mechanism. Each integration declares capa
 
 React + CoreUI dashboard at `http://localhost:3030` — Dashboard, Contacts, Personality, Policy, Availability, Integrations, Tools, Skills, Tasks, Approvals, Audit, Logs.
 
+## Knowledge graph
+
+A local Graphify knowledge graph is maintained at `.graphify/graph.json`. It indexes the TypeScript server, React admin UI, setup flow, scripts, container docs, and repo guidance so agents can navigate architecture without re-reading the whole tree every session.
+
+**Build or rebuild the graph:**
+```sh
+make graph
+make graph-force
+```
+
+**Query or inspect the graph:**
+```sh
+python tools/agent/query_graphify.py query "integrations registry"
+python tools/agent/query_graphify.py explain "src/index.ts"
+python tools/agent/query_graphify.py path "src/index.ts" "src/integrations/registry.ts"
+python tools/agent/visualize_graphify.py --open
+```
+
+Agents should prefer `tools/agent/query_graphify.py` before broad raw-file scans when the question is architectural or dependency-oriented. The filesystem remains the source of truth; the graph is the fast map.
+
+**Automation hooks:**
+- Claude Code uses `.claude/settings.json` to query the graph automatically before `Glob`/`Grep`.
+- Husky runs `.husky/graphify-pre-commit.sh` during `pre-commit` to refresh the local graph before each commit.
+
 ## Development
 
 ```bash

@@ -28,6 +28,47 @@ cp .env.example .env
 
 </details>
 
+## Knowledge graph
+
+This repo can build a local Graphify knowledge graph for architecture-aware navigation and agent tooling.
+
+Build it from the repo root:
+
+```bash
+make graph
+make graph-force
+```
+
+Query it from the command line:
+
+```bash
+python tools/agent/query_graphify.py query "integrations registry"
+python tools/agent/query_graphify.py explain "src/index.ts"
+python tools/agent/query_graphify.py path "src/index.ts" "src/integrations/registry.ts"
+```
+
+Serve an interactive Cytoscape viewer:
+
+```bash
+python tools/agent/visualize_graphify.py --open
+```
+
+Or with the `make` shortcut:
+
+```bash
+make graph-view
+```
+
+The viewer serves a local webpage, by default at `http://127.0.0.1:8766/`, and starts with a focused subgraph rather than the full graph. Built-in presets in the UI:
+
+- `Overview`
+- `Integrations`
+- `Admin UI`
+- `Runtime Loop`
+- `Memory`
+
+The repo also refreshes the local graph during Git `pre-commit` via Husky with `.husky/graphify-pre-commit.sh`, and Claude Code can consult the graph before `Glob`/`Grep` via the local `.claude/settings.json`.
+
 ## First-Run Setup
 
 Self-Hosted Claw now has a local-first admin UI wizard for secure onboarding, but the environment still needs a few host-level prerequisites before the wizard can finish.

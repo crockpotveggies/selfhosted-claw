@@ -553,6 +553,7 @@ async function runAgent(
   writeIntegrationToolsManifest(group.folder, isMain);
 
   try {
+    const mainGroup = Object.values(registeredGroups).find((g) => g.isMain);
     const output = await runContainerAgent(
       group,
       {
@@ -563,6 +564,7 @@ async function runAgent(
         assistantName: ASSISTANT_NAME,
         controlSignalJid: CONTROL_SIGNAL_JID || undefined,
         controllerTriggered,
+        mainGroupFolder: !isMain && mainGroup ? mainGroup.folder : undefined,
         calendarAvailability:
           controlServiceRef?.getCalendarAvailability() || undefined,
       },

@@ -1197,7 +1197,8 @@ export function startAdminServer(
                 await def.lifecycle.onEnable({
                   settings,
                   groupSettings: () => settings,
-                  hasCredential: (key) => Boolean(settings[key] || process.env[key]),
+                  hasCredential: (key) =>
+                    Boolean(settings[key] || process.env[key]),
                 });
               }
             } else if (!enabled && wasEnabled && def?.lifecycle?.onDisable) {

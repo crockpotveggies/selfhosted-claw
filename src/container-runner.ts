@@ -54,6 +54,8 @@ export interface ContainerInput {
   controlSignalJid?: string;
   /** True when the controller sent the message(s) that triggered this container. */
   controllerTriggered?: boolean;
+  /** Folder name of the main (controller) group — mounted read-only so non-main groups can read controller notes/memory. */
+  mainGroupFolder?: string;
   /** Calendar availability policy injected from admin settings. */
   calendarAvailability?: {
     timezone: string;
@@ -96,6 +98,7 @@ export function resolveContainerOpenAIBaseUrl(baseUrl: string): string {
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
+  mainGroupFolder?: string,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -156,6 +159,19 @@ function buildVolumeMounts(
         containerPath: '/workspace/global',
         readonly: true,
       });
+    }
+
+    // Controller notes: main group's folder mounted read-only so this group
+    // can access facts the controller stored (e.g. contacts, addresses, preferences).
+    if (mainGroupFolder && mainGroupFolder !== group.folder) {
+      const mainDir = path.join(GROUPS_DIR, mainGroupFolder);
+      if (fs.existsSync(mainDir)) {
+        mounts.push({
+          hostPath: mainDir,
+          containerPath: '/workspace/controller-notes',
+          readonly: true,
+        });
+      }
     }
   }
 
@@ -307,7 +323,7 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  const mounts = buildVolumeMounts(group, input.isMain, input.mainGroupFolder);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   // Main group uses the default OneCLI agent; others use their own agent.
