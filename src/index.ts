@@ -597,33 +597,6 @@ async function startMessageLoop(): Promise<void> {
 
   logger.info(`NanoClaw running (default trigger: ${DEFAULT_TRIGGER})`);
 
-  // ── Startup recovery scan ──
-  // Check for unprocessed messages in registered groups that may have
-  // been stored before the service went down. This handles the case where
-  // messages arrived, were stored in the DB by the channel, but the agent
-  // never processed them (service crash, restart, extended downtime).
-  {
-    const jids = Object.keys(registeredGroups);
-    for (const chatJid of jids) {
-      const group = registeredGroups[chatJid];
-      if (!group) continue;
-      const cursor = getOrRecoverCursor(chatJid);
-      const pending = getMessagesSince(
-        chatJid,
-        cursor,
-        ASSISTANT_NAME,
-        MAX_MESSAGES_PER_PROMPT,
-      );
-      if (pending.length > 0) {
-        logger.info(
-          { chatJid, group: group.name, count: pending.length },
-          'Startup recovery: found unprocessed messages',
-        );
-        queue.enqueueMessageCheck(chatJid);
-      }
-    }
-  }
-
   while (true) {
     try {
       const jids = Object.keys(registeredGroups);
@@ -1233,6 +1206,17 @@ async function main(): Promise<void> {
       );
     }
     storeMessage(sanitized.message);
+
+    // Trigger agent processing immediately for registered groups.
+    // The main polling loop uses `timestamp > lastTimestamp` and will silently
+    // miss messages that Signal delivers via WebSocket with their original send
+    // timestamp (e.g. backlog from while nanoclaw was down — those timestamps
+    // are older than lastTimestamp). Triggering here bypasses that filter;
+    // processGroupMessages uses the per-group lastAgentTimestamp cursor which
+    // correctly sees any unprocessed message regardless of timestamp order.
+    if (registeredGroups[chatJid]) {
+      queue.enqueueMessageCheck(chatJid);
+    }
   };
 
   const channelOpts = {
