@@ -408,6 +408,7 @@ export interface IntegrationDefinition {
   lifecycle?: {
     onEnable?: (ctx: IntegrationContext) => Promise<void>;
     onDisable?: () => Promise<void>;
+    onReconnect?: (ctx: IntegrationContext) => Promise<void>;
     onSettingsChange?: (
       prev: Record<string, unknown>,
       next: Record<string, unknown>,

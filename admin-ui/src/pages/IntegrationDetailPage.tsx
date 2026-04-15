@@ -92,6 +92,8 @@ export function IntegrationDetailPage({
     Record<string, unknown>
   >({});
   const [saving, setSaving] = useState(false);
+  const [toggling, setToggling] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const [settingsError, setSettingsError] = useState('');
   const [settingsSaved, setSettingsSaved] = useState(false);
 
@@ -157,6 +159,35 @@ export function IntegrationDetailPage({
     }
   };
 
+  const handleToggle = async (enabled: boolean) => {
+    setToggling(true);
+    try {
+      await apiFetch(`/api/admin/integrations/${name}/toggle`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled }),
+      });
+      await Promise.all([loadDetail(), loadSetupStatus()]);
+    } catch {
+      // Error
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  const handleReconnect = async () => {
+    setReconnecting(true);
+    try {
+      await apiFetch(`/api/admin/integrations/${name}/reconnect`, {
+        method: 'POST',
+      });
+      await Promise.all([loadDetail(), loadSetupStatus()]);
+    } catch {
+      // Error
+    } finally {
+      setReconnecting(false);
+    }
+  };
+
   if (!detail) {
     return <p>Loading...</p>;
   }
@@ -164,34 +195,72 @@ export function IntegrationDetailPage({
   return (
     <div>
       {/* Header */}
-      <div className="d-flex align-items-center gap-2 mb-3">
-        <CButton
-          color="link"
-          className="p-0"
-          onClick={onBack}
-        >
-          <ArrowLeft size={18} />
-        </CButton>
-        <h2 className="mb-0">{detail.name}</h2>
-        {detail.core && (
-          <CBadge color="primary" size="sm">
-            Core
+      <div className="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+        <div className="d-flex flex-wrap align-items-center gap-2">
+          <CButton
+            color="link"
+            className="p-0"
+            onClick={onBack}
+          >
+            <ArrowLeft size={18} />
+          </CButton>
+          <h2 className="mb-0">{detail.name}</h2>
+          {detail.core && (
+            <CBadge color="primary" size="sm">
+              Core
+            </CBadge>
+          )}
+          <CBadge
+            color={
+              detail.status.state === 'online'
+                ? 'success'
+                : detail.status.state === 'degraded'
+                  ? 'warning'
+                  : detail.status.state === 'offline'
+                    ? 'danger'
+                    : 'secondary'
+            }
+            size="sm"
+          >
+            {detail.status.state}
           </CBadge>
+        </div>
+        {!detail.core && (
+          <div className="d-flex flex-wrap gap-2">
+            {detail.enabled && detail.status.state === 'offline' && (
+              <CButton
+                color="warning"
+                size="sm"
+                variant="outline"
+                disabled={reconnecting}
+                onClick={() => void handleReconnect()}
+              >
+                {reconnecting ? 'Reconnecting...' : 'Reconnect'}
+              </CButton>
+            )}
+            <CButton
+              color={detail.enabled ? 'danger' : 'success'}
+              size="sm"
+              variant={detail.enabled ? 'outline' : undefined}
+              disabled={toggling || reconnecting}
+              onClick={() => {
+                const nextEnabled = !detail.enabled;
+                const action = nextEnabled ? 'Enable' : 'Disable';
+                if (window.confirm(`${action} "${detail.name}"?`)) {
+                  void handleToggle(nextEnabled);
+                }
+              }}
+            >
+              {toggling
+                ? detail.enabled
+                  ? 'Disabling...'
+                  : 'Enabling...'
+                : detail.enabled
+                  ? 'Disable Integration'
+                  : 'Enable Integration'}
+            </CButton>
+          </div>
         )}
-        <CBadge
-          color={
-            detail.status.state === 'online'
-              ? 'success'
-              : detail.status.state === 'degraded'
-                ? 'warning'
-                : detail.status.state === 'offline'
-                  ? 'danger'
-                  : 'secondary'
-          }
-          size="sm"
-        >
-          {detail.status.state}
-        </CBadge>
       </div>
       <p className="text-body-secondary mb-4">
         {detail.description} (v{detail.version})

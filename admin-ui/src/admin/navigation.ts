@@ -15,6 +15,8 @@ import {
 
 import type { AdminTab } from './types';
 
+type AdminTabIcon = string | string[];
+
 export const ADMIN_PATHS = {
   dashboard: '/dashboard',
   contacts: '/contacts',
@@ -36,7 +38,7 @@ export const ADMIN_TABS: Array<{
   path: string;
   label: string;
   description: string;
-  icon: unknown;
+  icon: AdminTabIcon;
 }> = [
   {
     id: 'dashboard',

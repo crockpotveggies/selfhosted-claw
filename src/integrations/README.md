@@ -69,6 +69,17 @@ import './my-service.js';
 
 See `src/integrations/google-contacts.ts` for a concrete example.
 
+### Example: SMS Socket
+
+`sms-socket` is a good reference integration when you need:
+
+- A channel implemented directly inside the integration instead of the legacy channel registry
+- A `credential_input` setup step with a `helpUrl` that sends users to an external download page
+- A WebSocket-backed messaging transport with reconnect and history rehydration
+- Host-side messaging tools that operate on a live channel instance
+
+See `src/integrations/sms-socket.ts` for a concrete example.
+
 ### Wrapping an existing channel
 
 If you have a channel registered via the legacy `registerChannel()` pattern:
@@ -134,7 +145,7 @@ Declare ordered setup steps. The admin UI renders the right component for each:
 | Step Type | Use Case | UI Renders |
 |---|---|---|
 | `oauth2` | OAuth2 flows (Google, Slack, GitHub) | Connect button + callback URL display |
-| `credential_input` | API keys, tokens | Form fields + validate |
+| `credential_input` | API keys, tokens, app-generated secrets | Form fields + validate |
 | `form` | Arbitrary config | SchemaForm (same as settings) |
 | `qr_code` | Device pairing (Signal, WhatsApp) | QR image + polling |
 | `verification_code` | Phone/email verification | Send code + verify |
@@ -142,6 +153,8 @@ Declare ordered setup steps. The admin UI renders the right component for each:
 | `custom` | Complex flows | Custom routes + optional component |
 
 **OAuth callback URLs**: The `callbackPath` on OAuth steps is displayed prominently in the setup wizard so users can register it with their OAuth provider.
+
+**Setup help links**: `credential_input` and `webhook_url` steps can provide a `helpUrl`, which the admin UI renders as a "Where to find these credentials" link. This is useful for integrations like `sms-socket`, where the user must first install a companion app.
 
 For a concrete OAuth example, see `google-contacts`, which stores tokens in both the integration settings store and the legacy `google-contacts-oauth.json` file during migration.
 

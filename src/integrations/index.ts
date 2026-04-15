@@ -6,3 +6,4 @@ import './calendar.js';
 import './whatsapp.js';
 import './google-contacts.js';
 import './google-places.js';
+import './sms-socket.js';

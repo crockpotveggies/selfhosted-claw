@@ -232,7 +232,7 @@ function AdminDashboardLayout() {
               <CNavItem>
                 <CPopover
                   trigger="click"
-                  placement="bottom-end"
+                  placement="bottom"
                   className="healthPopover"
                   content={
                     <div style={{ minWidth: 280, maxWidth: 360 }}>
@@ -296,7 +296,7 @@ function AdminDashboardLayout() {
               <CNavItem>
                 <CPopover
                   trigger="click"
-                  placement="bottom-end"
+                  placement="bottom"
                   className="healthPopover"
                   content={
                     <div className="healthPopoverContent">

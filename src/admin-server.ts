@@ -1218,6 +1218,54 @@ export function startAdminServer(
         return;
       }
 
+      // POST /api/admin/integrations/:name/reconnect
+      const integrationReconnectMatch =
+        req.method === 'POST' &&
+        url.pathname.match(/^\/api\/admin\/integrations\/([^/]+)\/reconnect$/);
+      if (integrationReconnectMatch) {
+        const name = integrationReconnectMatch[1];
+        try {
+          const def = getIntegration(name);
+          if (!def) {
+            sendJson(res, 404, { error: 'integration_not_found' });
+            return;
+          }
+          if (!isIntegrationEnabled(name)) {
+            sendJson(res, 400, { error: 'integration_disabled' });
+            return;
+          }
+
+          const settings = getIntegrationSettings(name);
+          const ctx = {
+            settings,
+            groupSettings: () => settings,
+            hasCredential: (key: string) =>
+              Boolean(
+                process.env[key] ||
+                  options.service.getSetupEnvironment()[key] ||
+                  settings[key],
+              ),
+          };
+
+          if (def.lifecycle?.onReconnect) {
+            await def.lifecycle.onReconnect(ctx);
+          } else if (def.service) {
+            resetCircuitBreaker(name);
+            startService(name);
+          } else {
+            sendJson(res, 400, { error: 'reconnect_not_supported' });
+            return;
+          }
+
+          sendJson(res, 200, { ok: true });
+        } catch (err) {
+          sendJson(res, 500, {
+            error: err instanceof Error ? err.message : 'reconnect_failed',
+          });
+        }
+        return;
+      }
+
       // POST /api/admin/integrations/:name/service/start
       const svcStartMatch =
         req.method === 'POST' &&

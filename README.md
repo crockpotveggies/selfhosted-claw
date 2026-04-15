@@ -212,6 +212,22 @@ The Google Contacts integration provides:
 
 The OAuth callback URL is shown directly in the integration setup wizard so you can register it in Google Cloud without guessing.
 
+### Optional: connect the SMS Socket gateway
+
+If you want SMS messaging through an Android phone on your local network:
+
+1. Install the Android app from [crockpotveggies/sms-socket-app](https://github.com/crockpotveggies/sms-socket-app)
+2. Start the gateway in the app and copy its generated API key
+3. In the admin UI, open the `sms-socket` integration and complete setup with that API key
+4. If your phone is not reachable at the default `ws://127.0.0.1:8787/`, update the integration's `gatewayUrl` setting to the phone's LAN address, for example `ws://192.168.1.25:8787/`
+
+The `sms-socket` integration:
+
+- uses an API-key-only setup flow
+- reconnects to the Android gateway over WebSocket
+- rehydrates recent SMS history after reconnects
+- exposes host-side SMS send/reply tools to the agent
+
 ### 7. Restart after wizard changes
 
 If the wizard updated `.env`, restart the main service so the Node process picks up the new values:
@@ -275,6 +291,7 @@ Point `INBOUND_GUARD_SCRIPT` at your own script if you want to customize the inj
 ## What It Supports
 
 - **Signal-first messaging** - Signal is the built-in default channel, with support for other channels still available through the channel registry model.
+- **SMS over local WebSocket** - The `sms-socket` integration can send and receive SMS through an Android gateway app on your LAN.
 - **Unified control plane** - The admin UI and the verified Signal control chat use the same host-side control actions and audit log.
 - **Isolated group context** - Each group has its own `AGENT.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted to it.
 - **Main channel** - Your private channel (self-chat) for admin control; every group is completely isolated
@@ -377,6 +394,10 @@ Docker provides cross-platform support (macOS, Linux and even Windows via WSL2) 
 **Can I run this on Linux or Windows?**
 
 Yes. Docker is the default runtime and works on macOS, Linux, and Windows (via WSL2). Just run `/setup`.
+
+**Can I use SMS without a cloud provider?**
+
+Yes. Install the Android [sms-socket-app](https://github.com/crockpotveggies/sms-socket-app), keep the phone on the same LAN, and configure the `sms-socket` integration with its API key and gateway URL.
 
 **Is this secure?**
 

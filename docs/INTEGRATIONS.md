@@ -77,6 +77,18 @@ npx pm2 restart nanoclaw
 
 The integration now appears in the admin UI Integrations page.
 
+### Real example: `sms-socket`
+
+The `sms-socket` integration is a useful real-world example of a lightweight messaging integration:
+
+- setup is a single `credential_input` step for an API key
+- the setup step includes a `helpUrl` that points users to the Android app download repo
+- the channel transport is implemented directly in the integration file
+- the live WebSocket connection handles reconnects and history rehydration
+- host tools reuse the connected channel instance for `send_message` and `reply`
+
+See `src/integrations/sms-socket.ts`.
+
 ## Capabilities
 
 ### Settings (JSON Schema)
@@ -184,7 +196,7 @@ setup: {
 | Type | Use case | Admin UI renders |
 |------|----------|-----------------|
 | `oauth2` | OAuth2 flows | Connect button + callback URL display + popup window |
-| `credential_input` | API keys, tokens | Form fields with validation |
+| `credential_input` | API keys, tokens, app-generated secrets | Form fields with validation |
 | `form` | Arbitrary config | SchemaForm (same as settings) |
 | `qr_code` | Device pairing | QR image + polling spinner |
 | `verification_code` | Phone/email verification | Send code + verify input |
@@ -192,6 +204,8 @@ setup: {
 | `custom` | Complex flows | Custom routes |
 
 The admin server auto-registers API routes for each step type under `/api/admin/integrations/:name/setup/`.
+
+`credential_input` steps can also provide a `helpUrl`, which the admin UI renders as an external link. This is useful when the credential comes from a companion app or provider dashboard rather than the repo itself.
 
 ### Docker Service
 
@@ -304,6 +318,8 @@ src/integrations/
   signal.ts             — Signal (core)
   calendar.ts           — Google Calendar (installable)
 ```
+
+Current built-in examples also include `src/integrations/sms-socket.ts` for an Android SMS gateway over WebSocket.
 
 ## Logging
 
