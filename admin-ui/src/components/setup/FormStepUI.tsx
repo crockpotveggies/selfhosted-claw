@@ -7,12 +7,14 @@ interface FormStepUIProps {
   integrationName: string;
   stepIndex: number;
   completed: boolean;
+  onSetupComplete?: () => void;
 }
 
 export function FormStepUI({
   integrationName,
   stepIndex,
   completed,
+  onSetupComplete,
 }: FormStepUIProps) {
   const [schema, setSchema] = useState<Record<string, unknown> | null>(null);
   const [values, setValues] = useState<Record<string, unknown>>({});
@@ -39,6 +41,12 @@ export function FormStepUI({
         `/api/admin/integrations/${integrationName}/setup/form/${stepIndex}`,
         { method: 'POST', body: JSON.stringify(values) },
       );
+      const status = await apiFetch<{ completed: boolean }>(
+        `/api/admin/integrations/${integrationName}/setup/status`,
+      );
+      if (status.completed) {
+        onSetupComplete?.();
+      }
     } catch (err) {
       setErrors({
         _form: err instanceof Error ? err.message : 'Save failed',

@@ -242,6 +242,18 @@ describe('control plane parity', () => {
     expect(identitiesMatch(uuid, `signal:user:${uuid}`)).toBe(true);
   });
 
+  it('treats Slack identities consistently across slack:user and slack-user forms', () => {
+    expect(canonicalizeIdentity('slack:user:U123ABC456')).toBe(
+      'slack-user:U123ABC456',
+    );
+    expect(canonicalizeIdentity('slack-user:u123abc456')).toBe(
+      'slack-user:U123ABC456',
+    );
+    expect(
+      identitiesMatch('slack:user:U123ABC456', 'slack-user:u123abc456'),
+    ).toBe(true);
+  });
+
   it('accepts control commands when the configured control chat uses a Signal UUID jid', async () => {
     const harness = createHarness();
     await harness.service.executeAction(

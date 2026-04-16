@@ -5,11 +5,13 @@ import { apiFetch } from '../../admin/api';
 interface QrCodeStepUIProps {
   integrationName: string;
   completed: boolean;
+  onSetupComplete?: () => void;
 }
 
 export function QrCodeStepUI({
   integrationName,
   completed,
+  onSetupComplete,
 }: QrCodeStepUIProps) {
   const [inputFields, setInputFields] = useState<
     Array<{ key: string; label: string; placeholder?: string; required?: boolean }>
@@ -64,6 +66,7 @@ export function QrCodeStepUI({
           if (pollRef.current) clearInterval(pollRef.current);
           setPolling(false);
           setPollMessage(data.message || 'Paired!');
+          onSetupComplete?.();
         }
       } catch {
         // Continue polling

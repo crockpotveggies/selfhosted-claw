@@ -7,3 +7,4 @@ import './whatsapp.js';
 import './google-contacts.js';
 import './google-places.js';
 import './sms-socket.js';
+import './slack.js';

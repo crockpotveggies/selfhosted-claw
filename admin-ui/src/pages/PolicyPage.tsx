@@ -49,7 +49,7 @@ export function PolicyPage() {
           </CCardHeader>
           <CCardBody>
             <p className="small text-body-secondary mb-3">
-              Trusted operator identities that can issue control commands via Signal.
+              Trusted operator identities that can issue control commands via approved control surfaces like Signal, and can also be populated by integrations that hook into this verified list.
             </p>
             <CRow className="g-2 mb-3">
               <CCol sm={5}>
@@ -57,7 +57,7 @@ export function PolicyPage() {
                   size="sm"
                   value={dashboard.verifiedIdentityInput}
                   onChange={(e) => dashboard.setVerifiedIdentityInput(e.target.value)}
-                  placeholder="phone:+15555550123"
+                  placeholder="phone:+15555550123 or slack:user:U123ABC456"
                 />
               </CCol>
               <CCol sm={4}>

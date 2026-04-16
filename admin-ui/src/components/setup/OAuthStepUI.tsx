@@ -6,6 +6,7 @@ import { apiFetch } from '../../admin/api';
 interface OAuthStepUIProps {
   integrationName: string;
   completed: boolean;
+  onSetupComplete?: () => void;
 }
 
 function CopyField({ label, value }: { label: string; value: string }) {
@@ -30,7 +31,11 @@ function CopyField({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function OAuthStepUI({ integrationName, completed }: OAuthStepUIProps) {
+export function OAuthStepUI({
+  integrationName,
+  completed,
+  onSetupComplete,
+}: OAuthStepUIProps) {
   const [loading, setLoading] = useState(false);
   const [callbackUrl, setCallbackUrl] = useState('');
   const [originUrl, setOriginUrl] = useState('');
@@ -122,6 +127,15 @@ export function OAuthStepUI({ integrationName, completed }: OAuthStepUIProps) {
           setLoading(false);
           setJustConnected(true);
           setAuthUrl('');
+          void apiFetch<{ completed: boolean }>(
+            `/api/admin/integrations/${integrationName}/setup/status`,
+          )
+            .then((status) => {
+              if (status.completed) {
+                onSetupComplete?.();
+              }
+            })
+            .catch(() => undefined);
         }
       }, 500);
     })();

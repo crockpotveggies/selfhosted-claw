@@ -190,12 +190,42 @@ describe('SmsSocketChannel', () => {
     await channel.sendMessage('sms:+15557654321', 'hello from claw');
 
     const sentMessages = MockWebSocket.instances[0]?.sentMessages || [];
-    const sendRequest = sentMessages.find((message) => message.type === 'sendSms');
+    const sendRequest = sentMessages.find(
+      (message) => message.type === 'sendSms',
+    );
     expect(sendRequest).toMatchObject({
       type: 'sendSms',
       payload: {
         destination: '+15557654321',
         body: 'hello from claw',
+      },
+    });
+
+    await channel.disconnect();
+  });
+
+  it('reconnects on demand before sending when the socket has dropped', async () => {
+    const channel = new SmsSocketChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
+
+    await channel.connect();
+    MockWebSocket.instances[0]?.close();
+
+    await channel.sendMessage('sms:+15557654321', 'retry after reconnect');
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    const sentMessages = MockWebSocket.instances[1]?.sentMessages || [];
+    expect(
+      sentMessages.map((message) => message.type),
+    ).toContain('sendSms');
+    expect(
+      sentMessages.find((message) => message.type === 'sendSms'),
+    ).toMatchObject({
+      payload: {
+        destination: '+15557654321',
+        body: 'retry after reconnect',
       },
     });
 

@@ -92,3 +92,14 @@ _March 21, 2026_
 4. Use `:emoji:` shortcodes
 5. Quote blocks with `>`
 6. Skip headings — use bold text instead
+
+## Sending Slack messages
+
+Use `slack.send_message` with a channel name or JID in `to`:
+
+- Channel name: `#tests`, `#general`, `tests` — **channel names work directly, no JID lookup needed**
+- JID: `slack:C12345678` — use if you already have it
+
+Do NOT ask the user for a Slack JID. Pass the channel name (e.g. `#tests`) directly to `slack.send_message`. The tool resolves names to IDs automatically.
+
+If you want to see all available channels, call `slack.list_channels` first, then send with the name or JID from the results.

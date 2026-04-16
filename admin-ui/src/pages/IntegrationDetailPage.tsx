@@ -188,6 +188,10 @@ export function IntegrationDetailPage({
     }
   };
 
+  const handleSetupComplete = () => {
+    window.location.reload();
+  };
+
   if (!detail) {
     return <p>Loading...</p>;
   }
@@ -346,6 +350,7 @@ export function IntegrationDetailPage({
                         key={i}
                         integrationName={name}
                         completed={isCompleted}
+                        onSetupComplete={handleSetupComplete}
                       />
                     );
                   case 'credential_input':
@@ -354,6 +359,7 @@ export function IntegrationDetailPage({
                         key={i}
                         integrationName={name}
                         completed={isCompleted}
+                        onSetupComplete={handleSetupComplete}
                       />
                     );
                   case 'form':
@@ -363,6 +369,7 @@ export function IntegrationDetailPage({
                         integrationName={name}
                         stepIndex={i}
                         completed={isCompleted}
+                        onSetupComplete={handleSetupComplete}
                       />
                     );
                   case 'qr_code':
@@ -371,6 +378,7 @@ export function IntegrationDetailPage({
                         key={i}
                         integrationName={name}
                         completed={isCompleted}
+                        onSetupComplete={handleSetupComplete}
                       />
                     );
                   case 'verification_code':
@@ -379,6 +387,7 @@ export function IntegrationDetailPage({
                         key={i}
                         integrationName={name}
                         completed={isCompleted}
+                        onSetupComplete={handleSetupComplete}
                       />
                     );
                   case 'webhook_url':
@@ -387,6 +396,7 @@ export function IntegrationDetailPage({
                         key={i}
                         integrationName={name}
                         completed={isCompleted}
+                        onSetupComplete={handleSetupComplete}
                       />
                     );
                   default:

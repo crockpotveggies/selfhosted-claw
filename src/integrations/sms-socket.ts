@@ -132,6 +132,8 @@ export class SmsSocketChannel implements Channel {
   private requestCounter = 0;
   private gatewayState: GatewayStateSnapshot | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectPromise: Promise<void> | null = null;
+  private connectionGeneration = 0;
   private settings: Record<string, unknown>;
   private lastSeenTimestamp: number;
 
@@ -146,12 +148,13 @@ export class SmsSocketChannel implements Channel {
   async connect(): Promise<void> {
     this.stopped = false;
     this.refreshSettings(getIntegrationSettings(INTEGRATION_NAME));
-    await this.openSocket();
+    await this.ensureConnected();
   }
 
   async disconnect(): Promise<void> {
     this.stopped = true;
     this.connected = false;
+    this.connectionGeneration += 1;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -172,7 +175,9 @@ export class SmsSocketChannel implements Channel {
   async sendMessage(jid: string, text: string): Promise<void> {
     const body = text.trim();
     if (!body) return;
-    const destination = jid.startsWith('sms:') ? jid.slice(4) : normalizePhone(jid);
+    const destination = jid.startsWith('sms:')
+      ? jid.slice(4)
+      : normalizePhone(jid);
     if (!destination || destination.replace(/[^\d]/g, '').length < 7) {
       throw new Error(`Unsupported SMS destination: ${jid}`);
     }
@@ -185,7 +190,20 @@ export class SmsSocketChannel implements Channel {
     if (subscriptionId !== undefined) {
       payload.subscriptionId = subscriptionId;
     }
-    await this.sendRequest('sendSms', payload);
+    await this.ensureConnected();
+    try {
+      await this.sendRequest('sendSms', payload);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes('SMS Socket is not connected')
+      ) {
+        await this.ensureConnected();
+        await this.sendRequest('sendSms', payload);
+        return;
+      }
+      throw error;
+    }
   }
 
   async resolveRecipient(name: string): Promise<string> {
@@ -204,7 +222,37 @@ export class SmsSocketChannel implements Channel {
     );
   }
 
-  private async openSocket(): Promise<void> {
+  private async ensureConnected(): Promise<void> {
+    if (
+      this.connected &&
+      this.socket &&
+      this.socket.readyState === WebSocket.OPEN
+    ) {
+      return;
+    }
+
+    if (this.connectPromise) {
+      await this.connectPromise;
+      return;
+    }
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    this.stopped = false;
+    const generation = this.connectionGeneration;
+    const promise = this.openSocket(generation).finally(() => {
+      if (this.connectPromise === promise) {
+        this.connectPromise = null;
+      }
+    });
+    this.connectPromise = promise;
+    await promise;
+  }
+
+  private async openSocket(generation: number): Promise<void> {
     const apiKey = getApiKey(this.settings);
     if (!apiKey) {
       throw new Error('SMS Socket API key is not configured');
@@ -218,9 +266,19 @@ export class SmsSocketChannel implements Channel {
       this.socket = socket;
 
       socket.onopen = async () => {
+        if (this.stopped || generation !== this.connectionGeneration) {
+          settled = true;
+          socket.close();
+          reject(new Error('SMS Socket connection was cancelled'));
+          return;
+        }
         try {
           await this.sendRequest('authenticate', undefined, socket);
-          const state = await this.sendRequest('getGatewayState', undefined, socket);
+          const state = await this.sendRequest(
+            'getGatewayState',
+            undefined,
+            socket,
+          );
           this.gatewayState = {
             running: state.running === true,
             enabled: state.enabled === true,
@@ -245,7 +303,10 @@ export class SmsSocketChannel implements Channel {
         try {
           this.handleSocketMessage(event.data);
         } catch (error) {
-          log.warn({ err: String(error) }, 'SMS Socket payload handling failed');
+          log.warn(
+            { err: String(error) },
+            'SMS Socket payload handling failed',
+          );
         }
       };
 
@@ -253,9 +314,7 @@ export class SmsSocketChannel implements Channel {
         if (settled) return;
         settled = true;
         reject(
-          new Error(
-            `SMS Socket websocket failed for ${wsUrl.toString()}`,
-          ),
+          new Error(`SMS Socket websocket failed for ${wsUrl.toString()}`),
         );
       };
 
@@ -272,7 +331,7 @@ export class SmsSocketChannel implements Channel {
             ),
           );
         }
-        if (!this.stopped) {
+        if (!this.stopped && generation === this.connectionGeneration) {
           this.scheduleReconnect();
         }
       };
@@ -283,7 +342,7 @@ export class SmsSocketChannel implements Channel {
     if (this.reconnectTimer || this.stopped) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.openSocket().catch((error) => {
+      void this.ensureConnected().catch((error) => {
         log.warn({ err: String(error) }, 'SMS Socket reconnect failed');
         this.scheduleReconnect();
       });
@@ -356,7 +415,9 @@ export class SmsSocketChannel implements Channel {
       clearTimeout(pending.timeout);
       this.pendingRequests.delete(requestId);
       if (envelope.ok === false) {
-        const detail = String(envelope.payload?.error || 'SMS Socket request failed');
+        const detail = String(
+          envelope.payload?.error || 'SMS Socket request failed',
+        );
         pending.reject(new Error(detail));
       } else {
         pending.resolve(envelope.payload || {});
@@ -402,7 +463,12 @@ export class SmsSocketChannel implements Channel {
     }
 
     if (type === 'sms.received' || type === 'sms.outbound.sent') {
-      const normalized = this.normalizeEventMessage(type, payload, timestamp, envelope);
+      const normalized = this.normalizeEventMessage(
+        type,
+        payload,
+        timestamp,
+        envelope,
+      );
       if (normalized) {
         this.opts.onChatMetadata(
           normalized.chat_jid,
@@ -451,7 +517,8 @@ export class SmsSocketChannel implements Channel {
   }
 
   private persistLastSeen(timestamp: number): void {
-    if (!Number.isFinite(timestamp) || timestamp <= this.lastSeenTimestamp) return;
+    if (!Number.isFinite(timestamp) || timestamp <= this.lastSeenTimestamp)
+      return;
     this.lastSeenTimestamp = timestamp;
     saveIntegrationSettings(INTEGRATION_NAME, {
       ...getIntegrationSettings(INTEGRATION_NAME),
@@ -580,7 +647,8 @@ const smsSocketIntegration: IntegrationDefinition = {
         subscriptionId != null &&
         !Number.isFinite(Number(subscriptionId))
       ) {
-        errors.defaultSubscriptionId = 'Default SIM subscription must be a number';
+        errors.defaultSubscriptionId =
+          'Default SIM subscription must be a number';
       }
       return Object.keys(errors).length > 0 ? errors : null;
     },
@@ -677,7 +745,9 @@ const smsSocketIntegration: IntegrationDefinition = {
           (candidate) => candidate.name === INTEGRATION_NAME,
         ) as SmsSocketChannel | undefined;
         if (!channel) throw new Error('SMS Socket channel is not connected');
-        const jid = to.startsWith('sms:') ? to : await channel.resolveRecipient(to);
+        const jid = to.startsWith('sms:')
+          ? to
+          : await channel.resolveRecipient(to);
         await channel.sendMessage(jid, text);
         return JSON.stringify({ status: 'sent', to: jid });
       },

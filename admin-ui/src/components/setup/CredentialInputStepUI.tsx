@@ -14,11 +14,13 @@ interface FieldDef {
 interface CredentialInputStepUIProps {
   integrationName: string;
   completed: boolean;
+  onSetupComplete?: () => void;
 }
 
 export function CredentialInputStepUI({
   integrationName,
   completed,
+  onSetupComplete,
 }: CredentialInputStepUIProps) {
   const [fields, setFields] = useState<FieldDef[]>([]);
   const [values, setValues] = useState<Record<string, string>>({});
@@ -49,6 +51,14 @@ export function CredentialInputStepUI({
         `/api/admin/integrations/${integrationName}/setup/credentials`,
         { method: 'POST', body: JSON.stringify(values) },
       );
+      const status = await apiFetch<{ completed: boolean }>(
+        `/api/admin/integrations/${integrationName}/setup/status`,
+      );
+      if (status.completed) {
+        onSetupComplete?.();
+        return;
+      }
+      onSetupComplete?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed');
     } finally {

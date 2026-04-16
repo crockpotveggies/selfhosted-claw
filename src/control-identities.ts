@@ -18,6 +18,10 @@ function normalizeSignalUser(value: string): string {
   return normalized;
 }
 
+function normalizeSlackUser(value: string): string {
+  return value.trim().replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+}
+
 function isPhoneLike(value: string): boolean {
   return /^\+?[\d\s().-]{6,}$/.test(value.trim());
 }
@@ -43,6 +47,12 @@ export function canonicalizeIdentity(value: string): string {
   }
   if (trimmed.startsWith('signal:group:')) {
     return `group:${trimmed.slice('signal:group:'.length).toLowerCase()}`;
+  }
+  if (trimmed.startsWith('slack-user:')) {
+    return `slack-user:${normalizeSlackUser(trimmed.slice('slack-user:'.length))}`;
+  }
+  if (trimmed.startsWith('slack:user:')) {
+    return `slack-user:${normalizeSlackUser(trimmed.slice('slack:user:'.length))}`;
   }
   if (trimmed.includes('@') && !trimmed.startsWith('signal:')) {
     return `email:${trimmed.toLowerCase()}`;
@@ -74,6 +84,9 @@ export function displayIdentity(identity: string): string {
   if (identity.startsWith('group:')) return identity.slice('group:'.length);
   if (identity.startsWith('signal-user:')) {
     return identity.slice('signal-user:'.length);
+  }
+  if (identity.startsWith('slack-user:')) {
+    return `slack:user:${identity.slice('slack-user:'.length)}`;
   }
   return identity;
 }

@@ -74,6 +74,7 @@ import { consumeIpcSideEffect, startIpcWatcher } from './ipc.js';
 import { sanitizeInboundMessage } from './inbound-guard.js';
 import { parseAgentOutput } from './outbound-directives.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
+import { initializeChannelRuntime } from './channel-runtime.js';
 import {
   restoreRemoteControl,
   startRemoteControl,
@@ -458,10 +459,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         }
 
         if (text) {
+          const latestThreadId =
+            missedMessages[missedMessages.length - 1]?.thread_id || undefined;
           // Brief typing indicator so the reply feels natural
           await channel.setTyping?.(chatJid, true);
           await new Promise((r) => setTimeout(r, 1000));
-          await channel.sendMessage(chatJid, text);
+          await channel.sendMessage(chatJid, text, {
+            threadId: latestThreadId,
+          });
           outputSentToUser = true;
         }
         // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -849,7 +854,7 @@ async function main(): Promise<void> {
   const sendHostMessage = async (
     jid: string,
     rawText: string,
-    options?: { bypassPause?: boolean },
+    options?: { bypassPause?: boolean; threadId?: string },
   ): Promise<void> => {
     const channel = findChannel(channels, jid);
     if (!channel) {
@@ -867,7 +872,9 @@ async function main(): Promise<void> {
       return;
     }
     const text = formatOutbound(rawText);
-    if (text) await channel.sendMessage(jid, text);
+    if (text) {
+      await channel.sendMessage(jid, text, { threadId: options?.threadId });
+    }
   };
   executeAgentDirective = async (
     directive: ReturnType<typeof parseAgentOutput>['directives'][number],
@@ -1191,21 +1198,34 @@ async function main(): Promise<void> {
       }
     }
 
-    const sanitized = await sanitizeInboundMessage(msg);
-    if (sanitized.blocked) {
-      logger.warn(
-        { chatJid, sender: msg.sender, reason: sanitized.reason },
-        'Inbound message blocked by guard script',
-      );
-      return;
+    // Controller messages are trusted — skip the inbound guard entirely.
+    // The guard is designed to protect against external prompt-injection attacks;
+    // applying it to the controller's own commands causes false positives.
+    const controllerSender = CONTROL_SIGNAL_JID
+      ? CONTROL_SIGNAL_JID.replace(/^signal:user:/, '').trim()
+      : '';
+    const isControllerMessage =
+      msg.is_from_me || (!!controllerSender && msg.sender === controllerSender);
+
+    if (!isControllerMessage) {
+      const sanitized = await sanitizeInboundMessage(msg);
+      if (sanitized.blocked) {
+        logger.warn(
+          { chatJid, sender: msg.sender, reason: sanitized.reason },
+          'Inbound message blocked by guard script',
+        );
+        return;
+      }
+      if (sanitized.reason) {
+        logger.info(
+          { chatJid, sender: msg.sender, reason: sanitized.reason },
+          'Inbound message sanitized by guard script',
+        );
+      }
+      storeMessage(sanitized.message);
+    } else {
+      storeMessage(msg);
     }
-    if (sanitized.reason) {
-      logger.info(
-        { chatJid, sender: msg.sender, reason: sanitized.reason },
-        'Inbound message sanitized by guard script',
-      );
-    }
-    storeMessage(sanitized.message);
 
     // Trigger agent processing immediately for registered groups.
     // The main polling loop uses `timestamp > lastTimestamp` and will silently
@@ -1248,10 +1268,12 @@ async function main(): Promise<void> {
         !msg.is_from_me &&
         !msg.is_bot_message
       ) {
+        const knownChat = getAllChats().find((chat) => chat.jid === chatJid);
         const displayName =
-          msg.sender_name && msg.sender_name !== msg.sender
+          knownChat?.name?.trim() ||
+          (msg.sender_name && msg.sender_name !== msg.sender
             ? msg.sender_name
-            : chatJid;
+            : chatJid);
         const folder = deriveUniqueGroupFolder(
           displayName,
           Object.values(registeredGroups).map((g) => g.folder),
@@ -1346,6 +1368,8 @@ async function main(): Promise<void> {
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
   };
+
+  initializeChannelRuntime(channelOpts, channels);
 
   // Ensure integration Docker services (signal-cli, etc.) are running before connecting channels.
   await ensureServicesRunning();

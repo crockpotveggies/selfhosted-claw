@@ -173,6 +173,28 @@ describe('reply context', () => {
     expect(messages[0].reply_to_sender_name).toBe('Bob');
   });
 
+  it('stores and retrieves thread ids', () => {
+    storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
+
+    storeMessage({
+      id: 'thread-1',
+      chat_jid: 'group@g.us',
+      sender: '123',
+      sender_name: 'Alice',
+      content: 'threaded hello',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      thread_id: 'thread-root-42',
+    });
+
+    const messages = getMessagesSince(
+      'group@g.us',
+      '2024-01-01T00:00:00.000Z',
+      'Andy',
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0].thread_id).toBe('thread-root-42');
+  });
+
   it('returns null for messages without reply context', () => {
     storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
 

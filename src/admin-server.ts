@@ -31,6 +31,11 @@ import {
   resetCircuitBreaker,
 } from './integrations/service-manager.js';
 import {
+  activateRegisteredChannel,
+  deactivateRegisteredChannel,
+  reconnectRegisteredChannel,
+} from './channel-runtime.js';
+import {
   handleSetupRoute,
   registerSetupRoutes,
 } from './integrations/setup-router.js';
@@ -1162,6 +1167,9 @@ export function startAdminServer(
             if (def?.lifecycle?.onSettingsChange) {
               await def.lifecycle.onSettingsChange(prev, body);
             }
+            if (def?.channel && isIntegrationEnabled(name)) {
+              await activateRegisteredChannel(name);
+            }
           } catch (err) {
             saveIntegrationSettings(name, prev);
             throw err;
@@ -1201,8 +1209,16 @@ export function startAdminServer(
                     Boolean(settings[key] || process.env[key]),
                 });
               }
+              if (def?.channel) {
+                await activateRegisteredChannel(name);
+              }
             } else if (!enabled && wasEnabled && def?.lifecycle?.onDisable) {
               await def.lifecycle.onDisable();
+              if (def?.channel) {
+                await deactivateRegisteredChannel(name);
+              }
+            } else if (!enabled && wasEnabled && def?.channel) {
+              await deactivateRegisteredChannel(name);
             }
           } catch (err) {
             setIntegrationEnabled(name, wasEnabled);
@@ -1242,15 +1258,17 @@ export function startAdminServer(
             hasCredential: (key: string) =>
               Boolean(
                 process.env[key] ||
-                  options.service.getSetupEnvironment()[key] ||
-                  settings[key],
+                options.service.getSetupEnvironment()[key] ||
+                settings[key],
               ),
           };
 
-          if (def.lifecycle?.onReconnect) {
-            await def.lifecycle.onReconnect(ctx);
-          } else if (def.service) {
-            resetCircuitBreaker(name);
+            if (def.channel) {
+              await reconnectRegisteredChannel(name);
+            } else if (def.lifecycle?.onReconnect) {
+              await def.lifecycle.onReconnect(ctx);
+            } else if (def.service) {
+              resetCircuitBreaker(name);
             startService(name);
           } else {
             sendJson(res, 400, { error: 'reconnect_not_supported' });

@@ -6,11 +6,13 @@ import { apiFetch } from '../../admin/api';
 interface WebhookUrlStepUIProps {
   integrationName: string;
   completed: boolean;
+  onSetupComplete?: () => void;
 }
 
 export function WebhookUrlStepUI({
   integrationName,
   completed,
+  onSetupComplete,
 }: WebhookUrlStepUIProps) {
   const [webhookUrl, setWebhookUrl] = useState('');
   const [helpUrl, setHelpUrl] = useState('');
@@ -38,6 +40,14 @@ export function WebhookUrlStepUI({
         { method: 'POST' },
       );
       setTestResult(data);
+      if (data.received) {
+        const status = await apiFetch<{ completed: boolean }>(
+          `/api/admin/integrations/${integrationName}/setup/status`,
+        );
+        if (status.completed) {
+          onSetupComplete?.();
+        }
+      }
     } catch {
       setTestResult({ received: false, message: 'Test failed' });
     } finally {

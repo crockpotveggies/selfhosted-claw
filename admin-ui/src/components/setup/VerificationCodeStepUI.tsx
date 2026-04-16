@@ -5,11 +5,13 @@ import { apiFetch } from '../../admin/api';
 interface VerificationCodeStepUIProps {
   integrationName: string;
   completed: boolean;
+  onSetupComplete?: () => void;
 }
 
 export function VerificationCodeStepUI({
   integrationName,
   completed,
+  onSetupComplete,
 }: VerificationCodeStepUIProps) {
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [codeSent, setCodeSent] = useState(false);
@@ -38,6 +40,7 @@ export function VerificationCodeStepUI({
           clearInterval(interval);
           setVerifying(false);
           setVerifyResult('WhatsApp linked successfully!');
+          onSetupComplete?.();
         }
       } catch {
         // Keep polling
@@ -56,6 +59,7 @@ export function VerificationCodeStepUI({
           clearInterval(interval);
           setVerifying(false);
           setVerifyResult(data.message);
+          onSetupComplete?.();
         }
       } catch {
         // Status polling will catch it

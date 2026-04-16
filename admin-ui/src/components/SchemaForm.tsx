@@ -4,12 +4,12 @@ import {
   CFormInput,
   CFormLabel,
   CFormSelect,
-  CFormSwitch,
   CFormText,
   CFormTextarea,
   CInputGroup,
   CInputGroupText,
   CButton,
+  CButtonGroup,
   CBadge,
 } from '@coreui/react';
 
@@ -71,13 +71,47 @@ export function SchemaForm({
             {/* Boolean: switch */}
             {prop.type === 'boolean' ? (
               <>
-                <CFormSwitch
+                <CFormLabel htmlFor={`field-${key}`} className="d-block mb-2">
+                  {prop.title}
+                </CFormLabel>
+                <CButtonGroup
                   id={`field-${key}`}
-                  label={prop.title}
-                  checked={Boolean(values[key] ?? prop.default)}
-                  disabled={disabled}
-                  onChange={(e) => updateField(key, e.target.checked)}
-                />
+                  role="group"
+                  aria-label={prop.title}
+                >
+                  <CButton
+                    color={
+                      Boolean(values[key] ?? prop.default)
+                        ? 'primary'
+                        : 'secondary'
+                    }
+                    variant={
+                      Boolean(values[key] ?? prop.default)
+                        ? undefined
+                        : 'outline'
+                    }
+                    disabled={disabled}
+                    onClick={() => updateField(key, true)}
+                  >
+                    On
+                  </CButton>
+                  <CButton
+                    color={
+                      !Boolean(values[key] ?? prop.default)
+                        ? 'primary'
+                        : 'secondary'
+                    }
+                    variant={
+                      !Boolean(values[key] ?? prop.default)
+                        ? undefined
+                        : 'outline'
+                    }
+                    disabled={disabled}
+                    onClick={() => updateField(key, false)}
+                  >
+                    Off
+                  </CButton>
+                </CButtonGroup>
                 {prop.description && (
                   <CFormText className="d-block">{prop.description}</CFormText>
                 )}

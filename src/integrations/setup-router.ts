@@ -219,7 +219,7 @@ function registerOAuthRoutes(
 // ---------------------------------------------------------------------------
 
 function registerCredentialRoutes(
-  _integrationName: string,
+  integrationName: string,
   prefix: string,
   step: CredentialInputStep,
 ): void {
@@ -234,6 +234,16 @@ function registerCredentialRoutes(
         return;
       }
       await step.save(body);
+      const def = getIntegration(integrationName);
+      if (def?.channel) {
+        const { isIntegrationEnabled } = await import('./settings-store.js');
+        if (isIntegrationEnabled(integrationName)) {
+          const { activateRegisteredChannel } = await import(
+            '../channel-runtime.js'
+          );
+          await activateRegisteredChannel(integrationName);
+        }
+      }
       sendJson(res, 200, { ok: true });
     },
   });
@@ -258,7 +268,7 @@ function registerCredentialRoutes(
 // ---------------------------------------------------------------------------
 
 function registerFormRoutes(
-  _integrationName: string,
+  integrationName: string,
   prefix: string,
   step: FormSetupStep,
   idx: number,
@@ -276,6 +286,16 @@ function registerFormRoutes(
         }
       }
       await step.save(body);
+      const def = getIntegration(integrationName);
+      if (def?.channel) {
+        const { isIntegrationEnabled } = await import('./settings-store.js');
+        if (isIntegrationEnabled(integrationName)) {
+          const { activateRegisteredChannel } = await import(
+            '../channel-runtime.js'
+          );
+          await activateRegisteredChannel(integrationName);
+        }
+      }
       sendJson(res, 200, { ok: true });
     },
   });

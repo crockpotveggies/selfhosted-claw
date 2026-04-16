@@ -1,0 +1,48 @@
+{
+  "display_information": {
+    "name": "Self-Hosted Claw",
+    "description": "Bot-user messaging app for Self-Hosted Claw",
+    "background_color": "#1F2937"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Self-Hosted Claw",
+      "always_online": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "mpim:history",
+        "mpim:read",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_mention",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": false
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "is_hosted": false,
+    "token_rotation_enabled": false
+  }
+}
