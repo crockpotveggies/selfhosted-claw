@@ -71,7 +71,11 @@ import {
   isValidGroupFolder,
   resolveGroupFolderPath,
 } from './group-folder.js';
-import { consumeIpcSideEffect, startIpcWatcher } from './ipc.js';
+import {
+  consumeIpcSideEffect,
+  isDuplicateAgentOutbound,
+  startIpcWatcher,
+} from './ipc.js';
 import { sanitizeInboundMessage } from './inbound-guard.js';
 import { parseAgentOutput } from './outbound-directives.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
@@ -429,30 +433,43 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       }
 
       if (text) {
-        const latestThreadId =
-          missedMessages[missedMessages.length - 1]?.thread_id || undefined;
-        await channel.setTyping?.(chatJid, true);
-        await new Promise((r) => setTimeout(r, 1000));
-        if (featureFlags.enableNewActionEngine && channel.name === 'signal') {
-          const finalized = await new AgentSendFinalizer().finalizeSignalSend({
-            channel,
-            sourceChatJid: chatJid,
-            targetJid: chatJid,
-            message: text,
-            threadId: latestThreadId,
-          });
-          if (finalized.result === 'duplicate') {
-            logger.info(
-              { chatJid },
-              'Skipped duplicate control-plane finalized reply',
-            );
-          }
+        // Suppress final-text echoes of content the agent already delivered
+        // via an IPC tool call (e.g. notify_controller) in the same turn.
+        // The model is instructed not to repeat tool-sent content in its text
+        // response; this guard catches it when the model ignores that rule.
+        if (isDuplicateAgentOutbound(chatJid, text)) {
+          logger.warn(
+            { chatJid, group: group.name },
+            'Suppressed duplicate agent final-text reply (already sent via tool)',
+          );
         } else {
-          await channel.sendMessage(chatJid, text, {
-            threadId: latestThreadId,
-          });
+          const latestThreadId =
+            missedMessages[missedMessages.length - 1]?.thread_id || undefined;
+          await channel.setTyping?.(chatJid, true);
+          await new Promise((r) => setTimeout(r, 1000));
+          if (featureFlags.enableNewActionEngine && channel.name === 'signal') {
+            const finalized = await new AgentSendFinalizer().finalizeSignalSend(
+              {
+                channel,
+                sourceChatJid: chatJid,
+                targetJid: chatJid,
+                message: text,
+                threadId: latestThreadId,
+              },
+            );
+            if (finalized.result === 'duplicate') {
+              logger.info(
+                { chatJid },
+                'Skipped duplicate control-plane finalized reply',
+              );
+            }
+          } else {
+            await channel.sendMessage(chatJid, text, {
+              threadId: latestThreadId,
+            });
+          }
+          outputSentToUser = true;
         }
-        outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();

@@ -17,20 +17,27 @@ import { getIntegration } from './integrations/registry.js';
 import { getIntegrationSettings } from './integrations/settings-store.js';
 import { RegisteredGroup } from './types.js';
 
-/** Dedup recent IPC messages — suppress identical (jid+text) within a short window. */
+/**
+ * Dedup recent agent-originated outbound messages — suppress identical
+ * (jid+text) within a short window. Shared across IPC tool sends (e.g.
+ * notify_controller) and the final-text response path in handleAgentOutput,
+ * so a tool send followed by an echoed final text response is collapsed.
+ */
 const DEDUP_WINDOW_MS = 30_000;
-const recentIpcMessages = new Map<string, number>();
+const recentOutboundMessages = new Map<string, number>();
 
-function isDuplicateIpcMessage(chatJid: string, text: string): boolean {
+export function isDuplicateAgentOutbound(
+  chatJid: string,
+  text: string,
+): boolean {
   const key = `${chatJid}\0${text}`;
   const now = Date.now();
-  const prev = recentIpcMessages.get(key);
+  const prev = recentOutboundMessages.get(key);
   if (prev && now - prev < DEDUP_WINDOW_MS) return true;
-  recentIpcMessages.set(key, now);
-  // Prune old entries periodically
-  if (recentIpcMessages.size > 200) {
-    for (const [k, ts] of recentIpcMessages) {
-      if (now - ts > DEDUP_WINDOW_MS) recentIpcMessages.delete(k);
+  recentOutboundMessages.set(key, now);
+  if (recentOutboundMessages.size > 200) {
+    for (const [k, ts] of recentOutboundMessages) {
+      if (now - ts > DEDUP_WINDOW_MS) recentOutboundMessages.delete(k);
     }
   }
   return false;
@@ -297,7 +304,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     isControllerDm ||
                     (targetGroup && targetGroup.folder === sourceGroup)
                   ) {
-                    if (isDuplicateIpcMessage(chatJid, data.text)) {
+                    if (isDuplicateAgentOutbound(chatJid, data.text)) {
                       logger.warn(
                         { chatJid, sourceGroup },
                         'Duplicate IPC message suppressed',
