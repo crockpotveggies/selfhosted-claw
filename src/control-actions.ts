@@ -1,5 +1,3 @@
-import { OneCLI } from '@onecli-sh/sdk';
-
 import { readEnvFile, setEnvFileValues } from './env.js';
 import {
   CONTROL_SIGNAL_JID,
@@ -52,7 +50,7 @@ import { getIntegrationSettings } from './integrations/settings-store.js';
 import { resolveGoogleContactsTarget } from './integrations/google-contacts.js';
 
 /**
- * Signal compose status — kept for backward compatibility with admin-server
+ * Signal compose status â€” kept for backward compatibility with admin-server
  * and control-commands callers. Built from the integration service manager.
  */
 export interface SignalComposeStatus {
@@ -111,6 +109,7 @@ interface PolicyProviderInput {
 interface SettingsInput {
   controlSignalJid?: string;
   assistantSignalIdentity?: string;
+  setupWizardReviewed?: boolean;
 }
 
 interface EnvUpdateInput {
@@ -732,6 +731,10 @@ export class ControlActionService {
             input.assistantSignalIdentity !== undefined
               ? input.assistantSignalIdentity
               : before.assistantSignalIdentity,
+          setupWizardReviewed:
+            input.setupWizardReviewed !== undefined
+              ? input.setupWizardReviewed
+              : before.setupWizardReviewed,
           updatedAt: nowIso(),
         };
         this.store.saveSettings(next);
@@ -765,7 +768,6 @@ export class ControlActionService {
           'SIGNAL_RPC_URL',
           'SIGNAL_RECEIVE_TIMEOUT_SEC',
           'CONTROL_SIGNAL_JID',
-          'ONECLI_URL',
           'GOOGLE_CLIENT_ID',
           'GOOGLE_CLIENT_SECRET',
           'GOOGLE_CONTACTS_ACCESS_TOKEN',
@@ -925,6 +927,7 @@ export class ControlActionService {
       controlSignalJid: stored.controlSignalJid || CONTROL_SIGNAL_JID,
       assistantSignalIdentity:
         stored.assistantSignalIdentity || SIGNAL_ACCOUNT || '',
+      setupWizardReviewed: stored.setupWizardReviewed === true,
       updatedAt: stored.updatedAt,
     };
   }
@@ -942,10 +945,11 @@ export class ControlActionService {
       'SIGNAL_RPC_URL',
       'SIGNAL_RECEIVE_TIMEOUT_SEC',
       'CONTROL_SIGNAL_JID',
-      'ONECLI_URL',
       'GOOGLE_CLIENT_ID',
       'GOOGLE_CLIENT_SECRET',
+      'GOOGLE_CALENDAR_ACCESS_TOKEN',
       'GOOGLE_CONTACTS_ACCESS_TOKEN',
+      'GOOGLE_OAUTH_ACCESS_TOKEN',
       'ADMIN_BIND_HOST',
       'ADMIN_PORT',
       'ADMIN_UI_TOKEN',
@@ -1018,27 +1022,16 @@ export class ControlActionService {
 
   async getProviderAvailability(): Promise<ProviderAvailability> {
     const env = this.getSetupEnvironment();
-    const providerEnv = await this.loadProviderEnvironment(env);
-    const googleToken = await this.ensureGoogleContactsAccessToken(
-      providerEnv,
-      env,
-    );
+    const googleToken = await this.ensureGoogleContactsAccessToken(env, env);
     const storedOAuth = this.store.getGoogleContactsOAuth();
 
     return {
-      onecliConfigured: Boolean(env.ONECLI_URL),
-      onecliReachable: providerEnv.__onecliReachable === 'true',
       googleContactsAvailable: Boolean(googleToken),
       googleContactsSource: env.GOOGLE_CONTACTS_ACCESS_TOKEN
         ? 'env'
         : storedOAuth.accessToken || storedOAuth.refreshToken
           ? 'oauth'
-          : providerEnv.GOOGLE_CONTACTS_ACCESS_TOKEN ||
-              providerEnv.GOOGLE_PEOPLE_ACCESS_TOKEN ||
-              providerEnv.GOOGLE_OAUTH_ACCESS_TOKEN ||
-              providerEnv.GMAIL_ACCESS_TOKEN
-            ? 'onecli'
-            : 'none',
+          : 'none',
       signalOutboundAvailable: Boolean(
         (env.SIGNAL_ACCOUNT || SIGNAL_ACCOUNT) &&
         (env.SIGNAL_RPC_URL || SIGNAL_RPC_URL),
@@ -1446,25 +1439,6 @@ export class ControlActionService {
       );
   }
 
-  private async loadProviderEnvironment(
-    env: Record<string, string>,
-  ): Promise<Record<string, string>> {
-    const merged = { ...env };
-    if (!env.ONECLI_URL) return merged;
-
-    try {
-      const onecli = new OneCLI({ url: env.ONECLI_URL });
-      const config = await onecli.getContainerConfig();
-      for (const [key, value] of Object.entries(config.env || {})) {
-        if (!merged[key]) merged[key] = value;
-      }
-      merged.__onecliReachable = 'true';
-    } catch {
-      merged.__onecliReachable = 'false';
-    }
-    return merged;
-  }
-
   private getGoogleContactsAccessToken(env: Record<string, string>): string {
     for (const key of GOOGLE_CONTACT_TOKEN_KEYS) {
       const value = env[key];
@@ -1577,30 +1551,25 @@ export class ControlActionService {
     return next;
   }
 
-  // ── Google Calendar token (via OneCLI / env) ───────────────────────
+  // Google Calendar token (env / shared OAuth)
 
   async ensureGoogleCalendarAccessToken(): Promise<string> {
     const env = this.getSetupEnvironment();
-    const providerEnv = await this.loadProviderEnvironment(env);
 
-    // OneCLI injects tokens at the gateway level. Check env / OneCLI keys.
     for (const key of GOOGLE_CALENDAR_TOKEN_KEYS) {
-      const value = providerEnv[key];
+      const value = env[key];
       if (value?.trim()) return value.trim();
     }
 
-    // Fall back to Google Contacts token — if the user granted calendar
+    // Fall back to Google Contacts token â€” if the user granted calendar
     // scope via include_granted_scopes, the same token works for both.
-    const contactsToken = await this.ensureGoogleContactsAccessToken(
-      providerEnv,
-      env,
-    );
+    const contactsToken = await this.ensureGoogleContactsAccessToken(env, env);
     if (contactsToken) return contactsToken;
 
     return '';
   }
 
-  // ── Google Calendar API ───────────────────────────────────────────
+  // â”€â”€ Google Calendar API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   private async calendarFetch(
     urlOrPath: string,
@@ -1787,7 +1756,9 @@ export class ControlActionService {
       'OPENAI_API_KEY',
       'ADMIN_UI_TOKEN',
       'GOOGLE_CLIENT_SECRET',
+      'GOOGLE_CALENDAR_ACCESS_TOKEN',
       'GOOGLE_CONTACTS_ACCESS_TOKEN',
+      'GOOGLE_OAUTH_ACCESS_TOKEN',
     ]) {
       if (redacted[key]) redacted[key] = '<redacted>';
     }

@@ -62,6 +62,7 @@ export function useAdminDashboard() {
   const [settingsDraft, setSettingsDraft] = useState<ControlSettings>({
     controlSignalJid: '',
     assistantSignalIdentity: '',
+    setupWizardReviewed: false,
   });
   const [signalProfileDraft, setSignalProfileDraft] =
     useState<SignalProfileSettings>({
@@ -98,7 +99,6 @@ export function useAdminDashboard() {
     SIGNAL_RPC_URL: 'http://127.0.0.1:8080',
     SIGNAL_RECEIVE_TIMEOUT_SEC: '5',
     CONTROL_SIGNAL_JID: '',
-    ONECLI_URL: 'http://localhost:10254',
     ADMIN_BIND_HOST: '127.0.0.1',
     ADMIN_PORT: '3030',
     ADMIN_UI_TOKEN: '',
@@ -276,7 +276,6 @@ export function useAdminDashboard() {
           current.SIGNAL_RECEIVE_TIMEOUT_SEC,
         CONTROL_SIGNAL_JID:
           setupState.data?.env.CONTROL_SIGNAL_JID || current.CONTROL_SIGNAL_JID,
-        ONECLI_URL: setupState.data?.env.ONECLI_URL || current.ONECLI_URL,
         ADMIN_BIND_HOST:
           setupState.data?.env.ADMIN_BIND_HOST || current.ADMIN_BIND_HOST,
         ADMIN_PORT: setupState.data?.env.ADMIN_PORT || current.ADMIN_PORT,
@@ -302,8 +301,6 @@ export function useAdminDashboard() {
   const tools = toolsState.data?.tools || [];
   const pendingActions = pendingState.data?.pending || [];
   const providers = providerState.data?.providers || {
-    onecliConfigured: false,
-    onecliReachable: false,
     googleContactsAvailable: false,
     googleContactsSource: 'none' as const,
     signalOutboundAvailable: false,
@@ -335,8 +332,6 @@ export function useAdminDashboard() {
     signalReachable: false,
     signalComposeConfigured: false,
     signalComposeRunning: false,
-    onecliConfigured: false,
-    onecliReachable: false,
     googleContactsAvailable: false,
     googleContactsSource: 'none' as const,
     controlChatConfigured: false,

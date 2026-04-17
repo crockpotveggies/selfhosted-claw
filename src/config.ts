@@ -14,7 +14,6 @@ const envConfig = readEnvFile([
   'OPENAI_MAX_TOKENS',
   'OPENAI_TEMPERATURE',
   'OPENAI_CONTEXT_WINDOW',
-  'ONECLI_URL',
   'SIGNAL_ACCOUNT',
   'SIGNAL_RPC_URL',
   'SIGNAL_RECEIVE_TIMEOUT_SEC',
@@ -26,6 +25,16 @@ const envConfig = readEnvFile([
   'SELF_HOSTED_CLAW_ADMIN_CONFIG_DIR',
   'SELF_HOSTED_CLAW_ADMIN_DATA_DIR',
   'INBOUND_GUARD_SCRIPT',
+  'ENABLE_NEW_ACTION_ENGINE',
+  'ENABLE_RUNSPEC_RUNNERS',
+  'ENABLE_PRINCIPAL_POLICY',
+  'ENABLE_SKILL_REGISTRY_V2',
+  'ENABLE_CONTEXT_ASSEMBLER',
+  'ENABLE_DEDUPE_V2',
+  'ENABLE_HOT_RUNNER_CONTAINERS',
+  'HOT_RUNNER_POOL_MIN_IDLE',
+  'HOT_RUNNER_POOL_MAX_SIZE',
+  'HOT_RUNNER_POOL_IDLE_TTL_MS',
   'TZ',
 ]);
 
@@ -40,6 +49,9 @@ export const SCHEDULER_POLL_INTERVAL = 60000;
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();
 const HOME_DIR = process.env.HOME || os.homedir();
+export const MOUNT_ROOT = path.resolve(
+  process.env.SELF_HOSTED_CLAW_MOUNT_ROOT || PROJECT_ROOT,
+);
 
 // Mount security: allowlist stored OUTSIDE project root, never mounted into containers
 export const MOUNT_ALLOWLIST_PATH = path.join(
@@ -78,8 +90,6 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
   process.env.CONTAINER_MAX_OUTPUT_SIZE || '10485760',
   10,
 ); // 10MB default
-export const ONECLI_URL =
-  process.env.ONECLI_URL || envConfig.ONECLI_URL || 'http://localhost:10254';
 export const OPENAI_BASE_URL =
   process.env.OPENAI_BASE_URL ||
   envConfig.OPENAI_BASE_URL ||
@@ -150,6 +160,65 @@ export const INBOUND_GUARD_SCRIPT =
   process.env.INBOUND_GUARD_SCRIPT ||
   envConfig.INBOUND_GUARD_SCRIPT ||
   path.resolve(PROJECT_ROOT, 'scripts', 'inbound-message-guard.mjs');
+
+function readBooleanEnv(name: string, fallback = false): boolean {
+  const raw = process.env[name] ?? envConfig[name];
+  if (!raw) return fallback;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
+export const ENABLE_NEW_ACTION_ENGINE = readBooleanEnv(
+  'ENABLE_NEW_ACTION_ENGINE',
+  false,
+);
+export const ENABLE_RUNSPEC_RUNNERS = readBooleanEnv(
+  'ENABLE_RUNSPEC_RUNNERS',
+  false,
+);
+export const ENABLE_PRINCIPAL_POLICY = readBooleanEnv(
+  'ENABLE_PRINCIPAL_POLICY',
+  false,
+);
+export const ENABLE_SKILL_REGISTRY_V2 = readBooleanEnv(
+  'ENABLE_SKILL_REGISTRY_V2',
+  false,
+);
+export const ENABLE_CONTEXT_ASSEMBLER = readBooleanEnv(
+  'ENABLE_CONTEXT_ASSEMBLER',
+  false,
+);
+export const ENABLE_DEDUPE_V2 = readBooleanEnv('ENABLE_DEDUPE_V2', false);
+export const ENABLE_HOT_RUNNER_CONTAINERS = readBooleanEnv(
+  'ENABLE_HOT_RUNNER_CONTAINERS',
+  false,
+);
+export const HOT_RUNNER_POOL_MIN_IDLE = Math.max(
+  0,
+  parseInt(
+    process.env.HOT_RUNNER_POOL_MIN_IDLE ||
+      envConfig.HOT_RUNNER_POOL_MIN_IDLE ||
+      '1',
+    10,
+  ) || 1,
+);
+export const HOT_RUNNER_POOL_MAX_SIZE = Math.max(
+  1,
+  parseInt(
+    process.env.HOT_RUNNER_POOL_MAX_SIZE ||
+      envConfig.HOT_RUNNER_POOL_MAX_SIZE ||
+      '2',
+    10,
+  ) || 2,
+);
+export const HOT_RUNNER_POOL_IDLE_TTL_MS = Math.max(
+  1000,
+  parseInt(
+    process.env.HOT_RUNNER_POOL_IDLE_TTL_MS ||
+      envConfig.HOT_RUNNER_POOL_IDLE_TTL_MS ||
+      '300000',
+    10,
+  ) || 300000,
+);
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

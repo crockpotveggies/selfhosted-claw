@@ -64,9 +64,9 @@ Messages and task operations are verified against group identity:
 | View all tasks | ✓ | Own only |
 | Manage other groups | ✓ | ✗ |
 
-### 5. Credential Isolation (OneCLI Agent Vault)
+### 5. Credential Isolation
 
-Real API credentials **never enter containers**. Self-Hosted Claw uses [OneCLI's Agent Vault](https://github.com/onecli/onecli) to proxy outbound requests and inject credentials at the gateway level.
+Real API credentials stay on the host and are passed into the control plane or runners only through explicit runtime environment and persisted integration settings.
 
 **How it works:**
 1. Credentials are registered once with `onecli secrets create`, stored and managed by OneCLI
@@ -75,7 +75,7 @@ Real API credentials **never enter containers**. Self-Hosted Claw uses [OneCLI's
 4. Agents cannot discover real credentials — not in environment, stdin, files, or `/proc`
 
 **Per-agent policies:**
-Each Self-Hosted Claw group gets its own OneCLI agent identity. This allows different credential policies per group (e.g. your sales agent vs. support agent). OneCLI supports rate limits, and time-bound access and approval flows are on the roadmap.
+Credential access is now scoped by the control plane, runner lane, and per-job grants instead of an external vault identity.
 
 **NOT Mounted:**
 - Channel auth sessions (`store/auth/`) — host only
@@ -110,7 +110,7 @@ Each Self-Hosted Claw group gets its own OneCLI agent identity. This allows diff
 │  • IPC authorization                                              │
 │  • Mount validation (external allowlist)                          │
 │  • Container lifecycle                                            │
-│  • OneCLI Agent Vault (injects credentials, enforces policies)   │
+│  • Control plane policy and host-side credential storage   │
 └────────────────────────────────┬─────────────────────────────────┘
                                  │
                                  ▼ Explicit mounts only, no secrets
@@ -119,7 +119,7 @@ Each Self-Hosted Claw group gets its own OneCLI agent identity. This allows diff
 │  • Agent execution                                                │
 │  • Bash commands (sandboxed)                                      │
 │  • File operations (limited to mounts)                            │
-│  • API calls routed through OneCLI Agent Vault                   │
+│  • API calls routed through the control plane and explicit runtime env                   │
 │  • No real credentials in environment or filesystem              │
 └──────────────────────────────────────────────────────────────────┘
 ```

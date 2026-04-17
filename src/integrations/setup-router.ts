@@ -238,9 +238,8 @@ function registerCredentialRoutes(
       if (def?.channel) {
         const { isIntegrationEnabled } = await import('./settings-store.js');
         if (isIntegrationEnabled(integrationName)) {
-          const { activateRegisteredChannel } = await import(
-            '../channel-runtime.js'
-          );
+          const { activateRegisteredChannel } =
+            await import('../channel-runtime.js');
           await activateRegisteredChannel(integrationName);
         }
       }
@@ -290,9 +289,8 @@ function registerFormRoutes(
       if (def?.channel) {
         const { isIntegrationEnabled } = await import('./settings-store.js');
         if (isIntegrationEnabled(integrationName)) {
-          const { activateRegisteredChannel } = await import(
-            '../channel-runtime.js'
-          );
+          const { activateRegisteredChannel } =
+            await import('../channel-runtime.js');
           await activateRegisteredChannel(integrationName);
         }
       }

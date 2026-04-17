@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import fs from 'fs';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -14,13 +15,13 @@ vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/nanoclaw-test-data',
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
+  MOUNT_ROOT: '/tmp/nanoclaw-test-project',
   OPENAI_API_KEY: '',
   OPENAI_BASE_URL: 'http://127.0.0.1:8000/v1',
   OPENAI_CONTEXT_WINDOW: 24000,
   OPENAI_MAX_TOKENS: 4096,
   OPENAI_MODEL: 'local-model',
   OPENAI_TEMPERATURE: 0.2,
-  ONECLI_URL: 'http://localhost:10254',
   TIMEZONE: 'America/Los_Angeles',
 }));
 
@@ -63,17 +64,6 @@ vi.mock('./container-runtime.js', () => ({
   hostGatewayArgs: () => [],
   readonlyMountArgs: (h: string, c: string) => ['-v', `${h}:${c}:ro`],
   stopContainer: vi.fn(),
-}));
-
-// Mock OneCLI SDK
-vi.mock('@onecli-sh/sdk', () => ({
-  OneCLI: class {
-    applyContainerConfig = vi.fn().mockResolvedValue(true);
-    createAgent = vi.fn().mockResolvedValue({ id: 'test' });
-    ensureAgent = vi
-      .fn()
-      .mockResolvedValue({ name: 'test', identifier: 'test', created: true });
-  },
 }));
 
 // Create a controllable fake ChildProcess
@@ -255,5 +245,59 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+
+  it('precreates the IPC responses directory on the host before mounting', async () => {
+    const mkdirSync = vi.mocked(fs.mkdirSync);
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      async () => {},
+    );
+
+    expect(mkdirSync).toHaveBeenCalledWith(
+      expect.stringMatching(/[\\/]ipc[\\/]test-group[\\/]responses$/),
+      { recursive: true },
+    );
+
+    fakeProc.stdout.push(
+      `${OUTPUT_START_MARKER}\n${JSON.stringify({ status: 'success', result: 'ok' })}\n${OUTPUT_END_MARKER}\n`,
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+
+    const result = await resultPromise;
+
+    expect(result.status).toBe('success');
+  });
+
+  it('precreates runtime state files on the host before mounting', async () => {
+    const writeFileSync = vi.mocked(fs.writeFileSync);
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      async () => {},
+    );
+
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringMatching(/[\\/]sessions[\\/]test-group[\\/]history\.jsonl$/),
+      '',
+    );
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringMatching(/[\\/]sessions[\\/]test-group[\\/]summary\.md$/),
+      '',
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
   });
 });

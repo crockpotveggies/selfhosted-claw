@@ -9,6 +9,7 @@ import { CronExpressionParser } from 'cron-parser';
 import { resolve as dnsResolve } from 'dns/promises';
 import fs from 'fs';
 import path from 'path';
+import { shouldForcePreflightCompaction } from './startup-utils.js';
 
 interface ContainerInput {
   prompt: string;
@@ -470,7 +471,7 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
       : `Sharing full calendar details with the controller is fine — they own the calendar.`,
     `ERROR ESCALATION: If a tool call fails, you hit a permission error, or you cannot complete a requested action (e.g. missing event ID, API error, blocked operation), immediately notify the controller via notify_controller with a clear explanation of what went wrong and what you need. Do NOT just tell the group chat that something failed — always escalate to the controller directly so they can help resolve it.`,
     `If recipient, channel, or content is ambiguous, ask a clarifying question instead of guessing.`,
-    `Do not mention OneCLI or secrets unless directly relevant; host-side credentials may be managed outside the container.`,
+    `Do not mention credential internals unless directly relevant; host-side credentials may be managed outside the container.`,
     containerInput.controlSignalJid
       ? `The user you are talking to is the owner (controller). When they say "me", "myself", or "I" in the context of messaging or group membership, they are referring to themselves — use their Signal JID: ${containerInput.controlSignalJid}.`
       : '',
@@ -671,7 +672,12 @@ function fallbackSummary(messages: OpenAIMessage[]): string {
 async function archiveAndCompactHistory(systemPrompt: string): Promise<void> {
   const summary = readSummary();
   const history = loadHistory();
-  if (estimateTokens(history, summary) <= OPENAI_CONTEXT_WINDOW) return;
+  if (
+    estimateConversationRequestTokens(systemPrompt, history) <=
+    OPENAI_CONTEXT_WINDOW
+  ) {
+    return;
+  }
   if (history.length <= MAX_HISTORY_KEEP_MESSAGES) return;
 
   const archived = history.slice(0, history.length - MAX_HISTORY_KEEP_MESSAGES);
@@ -2300,14 +2306,23 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
 // Dynamic integration tools — loaded from manifest written by the host
 // ---------------------------------------------------------------------------
 
+let loadedIntegrationManifestSignature: string | null = null;
+
 function loadIntegrationTools(): void {
+  const manifestPath = path.join(IPC_DIR, 'integration_tools.json');
+  if (!fs.existsSync(manifestPath)) return;
+
+  const stat = fs.statSync(manifestPath);
+  const signature = `${stat.size}:${stat.mtimeMs}`;
+  if (signature === loadedIntegrationManifestSignature) {
+    return;
+  }
+
   for (const [name, spec] of Object.entries(TOOL_REGISTRY)) {
     if (spec.dynamicIntegrationTool) {
       delete TOOL_REGISTRY[name];
     }
   }
-  const manifestPath = path.join(IPC_DIR, 'integration_tools.json');
-  if (!fs.existsSync(manifestPath)) return;
   try {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Array<{
       name: string;
@@ -2348,6 +2363,7 @@ function loadIntegrationTools(): void {
         },
       };
     }
+    loadedIntegrationManifestSignature = signature;
     log(`Loaded ${manifest.length} integration tools from manifest`);
   } catch (err) {
     log(`Failed to load integration tools manifest: ${err}`);
@@ -2621,7 +2637,14 @@ async function main(): Promise<void> {
   // Guard: if history is too large to fit in the context window, force-compact
   // before the first turn to prevent repeated context-limit failures.
   const preHistory = loadHistory();
-  if (preHistory.length > MAX_HISTORY_KEEP_MESSAGES) {
+  if (
+    shouldForcePreflightCompaction(
+      preHistory.length,
+      estimateConversationRequestTokens(systemPrompt, preHistory),
+      OPENAI_CONTEXT_WINDOW,
+      MAX_HISTORY_KEEP_MESSAGES,
+    )
+  ) {
     log(`History has ${preHistory.length} messages (limit ${MAX_HISTORY_KEEP_MESSAGES}), forcing compaction`);
     await archiveAndCompactHistory(systemPrompt);
   }

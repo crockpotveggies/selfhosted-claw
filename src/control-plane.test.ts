@@ -8,6 +8,7 @@ import { ContactView, ControlActionService } from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
 import { canonicalizeIdentity, identitiesMatch } from './control-identities.js';
 import { ControlStore } from './control-store.js';
+import { setEnvFileValues } from './env.js';
 import { _closeDatabase, _initTestDatabase } from './db.js';
 import { setComposeRunner } from './integrations/service-manager.js';
 import './integrations/index.js'; // Register signal integration for tests
@@ -29,6 +30,7 @@ function createHarness() {
   const configDir = path.join(root, 'config');
   const dataDir = path.join(root, 'data');
   const groupsDir = path.join(root, 'groups');
+  const envPath = path.join(root, '.env');
   fs.mkdirSync(path.join(groupsDir, 'global'), { recursive: true });
   fs.mkdirSync(path.join(groupsDir, 'main'), { recursive: true });
   fs.writeFileSync(
@@ -36,7 +38,9 @@ function createHarness() {
     '# Base global\n',
   );
   fs.writeFileSync(path.join(groupsDir, 'main', 'AGENT.md'), '# Base main\n');
+  fs.writeFileSync(envPath, '');
   process.env.SELF_HOSTED_CLAW_GROUPS_DIR = groupsDir;
+  process.env.SELF_HOSTED_CLAW_ENV_FILE = envPath;
 
   _initTestDatabase();
   const store = new ControlStore(configDir, dataDir);
@@ -66,11 +70,22 @@ function createHarness() {
       }) satisfies Record<string, RegisteredGroup>,
   });
 
-  return { root, configDir, dataDir, groupsDir, store, service, parser, sent };
+  return {
+    root,
+    configDir,
+    dataDir,
+    groupsDir,
+    envPath,
+    store,
+    service,
+    parser,
+    sent,
+  };
 }
 
 afterEach(() => {
   delete process.env.SELF_HOSTED_CLAW_GROUPS_DIR;
+  delete process.env.SELF_HOSTED_CLAW_ENV_FILE;
   vi.unstubAllGlobals();
   _closeDatabase();
 });
@@ -333,6 +348,33 @@ describe('control plane parity', () => {
     expect(harness.sent.at(-1)?.text).toContain('No providers are paused.');
   });
 
+  it('persists setup wizard reviewed flag through settings updates', async () => {
+    const harness = createHarness();
+
+    await harness.service.executeAction(
+      'settings.update',
+      {
+        setupWizardReviewed: true,
+      },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    expect(harness.service.getSettings().setupWizardReviewed).toBe(true);
+
+    await harness.service.executeAction(
+      'settings.update',
+      {
+        controlSignalJid: 'signal:user:+15550001111',
+      },
+      { actorIdentity: 'ui:local-admin', source: 'ui' },
+    );
+
+    expect(harness.service.getSettings()).toMatchObject({
+      controlSignalJid: 'signal:user:+15550001111',
+      setupWizardReviewed: true,
+    });
+  });
+
   it('refreshes the stored Google token and retries calendar requests after a 401', async () => {
     const harness = createHarness();
     harness.store.saveGoogleContactsOAuth({
@@ -345,19 +387,21 @@ describe('control plane parity', () => {
       oauthState: '',
       oauthStateCreatedAt: '',
     });
-
-    vi.spyOn(
-      harness.service as any,
-      'loadProviderEnvironment',
-    ).mockResolvedValue({
-      GOOGLE_CALENDAR_ACCESS_TOKEN: 'stale-direct-token',
-    });
+    setEnvFileValues(
+      {
+        GOOGLE_CALENDAR_ACCESS_TOKEN: 'stale-direct-token',
+        GOOGLE_CLIENT_ID: 'client-id',
+        GOOGLE_CLIENT_SECRET: 'client-secret',
+      },
+      harness.envPath,
+    );
 
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({
         ok: false,
         status: 401,
+        json: async () => ({}),
         text: async () => 'invalid_grant',
       })
       .mockResolvedValueOnce({

@@ -248,11 +248,35 @@ describe('SignalChannel', () => {
       { onMessage, onChatMetadata, registeredGroups },
       'http://127.0.0.1:8080',
       '+15555550123',
+      { maxAttempts: 2, delayMs: 0 },
     );
 
     await expect(channel.connect()).rejects.toThrow(
       'Signal RPC listGroups failed to reach http://127.0.0.1:8080/v1/groups/%2B15555550123: fetch failed',
     );
+  });
+
+  it('retries transient rpc startup failures before connecting', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValue(makeJsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const channel = new SignalChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      'http://127.0.0.1:8080',
+      '+15555550123',
+      { maxAttempts: 3, delayMs: 0 },
+    );
+
+    await channel.connect();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(channel.isConnected()).toBe(true);
+
+    await channel.disconnect();
   });
 
   it('consumes inbound messages over websocket receive stream', async () => {
@@ -294,6 +318,60 @@ describe('SignalChannel', () => {
       'signal:user:+15551234567',
       expect.objectContaining({
         content: 'hello from websocket',
+      }),
+    );
+
+    await channel.disconnect();
+  });
+
+  it('falls back to HTTP receive polling when websocket receive fails', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeJsonResponse([]))
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          envelope: {
+            sourceNumber: '+15551234567',
+            sourceName: 'Taylor',
+            timestamp: 1_700_000_000_000,
+            dataMessage: {
+              message: 'hello from http polling',
+            },
+          },
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    class FailingWebSocket extends MockWebSocket {
+      constructor(url: string | URL) {
+        super(url);
+        queueMicrotask(() => this.onerror?.());
+      }
+    }
+    vi.stubGlobal('WebSocket', FailingWebSocket as unknown as typeof WebSocket);
+
+    const channel = new SignalChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      'http://127.0.0.1:8080',
+      '+15555550123',
+    );
+
+    await channel.connect();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        href: 'http://127.0.0.1:8080/v1/receive/%2B15555550123?timeout=1',
+      }),
+      expect.objectContaining({
+        method: 'GET',
+      }),
+    );
+    expect(onMessage).toHaveBeenCalledWith(
+      'signal:user:+15551234567',
+      expect.objectContaining({
+        content: 'hello from http polling',
       }),
     );
 

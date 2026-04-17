@@ -122,6 +122,7 @@ export class ControlStore {
     return readJsonFile<ControlSettings>(this.settingsFile, {
       controlSignalJid: '',
       assistantSignalIdentity: '',
+      setupWizardReviewed: false,
       updatedAt: new Date(0).toISOString(),
     });
   }

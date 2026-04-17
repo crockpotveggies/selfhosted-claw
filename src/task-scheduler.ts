@@ -74,6 +74,8 @@ export interface SchedulerDependencies {
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
 
+let schedulerDeps: SchedulerDependencies | null = null;
+
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
@@ -241,6 +243,7 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
     return;
   }
   schedulerRunning = true;
+  schedulerDeps = deps;
   logger.info('Scheduler loop started');
 
   const loop = async () => {
@@ -271,7 +274,23 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
   loop();
 }
 
+export function runTaskNow(taskId: string): void {
+  if (!schedulerDeps) {
+    throw new Error('Scheduler is not running');
+  }
+
+  const task = getTaskById(taskId);
+  if (!task) {
+    throw new Error(`Task not found: ${taskId}`);
+  }
+
+  schedulerDeps.queue.enqueueTask(task.chat_jid, task.id, () =>
+    runTask(task, schedulerDeps!),
+  );
+}
+
 /** @internal - for tests only. */
 export function _resetSchedulerLoopForTests(): void {
   schedulerRunning = false;
+  schedulerDeps = null;
 }

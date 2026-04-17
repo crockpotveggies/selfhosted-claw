@@ -217,9 +217,7 @@ describe('SmsSocketChannel', () => {
 
     expect(MockWebSocket.instances).toHaveLength(2);
     const sentMessages = MockWebSocket.instances[1]?.sentMessages || [];
-    expect(
-      sentMessages.map((message) => message.type),
-    ).toContain('sendSms');
+    expect(sentMessages.map((message) => message.type)).toContain('sendSms');
     expect(
       sentMessages.find((message) => message.type === 'sendSms'),
     ).toMatchObject({

@@ -4,6 +4,7 @@ import { _initTestDatabase, createTask, getTaskById } from './db.js';
 import {
   _resetSchedulerLoopForTests,
   computeNextRun,
+  runTaskNow,
   startSchedulerLoop,
 } from './task-scheduler.js';
 
@@ -124,5 +125,37 @@ describe('task scheduler', () => {
     const offset =
       (new Date(nextRun!).getTime() - new Date(scheduledTime).getTime()) % ms;
     expect(offset).toBe(0);
+  });
+
+  it('queues a task for immediate manual execution', () => {
+    createTask({
+      id: 'task-run-now',
+      group_folder: 'main',
+      chat_jid: 'signal:user:+15550001111',
+      prompt: 'test run now',
+      schedule_type: 'once',
+      schedule_value: '2026-02-22T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() + 86_400_000).toISOString(),
+      status: 'active',
+      created_at: '2026-02-22T00:00:00.000Z',
+    });
+
+    const enqueueTask = vi.fn();
+
+    startSchedulerLoop({
+      registeredGroups: () => ({}),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage: async () => {},
+    });
+
+    runTaskNow('task-run-now');
+
+    expect(enqueueTask).toHaveBeenCalledWith(
+      'signal:user:+15550001111',
+      'task-run-now',
+      expect.any(Function),
+    );
   });
 });

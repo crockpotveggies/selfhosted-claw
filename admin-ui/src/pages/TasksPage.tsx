@@ -104,6 +104,7 @@ export function TasksPage() {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -119,6 +120,19 @@ export function TasksPage() {
   useEffect(() => {
     void load();
   }, []);
+
+  const runTaskNow = async (taskId: string) => {
+    setRunningTaskId(taskId);
+    try {
+      await apiFetch<{ ok: boolean; message: string }>(
+        `/api/admin/tasks/${encodeURIComponent(taskId)}/run`,
+        { method: 'POST' },
+      );
+      await load();
+    } finally {
+      setRunningTaskId(null);
+    }
+  };
 
   const activeTasks = tasks.filter((t) => t.status === 'active');
   const pausedTasks = tasks.filter((t) => t.status === 'paused');
@@ -261,6 +275,22 @@ export function TasksPage() {
                               <div className="mb-2">
                                 <strong>ID:</strong>{' '}
                                 <code>{task.id}</code>
+                              </div>
+                              <div className="mb-3">
+                                <CButton
+                                  size="sm"
+                                  color="primary"
+                                  disabled={runningTaskId === task.id}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void runTaskNow(task.id);
+                                  }}
+                                >
+                                  <PlayCircleFill size={14} className="me-1" />
+                                  {runningTaskId === task.id
+                                    ? 'Queueing...'
+                                    : 'Run now'}
+                                </CButton>
                               </div>
                               <div className="mb-2">
                                 <strong>Full prompt:</strong>

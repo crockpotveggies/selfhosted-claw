@@ -1,0 +1,32 @@
+services:
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile.control-plane
+    image: nanoclaw-control-plane:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ADMIN_BIND_HOST: 0.0.0.0
+      SELF_HOSTED_CLAW_ENV_FILE: /app/.env
+      SELF_HOSTED_CLAW_MOUNT_ROOT: /workspace-host
+      SELF_HOSTED_CLAW_COMPOSE_BIN: docker-compose
+      SELF_HOSTED_CLAW_ADMIN_CONFIG_DIR: /app/admin-config
+      SELF_HOSTED_CLAW_ADMIN_DATA_DIR: /app/admin-data
+    ports:
+      - "127.0.0.1:${ADMIN_PORT:-3030}:3030"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./.env:/app/.env
+      - ./:/workspace-host:ro
+      - ./admin-config:/app/admin-config
+      - ./admin-data:/app/admin-data
+      - ./store:/app/store
+      - ./data:/app/data
+      - ./groups:/app/groups
+      - ./logs:/app/logs
+      - ./container:/app/container
+      - ./scripts:/app/scripts
+      - /var/run/docker.sock:/var/run/docker.sock

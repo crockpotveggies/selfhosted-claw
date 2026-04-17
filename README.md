@@ -116,40 +116,70 @@ Optional but recommended:
 ```bash
 OPENAI_API_KEY=""
 ADMIN_UI_TOKEN="choose-a-local-admin-token"
-ONECLI_URL="http://localhost:10254"
 GOOGLE_CLIENT_ID=""
 GOOGLE_CLIENT_SECRET=""
 ```
 
-### 5. Build and start Self-Hosted Claw
+### 5. Build and install the control plane service
 
-Build and start via PM2 (recommended — auto-restarts on crash, survives reboots):
+The long-lived Node control plane owns integration services, runner pools, channel connections, scheduling, and the admin API directly. PM2 is no longer part of the runtime path.
+
+Build and start the compose-managed control plane:
 
 ```bash
-npm run build
 npm run service:start
 ```
 
-To persist the process across reboots, run once after first start:
+Then inspect or rebuild it when needed:
 
 ```bash
-npm run service:save     # save current process list
-npm run service:startup  # install OS-level auto-start hook
+npm run service:start
+npm run service:status
 ```
 
-**Service management commands:**
+**Control plane commands:**
 
 | Command | Action |
 |---------|--------|
-| `npm run service:start` | Start (safe to re-run) |
+| `npm run service:install` | Build the control plane image |
+| `npm run service:start` | Build and bring up the compose-managed control plane |
 | `npm run service:stop` | Graceful stop |
-| `npm run service:restart` | Restart (e.g. after `npm run build`) |
-| `npm run service:logs` | Tail live logs |
-| `npm run service:status` | Process table with PID, uptime, restart count |
+| `npm run service:restart` | Rebuild and bring it up again |
+| `npm run service:logs` | Tail compose logs for the control plane |
+| `npm run service:status` | Show compose service status |
+| `npm run service:cleanup-state` | Archive old host-only state after migration |
 
 Logs are written to `logs/nanoclaw.log` and `logs/nanoclaw-error.log`.
 
-Development run (no PM2):
+**Docker-mounted durable state**
+
+The compose-managed control plane keeps durable host state in repo-mounted directories:
+
+- `store/` - SQLite databases and auth state
+- `data/` - agent memory, sessions, IPC, and runner-visible artifacts
+- `groups/` - per-group working state
+- `logs/` - control-plane logs
+- `admin-config/` - contacts, policy, settings, verified identities, integration settings, and personality
+- `admin-data/` - audit log, pending actions, and migrated legacy control-plane data
+
+The control plane also bind-mounts the repo `.env` into the container. Wizard-driven environment changes therefore update the real host `.env`, not an ephemeral container-only copy.
+
+On `service:install`, `service:start`, and `service:restart`, NanoClaw now migrates legacy host state from:
+
+- `~/.config/self-hosted-claw`
+- `~/.local/share/self-hosted-claw`
+
+into `admin-config/`, `admin-data/`, and `data/signal-cli-managed/` without overwriting repo-mounted files that already exist.
+
+After you verify the migrated install works, you can archive the old host-only state out of the active path with:
+
+```bash
+npm run service:cleanup-state
+```
+
+That cleanup is archival, not destructive: the old directories are renamed with a `.migrated-...` suffix so recovery is still possible.
+
+Development run (no installed service):
 
 ```bash
 # terminal 1
@@ -188,7 +218,7 @@ docker compose -f scripts/signal-cli/docker-compose.yml --env-file scripts/signa
 The managed bridge:
 
 - binds only to `127.0.0.1`
-- stores Signal state under the host admin data directory, not in the repo
+- stores Signal state in mounted durable storage so it survives control-plane rebuilds
 - uses the compose file in [scripts/signal-cli/docker-compose.yml](/Users/justin/Projects/selfhosted-claw/scripts/signal-cli/docker-compose.yml)
 
 If the assistant Signal account has not been registered or linked yet, complete that Signal-side step after the container starts. The compose stack gets the bridge online for you, but it does not bypass Signal's own account registration/link flow.
@@ -227,6 +257,28 @@ The `sms-socket` integration:
 - reconnects to the Android gateway over WebSocket
 - rehydrates recent SMS history after reconnects
 - exposes host-side SMS send/reply tools to the agent
+
+**Docker on Windows note**
+
+If the control plane runs in Docker and your Android gateway is on a private LAN IP like `ws://172.x.x.x:8787/`, Docker Desktop may not be able to reach that phone directly even when the Windows host can. In that case, install a Windows host relay from an elevated terminal:
+
+```bash
+npm run sms-socket:relay:install
+```
+
+Then add this to `.env` and restart the control plane:
+
+```bash
+SMS_SOCKET_HOST_RELAY_PORT=8787
+npm run service:restart
+```
+
+The relay helper reads the saved SMS integration settings, creates a Windows `netsh interface portproxy` rule on the host, and lets the Dockerized control plane reach the gateway through `host.docker.internal`.
+
+Useful relay commands:
+
+- `npm run sms-socket:relay:status`
+- `npm run sms-socket:relay:remove`
 
 ### 7. Restart after wizard changes
 
@@ -299,7 +351,7 @@ Point `INBOUND_GUARD_SCRIPT` at your own script if you want to customize the inj
 - **Google Contacts integration** - Optional OAuth-backed contact search and outbound recipient resolution across supported channels
 - **Web access** - Search and fetch content from the Web
 - **Container isolation** - Agents are sandboxed in Docker (macOS/Linux), [Docker Sandboxes](docs/docker-sandboxes.md) (micro VM isolation), or Apple Container (macOS)
-- **Credential security** - Agents can use [OneCLI's Agent Vault](https://github.com/onecli/onecli) for proxied credential injection, or connect directly to a local backend when you do not need proxying.
+- **Credential security** - Credentials stay host-side and are passed only through explicit environment variables or host-side integrations you configure.
 - **Native tool loop** - Shell, files, web fetch/search, task controls, and nested delegation are handled by Self-Hosted Claw itself instead of a provider SDK
 - **Inbound guard hook** - A host-side script sanitizes inbound messages before storage to reduce prompt-injection risk
 
@@ -401,7 +453,7 @@ Yes. Install the Android [sms-socket-app](https://github.com/crockpotveggies/sms
 
 **Is this secure?**
 
-Agents run in containers, not behind application-level permission checks. They can only access explicitly mounted directories. Credentials never enter the container — outbound API requests route through [OneCLI's Agent Vault](https://github.com/onecli/onecli), which injects authentication at the proxy level and supports rate limits and access policies. You should still review what you're running, but the codebase is small enough that you actually can. See the [security documentation](https://docs.nanoclaw.dev/concepts/security) for the full security model.
+Agents run in containers, not behind application-level permission checks. They can only access explicitly mounted directories. Secrets are not mounted from the host `.env`, and integrations perform sensitive host-side work explicitly instead of giving containers ambient access. You should still review what you're running, but the codebase is small enough that you actually can. See the [security documentation](https://docs.nanoclaw.dev/concepts/security) for the full security model.
 
 **Why no configuration files?**
 

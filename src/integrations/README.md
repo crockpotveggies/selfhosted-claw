@@ -220,7 +220,7 @@ Notifications appear in the header bell icon with a red badge count. Clicking na
 - Credentials with `envVar` are checked in `.env` (via `readEnvFile`), `process.env`, and settings store
 - Integration settings (`~/.config/self-hosted-claw/integrations/`) are **never mounted into containers**
 - `.env` is shadowed with `/dev/null` in containers
-- Credentials reach containers only via OneCLI gateway or host-side IPC tool execution
+- Credentials reach containers only via explicit environment variables or host-side IPC tool execution
 
 ## Tool Injection
 

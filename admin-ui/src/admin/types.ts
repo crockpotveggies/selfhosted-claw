@@ -70,6 +70,7 @@ export interface VerifiedIdentity {
 export interface ControlSettings {
   controlSignalJid: string;
   assistantSignalIdentity: string;
+  setupWizardReviewed: boolean;
 }
 
 export interface SignalProfileSettings {
@@ -113,7 +114,6 @@ export interface SetupStatusResponse {
     SIGNAL_RPC_URL: string;
     SIGNAL_RECEIVE_TIMEOUT_SEC: string;
     CONTROL_SIGNAL_JID: string;
-    ONECLI_URL: string;
     GOOGLE_CLIENT_ID: string;
     ADMIN_BIND_HOST: string;
     ADMIN_PORT: string;
@@ -127,10 +127,8 @@ export interface SetupStatusResponse {
     signalReachable: boolean;
     signalComposeConfigured: boolean;
     signalComposeRunning: boolean;
-    onecliConfigured: boolean;
-    onecliReachable: boolean;
     googleContactsAvailable: boolean;
-    googleContactsSource: 'env' | 'onecli' | 'oauth' | 'none';
+    googleContactsSource: 'env' | 'oauth' | 'none';
     controlChatConfigured: boolean;
     verifiedIdentityCount: number;
     assistantSignalConfigured: boolean;
@@ -159,7 +157,6 @@ export interface SetupDraft {
   SIGNAL_RPC_URL: string;
   SIGNAL_RECEIVE_TIMEOUT_SEC: string;
   CONTROL_SIGNAL_JID: string;
-  ONECLI_URL: string;
   ADMIN_BIND_HOST: string;
   ADMIN_PORT: string;
   ADMIN_UI_TOKEN: string;
@@ -179,10 +176,8 @@ export interface PendingControlAction {
 }
 
 export interface ProviderAvailability {
-  onecliConfigured: boolean;
-  onecliReachable: boolean;
   googleContactsAvailable: boolean;
-  googleContactsSource: 'env' | 'onecli' | 'oauth' | 'none';
+  googleContactsSource: 'env' | 'oauth' | 'none';
   signalOutboundAvailable: boolean;
   smsOutboundAvailable: boolean;
   emailOutboundAvailable: boolean;

@@ -8,6 +8,11 @@ services:
     ports:
       - "127.0.0.1:${SIGNAL_CLI_PORT:-8080}:8080"
     volumes:
-      - "${SIGNAL_CLI_DATA_DIR:-./signal-cli-data}:/home/.local/share/signal-cli"
-      - "./enable-read-receipts.sh:/enable-read-receipts.sh:ro"
+      - type: bind
+        source: "${SIGNAL_CLI_DATA_DIR:-./signal-cli-data}"
+        target: /home/.local/share/signal-cli
+      - type: bind
+        source: "${SIGNAL_CLI_ENABLE_READ_RECEIPTS_SCRIPT:-./enable-read-receipts.sh}"
+        target: /enable-read-receipts.sh
+        read_only: true
     entrypoint: ["/bin/sh", "/enable-read-receipts.sh"]

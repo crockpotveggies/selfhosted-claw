@@ -10,6 +10,7 @@ import path from 'path';
 import { ensureAgentMemoryFile } from '../src/agent-memory.ts';
 import { STORE_DIR } from '../src/config.ts';
 import { initDatabase, setRegisteredGroup } from '../src/db.ts';
+import { getEnvFilePath } from '../src/env.ts';
 import { isValidGroupFolder } from '../src/group-folder.ts';
 import { logger } from '../src/logger.ts';
 import { emitStatus } from './status.ts';
@@ -161,7 +162,7 @@ export async function run(args: string[]): Promise<void> {
     }
 
     // Update .env
-    const envFile = path.join(projectRoot, '.env');
+    const envFile = getEnvFilePath();
     if (fs.existsSync(envFile)) {
       let envContent = fs.readFileSync(envFile, 'utf-8');
       if (envContent.includes('ASSISTANT_NAME=')) {

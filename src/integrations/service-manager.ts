@@ -28,7 +28,12 @@ interface ComposeResult {
 export type ComposeRunner = (args: string[], cwd: string) => ComposeResult;
 
 const defaultRunner: ComposeRunner = (args, cwd) => {
-  const result = spawnSync('docker', ['compose', ...args], {
+  const composeBin = process.env.SELF_HOSTED_CLAW_COMPOSE_BIN || 'docker';
+  const command =
+    composeBin === 'docker-compose' ? 'docker-compose' : composeBin;
+  const finalArgs =
+    composeBin === 'docker-compose' ? args : ['compose', ...args];
+  const result = spawnSync(command, finalArgs, {
     cwd,
     encoding: 'utf-8',
     windowsHide: true,
@@ -50,6 +55,18 @@ function writeEnvFile(filePath: string, values: Record<string, string>): void {
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
     .join('\n');
   fs.writeFileSync(filePath, `${content}\n`, { mode: 0o600 });
+}
+
+function isComposeRecreateError(message: string): boolean {
+  return /needs to be recreated|has changed/i.test(message);
+}
+
+function buildComposeArgs(
+  composeFile: string,
+  envFile: string,
+  commandArgs: string[],
+): string[] {
+  return ['-f', composeFile, '--env-file', envFile, ...commandArgs];
 }
 
 // ---------------------------------------------------------------------------
@@ -146,10 +163,21 @@ export function startService(
   writeEnvFile(envFile, envValues);
 
   // Start via docker compose
-  const result = runner(
-    ['-f', composeFile, '--env-file', envFile, 'up', '-d'],
+  let result = runner(
+    buildComposeArgs(composeFile, envFile, ['up', '-d']),
     composeDir,
   );
+
+  if (
+    result.status !== 0 &&
+    isComposeRecreateError(result.stderr || result.stdout || '')
+  ) {
+    runner(buildComposeArgs(composeFile, envFile, ['down']), composeDir);
+    result = runner(
+      buildComposeArgs(composeFile, envFile, ['up', '-d']),
+      composeDir,
+    );
+  }
 
   if (result.status !== 0) {
     const msg = (
@@ -228,23 +256,11 @@ export function getServiceStatus(integrationName: string): ServiceStatus {
 
   if (fs.existsSync(composeFile) && fs.existsSync(envFile)) {
     const result = runner(
-      [
-        '-f',
-        composeFile,
-        '--env-file',
-        envFile,
-        'ps',
-        '--status',
-        'running',
-        '--services',
-      ],
+      ['-f', composeFile, '--env-file', envFile, 'ps', '-q', svc.serviceName],
       composeDir,
     );
     if (result.status === 0) {
-      running = result.stdout
-        .split('\n')
-        .map((l) => l.trim())
-        .includes(svc.serviceName);
+      running = result.stdout.trim().length > 0;
     } else {
       lastError = (
         result.stderr ||

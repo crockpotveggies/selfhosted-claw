@@ -1,0 +1,47 @@
+FROM node:22-slim AS build
+
+WORKDIR /app
+ENV HUSKY=0
+
+COPY package*.json ./
+COPY admin-ui ./admin-ui
+COPY src ./src
+COPY setup ./setup
+COPY container ./container
+COPY scripts ./scripts
+COPY tsconfig.json ./
+COPY eslint.config.js ./eslint.config.js
+COPY .env.example ./.env.example
+COPY README.md ./README.md
+
+RUN npm ci
+RUN npm run build
+RUN npm prune --omit=dev
+
+FROM node:22-slim
+
+WORKDIR /app
+ENV HUSKY=0
+
+RUN apt-get update && apt-get install -y \
+    docker.io \
+    docker-compose \
+    curl \
+    bash \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /app/package*.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/admin-ui/dist ./admin-ui/dist
+COPY --from=build /app/container ./container
+COPY --from=build /app/scripts ./scripts
+COPY --from=build /app/setup ./setup
+COPY --from=build /app/.env.example ./.env.example
+COPY --from=build /app/README.md ./README.md
+
+RUN mkdir -p /app/store /app/data /app/groups /app/logs /workspace-host
+
+EXPOSE 3030
+
+CMD ["node", "dist/index.js"]

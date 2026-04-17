@@ -9,27 +9,27 @@ Guide the user through migrating their OpenClaw installation to NanoClaw. This i
 
 **Principle:** Never silently copy data. Read it, explain it, discuss where it belongs in NanoClaw's architecture, show proposed changes before applying. Credentials must be masked when displayed (first 4 + `...` + last 4 characters). Make judgment calls about what's core vs. reference material.
 
-**UX:** Use `AskUserQuestion` for multiple-choice only. Use plain text for free-form input. Don't dump raw data — summarize and explain conversationally.
+**UX:** Use `AskUserQuestion` for multiple-choice only. Use plain text for free-form input. Don't dump raw data â€” summarize and explain conversationally.
 
 ## Migration State File
 
-Create `migration-state.md` in the project root at the start of Phase 0. Update it after each phase completes. This file is the single source of truth for the migration — if context is compacted or lost, re-read it to recover all decisions and progress.
+Create `migration-state.md` in the project root at the start of Phase 0. Update it after each phase completes. This file is the single source of truth for the migration â€” if context is compacted or lost, re-read it to recover all decisions and progress.
 
 Before starting any phase, re-read `migration-state.md` to ensure you have current state.
 
 Sections to maintain (add data as each phase completes):
 
-- **Progress** — checkbox list of phases (Phase 0–7)
-- **Discovery** — STATE_DIR, IDENTITY_NAME, channels, groups (with JID mappings), workspace files, cron job count, MCP servers
-- **Decisions** — assistant_name, group_model (shared/separate/main-only), main_group (folder + jid)
-- **Registered Groups** — table: folder, jid, channel, is_main
-- **Settings Migrated** — timezone, anthropic_credential (masked), sender_allowlist (created/skipped)
-- **Identity & Memory** — paths of files created, which CLAUDE.md was edited
-- **Channel Credentials** — table: channel, status, env_var
-- **Scheduled Tasks** — table: original_id, name, migrated/deferred
-- **Deferred / Not Applicable** — unsupported channels, discussed customizations, OpenClaw-only features
+- **Progress** â€” checkbox list of phases (Phase 0â€“7)
+- **Discovery** â€” STATE_DIR, IDENTITY_NAME, channels, groups (with JID mappings), workspace files, cron job count, MCP servers
+- **Decisions** â€” assistant_name, group_model (shared/separate/main-only), main_group (folder + jid)
+- **Registered Groups** â€” table: folder, jid, channel, is_main
+- **Settings Migrated** â€” timezone, anthropic_credential (masked), sender_allowlist (created/skipped)
+- **Identity & Memory** â€” paths of files created, which CLAUDE.md was edited
+- **Channel Credentials** â€” table: channel, status, env_var
+- **Scheduled Tasks** â€” table: original_id, name, migrated/deferred
+- **Deferred / Not Applicable** â€” unsupported channels, discussed customizations, OpenClaw-only features
 
-Keep it factual and terse — this is for machine recovery after compaction, not human reading. Delete the file at the end of Phase 7 (or offer to keep it as a record).
+Keep it factual and terse â€” this is for machine recovery after compaction, not human reading. Delete the file at the end of Phase 7 (or offer to keep it as a record).
 
 ## Phase 0: Discovery
 
@@ -43,7 +43,7 @@ If the user specifies a custom path, pass it: `--state-dir <path>`
 
 Parse the status block. Key fields: STATUS, STATE_DIR, CHANNELS, WORKSPACE_FILES, DAILY_MEMORY_FILES, SKILL_COUNT, SKILLS, CRON_JOBS, MCP_SERVERS, IDENTITY_NAME, AGENT_COUNT, AGENT_IDS.
 
-**Sanity-check the output:** The discovery script detects known structures but can silently miss data if OpenClaw's format has changed. Check `CONFIG_TOP_KEYS` and `CONFIG_CHANNEL_KEYS` — if you see keys the script didn't report on (e.g. a channel name not in CHANNELS, or a top-level section like `integrations` or `plugins`), read that section of the config directly with the Read tool. Also check `STATE_DIR_CONTENTS` for directories the script doesn't scan (e.g. unexpected folders alongside `workspace/`, `agents/`, `cron/`).
+**Sanity-check the output:** The discovery script detects known structures but can silently miss data if OpenClaw's format has changed. Check `CONFIG_TOP_KEYS` and `CONFIG_CHANNEL_KEYS` â€” if you see keys the script didn't report on (e.g. a channel name not in CHANNELS, or a top-level section like `integrations` or `plugins`), read that section of the config directly with the Read tool. Also check `STATE_DIR_CONTENTS` for directories the script doesn't scan (e.g. unexpected folders alongside `workspace/`, `agents/`, `cron/`).
 
 **If STATUS=not_found:** Tell the user no OpenClaw installation was detected at the standard locations (`~/.openclaw`, `~/.clawdbot`). Ask if they have a custom path. If not, exit.
 
@@ -59,17 +59,17 @@ Parse the status block. Key fields: STATUS, STATE_DIR, CHANNELS, WORKSPACE_FILES
 - MCP servers: count and names
 - Agents: count (relevant for Phase 1 groups discussion)
 
-Then explain the key architectural differences. Don't dump a table — paraphrase conversationally:
+Then explain the key architectural differences. Don't dump a table â€” paraphrase conversationally:
 
 - **Container isolation:** NanoClaw runs each agent in an isolated Linux container (Docker or Apple Container). OpenClaw runs everything in one process. This means stronger isolation but also means each group is its own sandbox.
 - **Group-based memory:** In OpenClaw, all groups under one agent share the same SOUL.md, MEMORY.md, and IDENTITY.md. In NanoClaw, each group has its own filesystem and CLAUDE.md. Shared state goes in `groups/global/CLAUDE.md` (mounted read-only into all non-main containers).
 - **Channel skills:** In OpenClaw, channels are configured in `openclaw.json`. In NanoClaw, channels are installed as code via skills (`/add-telegram`, `/add-whatsapp`, etc.) and configured through `.env` variables.
-- **Simpler config:** NanoClaw has no config file — behavior is in the code and `CLAUDE.md` files. Credentials live in `.env` or the OneCLI vault.
+- **Simpler config:** NanoClaw has no config file ? behavior is in the code and `CLAUDE.md` files. Credentials live in `.env` or integration-specific host settings.
 
 AskUserQuestion: "Ready to start migrating? I'll go through each area one at a time."
-1. **Yes, let's go** — proceed to Phase 1
-2. **Tell me more** — explain more about any area they ask about
-3. **Skip migration** — exit
+1. **Yes, let's go** â€” proceed to Phase 1
+2. **Tell me more** â€” explain more about any area they ask about
+3. **Skip migration** â€” exit
 
 ## Phase 1: Groups and Architecture
 
@@ -77,27 +77,27 @@ AskUserQuestion: "Ready to start migrating? I'll go through each area one at a t
 
 If GROUP_COUNT > 0 or AGENT_COUNT > 1, this is a critical conversation. Even with just one group, explain the model difference so the user understands what they're getting into.
 
-**OpenClaw model:** All groups routed to the same agent share one workspace — the same SOUL.md, MEMORY.md, IDENTITY.md, and tools. When you talk to the bot in your family chat or your work chat, it's the same agent with the same personality and memory. Only the session (conversation history) is separate per group.
+**OpenClaw model:** All groups routed to the same agent share one workspace â€” the same SOUL.md, MEMORY.md, IDENTITY.md, and tools. When you talk to the bot in your family chat or your work chat, it's the same agent with the same personality and memory. Only the session (conversation history) is separate per group.
 
-**NanoClaw model:** Each group is a completely separate agent running in its own Linux container. Separate filesystem, separate memory, separate CLAUDE.md. The bot in your family chat and your work chat are different agents that don't know about each other — unless you explicitly share state via `groups/global/CLAUDE.md`, which is mounted read-only into all non-main containers.
+**NanoClaw model:** Each group is a completely separate agent running in its own Linux container. Separate filesystem, separate memory, separate CLAUDE.md. The bot in your family chat and your work chat are different agents that don't know about each other â€” unless you explicitly share state via `groups/global/CLAUDE.md`, which is mounted read-only into all non-main containers.
 
-Explain this conversationally. If the user only has one group, it's simple — just note the difference and move on. If they have multiple groups, discuss:
+Explain this conversationally. If the user only has one group, it's simple â€” just note the difference and move on. If they have multiple groups, discuss:
 
 AskUserQuestion: "In OpenClaw, your groups shared the same personality and memory. In NanoClaw, each group is a fully separate agent. How would you like to handle this?"
 
-1. **Shared personality (recommended if your groups had the same bot)** — "I'll put the shared personality, identity, and user context in `groups/global/CLAUDE.md`. Every group sees it. Each group can add its own customizations on top."
-2. **Fully separate** — "Each group gets its own independent personality and memory. Complete isolation between groups."
-3. **Just main group for now** — "Set up one group now. We can add others later."
+1. **Shared personality (recommended if your groups had the same bot)** â€” "I'll put the shared personality, identity, and user context in `groups/global/CLAUDE.md`. Every group sees it. Each group can add its own customizations on top."
+2. **Fully separate** â€” "Each group gets its own independent personality and memory. Complete isolation between groups."
+3. **Just main group for now** â€” "Set up one group now. We can add others later."
 
-Remember this choice — it determines where identity and memory files go in the next phase.
+Remember this choice â€” it determines where identity and memory files go in the next phase.
 
 ### Confirm assistant name
 
-Before registering groups, confirm the assistant name — it's used for trigger patterns and CLAUDE.md templates.
+Before registering groups, confirm the assistant name â€” it's used for trigger patterns and CLAUDE.md templates.
 
 IDENTITY_NAME from discovery gives the OpenClaw name. Ask the user: "Your OpenClaw assistant was named `<IDENTITY_NAME>`. Want to keep this name in NanoClaw?" If they want a different name, ask what it should be. If IDENTITY_NAME was empty, ask them to choose a name (default: "Andy").
 
-The register step's `--assistant-name` flag writes `ASSISTANT_NAME` to `.env` and updates CLAUDE.md templates automatically — no manual `.env` write needed.
+The register step's `--assistant-name` flag writes `ASSISTANT_NAME` to `.env` and updates CLAUDE.md templates automatically â€” no manual `.env` write needed.
 
 ### Registering groups
 
@@ -117,7 +117,7 @@ For the first/primary group, add `--is-main --no-trigger-required`. Other groups
 
 **Important:** Registration requires the database to exist. If the environment step hasn't been run yet, run it first: `npx tsx setup/index.ts --step environment`. Registration also creates the group folder under `groups/` and copies the CLAUDE.md template.
 
-Register groups from all channels — including channels NanoClaw doesn't yet support (signal, matrix, etc.). The registration stores the JID and metadata in the database, ready for when that channel is added later. Groups won't receive messages until their channel code is installed, but the registration, group folder, and CLAUDE.md will be ready.
+Register groups from all channels â€” including channels NanoClaw doesn't yet support (signal, matrix, etc.). The registration stores the JID and metadata in the database, ready for when that channel is added later. Groups won't receive messages until their channel code is installed, but the registration, group folder, and CLAUDE.md will be ready.
 
 ## Phase 2: Settings from Config
 
@@ -145,25 +145,25 @@ Check for Anthropic API keys or tokens in OpenClaw's auth system. OpenClaw store
 ```
 
 Profile IDs follow `provider:identifier` format. Look for any profile where `provider` is `"anthropic"`. The credential field depends on the `type`:
-- `type: "api_key"` → `key` field (or `keyRef` for SecretRef)
-- `type: "token"` → `token` field (or `tokenRef` for SecretRef)
-- `type: "oauth"` → `access` field (OAuth access token, may need refresh)
+- `type: "api_key"` â†’ `key` field (or `keyRef` for SecretRef)
+- `type: "token"` â†’ `token` field (or `tokenRef` for SecretRef)
+- `type: "oauth"` â†’ `access` field (OAuth access token, may need refresh)
 
 Also check:
-1. `<STATE_DIR>/.env` — for `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`
-2. Config `models.providers` — for Anthropic provider entries with `apiKey`
+1. `<STATE_DIR>/.env` â€” for `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`
+2. Config `models.providers` â€” for Anthropic provider entries with `apiKey`
 
-If found, offer to save to `.env`. This pre-fills the NanoClaw setup credential step (step 4) so the user doesn't need to re-enter it. Use the same masking approach — show first 4 + last 4 characters, write the full value directly.
+If found, offer to save to `.env`. This pre-fills the NanoClaw setup credential step (step 4) so the user doesn't need to re-enter it. Use the same masking approach â€” show first 4 + last 4 characters, write the full value directly.
 
 **Important:** If the credential uses `keyRef`/`tokenRef` with `source:"exec"` or `source:"file"`, explain that it can't be auto-extracted and the user will need to enter it during setup. For `type: "oauth"` credentials with an expiry in the past, warn the user the token may need to be refreshed during setup.
 
 ### Sender Allowlists
 
 Read the channel configs for access control settings. OpenClaw stores these per-channel:
-- `channels.<channel>.allowFrom` — array of allowed sender IDs (E.164 for WhatsApp, numeric IDs for Telegram)
-- `channels.<channel>.dmPolicy` — `"open"`, `"allowlist"`, `"disabled"`
-- `channels.<channel>.groupPolicy` — `"open"`, `"allowlist"`, `"disabled"`
-- `channels.<channel>.groupAllowFrom` — array of allowed group member IDs
+- `channels.<channel>.allowFrom` â€” array of allowed sender IDs (E.164 for WhatsApp, numeric IDs for Telegram)
+- `channels.<channel>.dmPolicy` â€” `"open"`, `"allowlist"`, `"disabled"`
+- `channels.<channel>.groupPolicy` â€” `"open"`, `"allowlist"`, `"disabled"`
+- `channels.<channel>.groupAllowFrom` â€” array of allowed group member IDs
 
 NanoClaw uses `~/.config/nanoclaw/sender-allowlist.json` with this format:
 ```json
@@ -185,10 +185,10 @@ Fields:
 - `logDenied`: optional boolean (default `true`), logs denied messages
 
 If OpenClaw had allowlists configured, show the user what was set and offer to create the NanoClaw equivalent. Map:
-- `dmPolicy:"allowlist"` + `allowFrom` → per-chat entry with `"allow"` array, `"mode": "trigger"`
-- `groupPolicy:"allowlist"` + `groupAllowFrom` → per-group entry with `"allow"` array, `"mode": "trigger"`
-- `dmPolicy:"open"` → `"allow": "*"`
-- `dmPolicy:"disabled"` → per-chat entry with `"allow": []`, `"mode": "drop"` (or don't register that chat)
+- `dmPolicy:"allowlist"` + `allowFrom` â†’ per-chat entry with `"allow"` array, `"mode": "trigger"`
+- `groupPolicy:"allowlist"` + `groupAllowFrom` â†’ per-group entry with `"allow"` array, `"mode": "trigger"`
+- `dmPolicy:"open"` â†’ `"allow": "*"`
+- `dmPolicy:"disabled"` â†’ per-chat entry with `"allow": []`, `"mode": "drop"` (or don't register that chat)
 
 Create the directory and file:
 ```bash
@@ -199,13 +199,13 @@ Then write the JSON file. If no allowlists were configured, skip this.
 
 ### Container Timeout
 
-Check `agents.defaults.timeoutSeconds` in the config. This is maximum total agent runtime (wall-clock). NanoClaw's equivalent is `CONTAINER_TIMEOUT` (env var, default 30 min), also configurable per-group via `containerConfig.timeout`. Note: NanoClaw also has a separate `IDLE_TIMEOUT` (max time without output) which resets on activity — OpenClaw has no equivalent.
+Check `agents.defaults.timeoutSeconds` in the config. This is maximum total agent runtime (wall-clock). NanoClaw's equivalent is `CONTAINER_TIMEOUT` (env var, default 30 min), also configurable per-group via `containerConfig.timeout`. Note: NanoClaw also has a separate `IDLE_TIMEOUT` (max time without output) which resets on activity â€” OpenClaw has no equivalent.
 
 If the OpenClaw value differs significantly from 30 minutes, note it for the user. They can set `CONTAINER_TIMEOUT=<ms>` in `.env` after setup.
 
 ## Phase 3: Identity and Memory
 
-This phase is fully conversational — read files directly and discuss with the user. No script needed.
+This phase is fully conversational â€” read files directly and discuss with the user. No script needed.
 
 **Where files go depends on the Phase 1 (groups) decision:**
 - **Shared personality:** Core identity goes in `groups/global/CLAUDE.md` (seen by all groups). Group-specific customizations go in each group's own CLAUDE.md.
@@ -222,20 +222,20 @@ Use the Read tool to look at each file found.
 
 Read `<STATE_DIR>/workspace/IDENTITY.md` if it exists. It uses a key:value format (name, emoji, creature, vibe, etc.).
 
-The assistant name was already confirmed and written to `.env` in Phase 1. Here, focus on the rest of the identity — create an `identity.md` file with the full identity details (emoji, creature, vibe, personality traits, etc.). If shared personality was chosen in Phase 1, put it alongside `groups/global/CLAUDE.md`. Otherwise, put it in `groups/main/`.
+The assistant name was already confirmed and written to `.env` in Phase 1. Here, focus on the rest of the identity â€” create an `identity.md` file with the full identity details (emoji, creature, vibe, personality traits, etc.). If shared personality was chosen in Phase 1, put it alongside `groups/global/CLAUDE.md`. Otherwise, put it in `groups/main/`.
 
 ### SOUL.md
 
 Read `<STATE_DIR>/workspace/SOUL.md` if it exists. Then read `groups/main/CLAUDE.md`.
 
-CLAUDE.md is always loaded into the agent's context — it's the agent's continuous instructions. Not everything from SOUL.md needs to be there. Discuss with the user what belongs where:
+CLAUDE.md is always loaded into the agent's context â€” it's the agent's continuous instructions. Not everything from SOUL.md needs to be there. Discuss with the user what belongs where:
 
-- **In CLAUDE.md (always loaded):** Core personality traits, communication style, key behavioral rules. Weave these into the existing CLAUDE.md structure — adjust the opening description under the `# <Name>` heading, modify the tone in the Communication section.
-- **In a separate soul file:** Detailed personality backstory, extended guidelines, creative writing style, philosophical grounding — things the agent can reference when relevant but don't need to consume context tokens on every turn.
+- **In CLAUDE.md (always loaded):** Core personality traits, communication style, key behavioral rules. Weave these into the existing CLAUDE.md structure â€” adjust the opening description under the `# <Name>` heading, modify the tone in the Communication section.
+- **In a separate soul file:** Detailed personality backstory, extended guidelines, creative writing style, philosophical grounding â€” things the agent can reference when relevant but don't need to consume context tokens on every turn.
 
 **File placement depends on Phase 1 choice:**
-- Shared personality → edit `groups/global/CLAUDE.md` for the core traits, create `groups/global/soul.md` for the extended content. All groups will see both.
-- Separate / main only → edit `groups/main/CLAUDE.md`, create `groups/main/soul.md`.
+- Shared personality â†’ edit `groups/global/CLAUDE.md` for the core traits, create `groups/global/soul.md` for the extended content. All groups will see both.
+- Separate / main only â†’ edit `groups/main/CLAUDE.md`, create `groups/main/soul.md`.
 
 Add a reference in the relevant CLAUDE.md: "Your personality and extended behavioral guidelines are in `soul.md`. Refer to it for identity questions or when crafting responses that need your full character."
 
@@ -261,21 +261,21 @@ If DAILY_MEMORY_FILES > 0 in the discovery output, OpenClaw accumulated dated me
 
 AskUserQuestion: "You have N daily memory files from OpenClaw. How would you like to handle them?"
 
-1. **Copy as-is (recommended for many files)** — "I'll create a `daily-memories/` folder in your group directory and copy them over. Your agent can reference them when needed."
+1. **Copy as-is (recommended for many files)** â€” "I'll create a `daily-memories/` folder in your group directory and copy them over. Your agent can reference them when needed."
    - Create the folder in the appropriate group directory (per Phase 1 decision)
    - Copy all `.md` files: `cp -r <workspace>/memory/*.md <group_dir>/daily-memories/`
    - Add a reference in CLAUDE.md: "Historical daily memory files from your previous system are in `daily-memories/`. Refer to them when you need context about past events or observations."
 
-2. **Consolidate into memories** — "I'll read through them, extract the durable facts, and add them to your memories file. This reduces clutter but takes longer."
+2. **Consolidate into memories** â€” "I'll read through them, extract the durable facts, and add them to your memories file. This reduces clutter but takes longer."
    - Read each file, extract entries worth keeping (skip transient observations, focus on durable facts about the user, preferences, recurring topics)
    - Consolidate into `memories.md`
    - Use sub-agents for large volumes (>10 files)
 
-3. **Skip** — "Don't bring daily memories over."
+3. **Skip** â€” "Don't bring daily memories over."
 
 ### OpenClaw Skills
 
-If SKILL_COUNT > 0 in discovery, OpenClaw had custom skills. The SKILL.md format is a shared standard — skills are directly portable.
+If SKILL_COUNT > 0 in discovery, OpenClaw had custom skills. The SKILL.md format is a shared standard â€” skills are directly portable.
 
 The discovery reports skill names and source locations. For each skill, read just the YAML front matter (name + description at the top of SKILL.md) and present a list to the user: skill name, description, source location. Let the user select which ones to bring over.
 
@@ -285,7 +285,7 @@ For confirmed skills, copy the entire skill directory as-is:
 cp -r <skill_source_dir> container/skills/<skill_name>
 ```
 
-After all skills are copied, a container rebuild is needed — note this for post-migration: `./container/build.sh`.
+After all skills are copied, a container rebuild is needed â€” note this for post-migration: `./container/build.sh`.
 
 ### Config-registered plugins and skills
 
@@ -293,15 +293,15 @@ If CONFIG_PLUGIN_COUNT > 0 in discovery, OpenClaw had installed plugins/skills w
 
 For each detected plugin, present the name to the user and discuss whether to set it up in NanoClaw. Read the OpenClaw config section to understand what it is, then:
 
-1. **If NanoClaw has a matching skill** — check the available NanoClaw skills list for an equivalent (e.g. `/add-voice-transcription` for whisper). If found, save the API key to `.env` and invoke that skill.
+1. **If NanoClaw has a matching skill** â€” check the available NanoClaw skills list for an equivalent (e.g. `/add-voice-transcription` for whisper). If found, save the API key to `.env` and invoke that skill.
 
-2. **If the OpenClaw plugin was an MCP server** — read its config to find the exact package name and command. Install the same MCP server (e.g. `npx -y <exact-package-from-config>`). Don't search for or guess at MCP packages — only install what was explicitly configured.
+2. **If the OpenClaw plugin was an MCP server** â€” read its config to find the exact package name and command. Install the same MCP server (e.g. `npx -y <exact-package-from-config>`). Don't search for or guess at MCP packages â€” only install what was explicitly configured.
 
-3. **If the OpenClaw plugin was a CLI tool** — read the config to identify the exact tool. If it's an npm package, add it to the container's Dockerfile. Add a note to the group's CLAUDE.md that the tool is available and how to invoke it.
+3. **If the OpenClaw plugin was a CLI tool** â€” read the config to identify the exact tool. If it's an npm package, add it to the container's Dockerfile. Add a note to the group's CLAUDE.md that the tool is available and how to invoke it.
 
-4. **If the plugin wraps an API** — discuss with the user what it did and offer to implement the equivalent: save the API key to `.env`, write a container skill with instructions for using the API, or wire it into the message flow if it's something automatic (e.g. voice transcription).
+4. **If the plugin wraps an API** â€” discuss with the user what it did and offer to implement the equivalent: save the API key to `.env`, write a container skill with instructions for using the API, or wire it into the message flow if it's something automatic (e.g. voice transcription).
 
-5. **If unclear** — discuss with the user what the plugin did and decide together. Don't install unknown packages or search for replacements — that's a supply chain risk.
+5. **If unclear** â€” discuss with the user what the plugin did and decide together. Don't install unknown packages or search for replacements â€” that's a supply chain risk.
 
 For API keys, read the config value directly (don't display raw keys) and write to `.env`. The discovery script reports which plugins have keys but never extracts them.
 
@@ -319,7 +319,7 @@ For each channel found in the discovery results, handle it based on NanoClaw sup
 
 ### Supported channels (whatsapp, telegram, slack, discord)
 
-Run the credential extraction script with `--write-env .env` so it writes credentials directly to NanoClaw's `.env` file. The script never emits raw credential values to stdout — only masked versions.
+Run the credential extraction script with `--write-env .env` so it writes credentials directly to NanoClaw's `.env` file. The script never emits raw credential values to stdout â€” only masked versions.
 
 First, run without `--write-env` to preview:
 
@@ -332,9 +332,9 @@ Parse the status block. Key fields: HAS_CREDENTIAL, CREDENTIAL_MASKED, NANOCLAW_
 **If HAS_CREDENTIAL=false but the user expects a credential:** The extraction script may not recognize the config structure. Fall back to reading the channel section of `openclaw.json` directly with the Read tool and look for any field that contains a token or key value. Ask the user to confirm.
 
 If HAS_CREDENTIAL=true: Show the masked credential (`CREDENTIAL_MASKED`). AskUserQuestion:
-1. **Use this credential** — run again with `--write-env .env` to save it
-2. **Enter a new one** — ask in plain text, write to `.env` manually
-3. **Skip this channel** — don't configure
+1. **Use this credential** â€” run again with `--write-env .env` to save it
+2. **Enter a new one** â€” ask in plain text, write to `.env` manually
+3. **Skip this channel** â€” don't configure
 
 If using the credential:
 
@@ -344,21 +344,21 @@ npx tsx ${CLAUDE_SKILL_DIR}/scripts/extract-channel-credentials.ts --state-dir <
 
 The script writes the credential directly to `.env` using the correct NanoClaw variable name (e.g. `TELEGRAM_BOT_TOKEN`). Check the status block for `WRITTEN_TO` and `WRITTEN_COUNT` to confirm.
 
-**Credential destination note:** Credentials are saved to `.env` for now. During `/setup`, the credential step will either keep them in `.env` (Apple Container) or migrate them to the OneCLI vault (Docker). The user doesn't need to worry about this now.
+**Credential destination note:** Credentials are saved to `.env` for now. `/setup` will keep using `.env` and host-side integration settings, so the user doesn't need to worry about a second credential store here.
 
-For Slack: there are two credentials (bot token + app token). The script handles both in one run — check `HAS_CREDENTIAL_2` and `NANOCLAW_ENV_VAR_2` in the status block.
+For Slack: there are two credentials (bot token + app token). The script handles both in one run â€” check `HAS_CREDENTIAL_2` and `NANOCLAW_ENV_VAR_2` in the status block.
 
-**WhatsApp special case:** WhatsApp uses QR/pairing-code authentication, not a token. Do not copy auth state from OpenClaw — encryption sessions become stale after copying and messages fail to decrypt. Authentication will be handled during `/setup` via the `/add-whatsapp` skill (takes about 60 seconds with a pairing code). Just note that WhatsApp was configured and move on.
+**WhatsApp special case:** WhatsApp uses QR/pairing-code authentication, not a token. Do not copy auth state from OpenClaw â€” encryption sessions become stale after copying and messages fail to decrypt. Authentication will be handled during `/setup` via the `/add-whatsapp` skill (takes about 60 seconds with a pairing code). Just note that WhatsApp was configured and move on.
 
 **Allowlist note:** If the channel had `allowFrom` or group policies, these were already handled in Phase 2 (sender allowlists). Mention that the allowlist file was created earlier.
 
 ### Unsupported channels (signal, matrix, irc, msteams, feishu, etc.)
 
-Explain briefly: "NanoClaw doesn't have a `<channel>` integration yet, but channels are added over time via skills. Any groups from this channel were already registered in Phase 1 — they'll activate when the channel is added."
+Explain briefly: "NanoClaw doesn't have a `<channel>` integration yet, but channels are added over time via skills. Any groups from this channel were already registered in Phase 1 â€” they'll activate when the channel is added."
 
 If there are credentials (tokens, keys) for the unsupported channel, offer to save them to `.env` with a descriptive variable name (e.g. `SIGNAL_ACCOUNT`, `MATRIX_ACCESS_TOKEN`) so they're available when the channel is eventually supported.
 
-Don't invoke channel skills here — just prepare `.env` credentials. Channel code is installed during `/setup`.
+Don't invoke channel skills here â€” just prepare `.env` credentials. Channel code is installed during `/setup`.
 
 ## Phase 5: Scheduled Tasks
 
@@ -374,7 +374,7 @@ Read relevant sections from `<STATE_DIR>/openclaw.json` directly with the Read t
 
 If MCP_SERVERS was non-empty in discovery, these can be ported. Claude Code supports MCP servers natively. Read the OpenClaw config's `mcp.servers` section to get each server's details (`command`, `args`, `env`, `url`).
 
-MCP servers in NanoClaw are registered in the agent-runner source code. Before editing, grep for `mcpServers` in `container/agent-runner/src/` to find the current location — it's expected to be in `index.ts` in the `query()` options, but may have moved. For each OpenClaw MCP server the user wants to bring over:
+MCP servers in NanoClaw are registered in the agent-runner source code. Before editing, grep for `mcpServers` in `container/agent-runner/src/` to find the current location â€” it's expected to be in `index.ts` in the `query()` options, but may have moved. For each OpenClaw MCP server the user wants to bring over:
 
 1. Read its config: command, args, env, url
 2. **stdio servers** (have `command`): Add an entry to the `mcpServers` object in `container/agent-runner/src/index.ts`. The command runs inside the container, so it needs to be available there (Node.js/npx-based servers work; custom binaries would need to be added to the Dockerfile).
@@ -396,13 +396,13 @@ If the config has webhook sections (in `cron.webhook`, `cron.failureDestination`
 ### Other Config
 
 Scan the config for notable sections and briefly mention anything that doesn't carry over:
-- **Exec approvals / command allowlist:** NanoClaw uses container isolation instead — the agent runs with `--dangerously-skip-permissions` inside a sandboxed container
+- **Exec approvals / command allowlist:** NanoClaw uses container isolation instead â€” the agent runs with `--dangerously-skip-permissions` inside a sandboxed container
 - **Human delay:** Not applicable in NanoClaw's container model
 - **Compaction:** Handled by Claude Code SDK automatically
 - **TTS:** Not built into NanoClaw
 - **Model configuration:** NanoClaw uses whatever Anthropic model the credential provides access to
 
-Don't belabor these — just mention and move on.
+Don't belabor these â€” just mention and move on.
 
 ## Phase 7: Summary
 
@@ -411,18 +411,18 @@ Don't belabor these — just mention and move on.
 Print a comprehensive summary:
 
 **Migrated:**
-- Assistant name → `.env` ASSISTANT_NAME + CLAUDE.md templates updated
-- Groups → registered in database, folders created with CLAUDE.md templates
-- Timezone → `.env` TZ
-- Anthropic credential → `.env` (for setup to pick up)
-- Sender allowlists → `~/.config/nanoclaw/sender-allowlist.json`
-- Personality → CLAUDE.md (core) + `soul.md` (extended), placed per Phase 1 decision (global or per-group)
-- User context → `user-context.md`
-- Memories → `memories.md` + daily memory files (copied to `daily-memories/` or consolidated)
-- OpenClaw skills → copied to `container/skills/`
-- Channel credentials → `.env` (list which channels)
-- Scheduled tasks → inserted into database or noted for post-setup
-- MCP servers → registered in agent-runner
+- Assistant name â†’ `.env` ASSISTANT_NAME + CLAUDE.md templates updated
+- Groups â†’ registered in database, folders created with CLAUDE.md templates
+- Timezone â†’ `.env` TZ
+- Anthropic credential â†’ `.env` (for setup to pick up)
+- Sender allowlists â†’ `~/.config/nanoclaw/sender-allowlist.json`
+- Personality â†’ CLAUDE.md (core) + `soul.md` (extended), placed per Phase 1 decision (global or per-group)
+- User context â†’ `user-context.md`
+- Memories â†’ `memories.md` + daily memory files (copied to `daily-memories/` or consolidated)
+- OpenClaw skills â†’ copied to `container/skills/`
+- Channel credentials â†’ `.env` (list which channels)
+- Scheduled tasks â†’ inserted into database or noted for post-setup
+- MCP servers â†’ registered in agent-runner
 
 **Noted for later:**
 - Channel code installation (happens during `/setup`)
@@ -430,7 +430,7 @@ Print a comprehensive summary:
 - Container rebuild needed (if skills or MCP servers were added): `./container/build.sh`
 
 **Not applicable:**
-- Unsupported channels (list them — groups registered for future)
+- Unsupported channels (list them â€” groups registered for future)
 - OpenClaw-specific features (exec approvals, human delay, TTS, model config, session reset policies, etc.)
 
 **Discussed and deferred:**

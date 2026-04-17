@@ -19,9 +19,7 @@ export function formatMessages(
     const replyAttr = m.reply_to_message_id
       ? ` reply_to="${escapeXml(m.reply_to_message_id)}"`
       : '';
-    const threadAttr = m.thread_id
-      ? ` thread="${escapeXml(m.thread_id)}"`
-      : '';
+    const threadAttr = m.thread_id ? ` thread="${escapeXml(m.thread_id)}"` : '';
     const replySnippet =
       m.reply_to_message_content && m.reply_to_sender_name
         ? `\n  <quoted_message from="${escapeXml(m.reply_to_sender_name)}">${escapeXml(m.reply_to_message_content)}</quoted_message>`
