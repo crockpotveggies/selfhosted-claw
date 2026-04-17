@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react';
 import { CBadge, CButton, CCard } from '@coreui/react';
+import { useNavigate } from 'react-router-dom';
 import { Wizard, useWizard } from 'react-use-wizard';
 
 import { useAdminDashboardContext } from '../admin/context';
+import { ADMIN_PATHS } from '../admin/navigation';
 
 function WizardFrame(props: {
   title: string;
@@ -193,7 +195,6 @@ function ModelStep() {
             OPENAI_MODEL: dashboard.setupDraft.OPENAI_MODEL,
             OPENAI_MAX_TOKENS: dashboard.setupDraft.OPENAI_MAX_TOKENS,
             OPENAI_TEMPERATURE: dashboard.setupDraft.OPENAI_TEMPERATURE,
-            ONECLI_URL: dashboard.setupDraft.ONECLI_URL,
             ...(dashboard.setupDraft.OPENAI_API_KEY.trim()
               ? { OPENAI_API_KEY: dashboard.setupDraft.OPENAI_API_KEY.trim() }
               : {}),
@@ -281,31 +282,10 @@ function ModelStep() {
           />
         </label>
       </div>
-      <label>
-        OneCLI URL
-        <input
-          value={dashboard.setupDraft.ONECLI_URL}
-          onChange={(event) =>
-            dashboard.setSetupDraft((current) => ({
-              ...current,
-              ONECLI_URL: event.target.value,
-            }))
-          }
-        />
-      </label>
       <div className="hintBox">
         <strong>Status</strong>
         <p>
           OpenAI backend configured: {dashboard.setupChecks.openAIConfigured ? 'yes' : 'not yet'}
-          <br />
-          OneCLI configured: {dashboard.setupChecks.onecliConfigured ? 'yes' : 'not yet'}
-          <br />
-          OneCLI reachable: {dashboard.setupChecks.onecliReachable ? 'yes' : 'not yet'}
-          <br />
-          Google Contacts available: {dashboard.setupChecks.googleContactsAvailable ? 'yes' : 'not yet'}
-          {dashboard.setupChecks.googleContactsAvailable
-            ? ` (${dashboard.setupChecks.googleContactsSource})`
-            : ''}
         </p>
       </div>
     </WizardFrame>
@@ -732,6 +712,7 @@ function OwnershipStep() {
 
 function ReviewStep() {
   const dashboard = useAdminDashboardContext();
+  const navigate = useNavigate();
   const setupCommands = `npm run setup -- --step environment
 npm run setup -- --step signal
 npm run setup -- --step service
@@ -742,6 +723,14 @@ npm run setup -- --step verify`;
       title="Review and finish"
       lead="The wizard writes local host configuration safely, but the service still needs to be restarted so the Node process picks up any new `.env` values."
       primaryLabel="Setup reviewed"
+      primaryPendingKey="setup-review-finish"
+      primaryPendingLabel="Finishing..."
+      onPrimary={() =>
+        dashboard.runWithUiState('setup-review-finish', async () => {
+          await dashboard.saveSettings({ setupWizardReviewed: true });
+          navigate(ADMIN_PATHS.dashboard);
+        })
+      }
     >
       <div className="checklist">
         <div className={dashboard.setupChecks.openAIConfigured ? 'ok' : 'warn'}>

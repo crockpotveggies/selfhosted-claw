@@ -89,6 +89,7 @@ export interface ControlPolicy {
 export interface ControlSettings {
   controlSignalJid: string;
   assistantSignalIdentity: string;
+  setupWizardReviewed: boolean;
   updatedAt: string;
 }
 

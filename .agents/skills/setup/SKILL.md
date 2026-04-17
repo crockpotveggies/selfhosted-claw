@@ -140,44 +140,32 @@ Run `npx tsx setup/index.ts --step container -- --runtime <chosen>` and parse th
 
 ## 4. Credential System
 
-The credential system depends on the container runtime chosen in step 3.
+Configure credentials directly in `.env` regardless of container runtime.
 
-### 4a. Docker → OneCLI
+AskUserQuestion: Do you want to use your **Codex subscription** (Pro/Max) or an **Anthropic API key**?
 
-Install OneCLI and its CLI tool:
+1. **Codex subscription (Pro/Max)** ? description: "Uses your existing Codex Pro or Max subscription. Run `Codex setup-token` in another terminal to get your token."
+2. **Anthropic API key** ? description: "Pay-per-use API key from console.anthropic.com."
 
-```bash
-curl -fsSL onecli.sh/install | sh
-curl -fsSL onecli.sh/cli/install | sh
-```
+For subscription: tell the user to run `Codex setup-token` in another terminal. Stop and wait for the user to confirm they have completed this step successfully before proceeding.
 
-Verify both installed: `onecli version`. If the command is not found, the CLI was likely installed to `~/.local/bin/`. Add it to PATH for the current session and persist it:
+Once confirmed, add the token to `.env`:
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
-# Persist for future sessions (append to shell profile if not already present)
-grep -q '.local/bin' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-grep -q '.local/bin' ~/.zshrc 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+echo 'CLAUDE_CODE_OAUTH_TOKEN=<token>' >> .env
 ```
 
-Then re-verify with `onecli version`.
+Note: `ANTHROPIC_AUTH_TOKEN` is also supported as a fallback.
 
-Point the CLI at the local OneCLI instance (it defaults to the cloud service otherwise):
+For API key: tell the user to get an API key from https://console.anthropic.com/settings/keys if they do not have one, then add it to `.env`:
+
 ```bash
-onecli config set api-host http://127.0.0.1:10254
+echo 'ANTHROPIC_API_KEY=<key>' >> .env
 ```
 
-Ensure `.env` has the OneCLI URL (create the file if it doesn't exist):
-```bash
-grep -q 'ONECLI_URL' .env 2>/dev/null || echo 'ONECLI_URL=http://127.0.0.1:10254' >> .env
-```
+**If the user's response happens to contain a token or key** (starts with `sk-ant-` or looks like a token): write it to `.env` on their behalf using the appropriate variable name.
 
-Check if a secret already exists:
-```bash
-onecli secrets list
-```
-
-If an Anthropic secret is listed, confirm with user: keep or reconfigure? If keeping, skip to step 5.
+**Optional:** If the user needs a custom API endpoint, they can add `ANTHROPIC_BASE_URL=<url>` to `.env`.
 
 AskUserQuestion: Do you want to use your **Codex subscription** (Pro/Max) or an **Anthropic API key**?
 
@@ -315,7 +303,7 @@ Run `npx tsx setup/index.ts --step verify` and parse the status block.
 **If STATUS=failed, fix each:**
 - SERVICE=stopped → `npm run build`, then restart: `launchctl kickstart -k gui/$(id -u)/com.nanoclaw` (macOS) or `systemctl --user restart nanoclaw` (Linux) or `bash start-nanoclaw.sh` (WSL nohup)
 - SERVICE=not_found → re-run step 7
-- CREDENTIALS=missing → re-run step 4 (Docker: check `onecli secrets list`; Apple Container: check `.env` for credentials)
+- CREDENTIALS=missing ? re-run step 4 and check `.env` for credentials
 - CHANNEL_AUTH shows `not_found` for any channel → re-invoke that channel's skill (e.g. `/add-telegram`)
 - REGISTERED_GROUPS=0 → re-invoke the channel skills from step 5
 - MOUNT_ALLOWLIST=missing → `npx tsx setup/index.ts --step mounts -- --empty`

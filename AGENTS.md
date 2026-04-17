@@ -73,4 +73,4 @@ npm run build        # Compile TypeScript + admin UI
 
 ## Secrets / Credentials
 
-Managed by OneCLI gateway. Integration settings in `~/.config/self-hosted-claw/integrations/` are never mounted into containers.
+Credentials come from host-side environment and stored integration settings. Integration settings in `~/.config/self-hosted-claw/integrations/` are never mounted into containers.

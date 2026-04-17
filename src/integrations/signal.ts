@@ -2,12 +2,16 @@ import fs from 'fs';
 import path from 'path';
 
 import {
-  ADMIN_CONFIG_DIR,
   ADMIN_DATA_DIR,
+  ADMIN_CONFIG_DIR,
+  DATA_DIR,
+  MOUNT_ROOT,
   SIGNAL_ACCOUNT,
   SIGNAL_RPC_URL,
 } from '../config.js';
+import { resolveHostPath } from '../host-paths.js';
 import { logger } from '../logger.js';
+import { resolveSignalRpcUrl } from '../signal-rpc-url.js';
 
 import { registerIntegration } from './registry.js';
 import type {
@@ -25,9 +29,11 @@ import { getIntegrationSettings } from './settings-store.js';
 // ---------------------------------------------------------------------------
 
 const DEFAULT_RPC_URL = 'http://127.0.0.1:8080';
+const DEFAULT_SIGNAL_DATA_DIR = `${DATA_DIR}/signal-cli-managed`;
+const LEGACY_SIGNAL_DATA_DIR = `${ADMIN_DATA_DIR}/signal-cli-managed`;
 
 function parseRpcUrl(rpcUrl: string): URL {
-  const value = rpcUrl.trim() || DEFAULT_RPC_URL;
+  const value = resolveSignalRpcUrl(rpcUrl.trim() || DEFAULT_RPC_URL);
   const parsed = new URL(value);
   if (!['http:', 'https:'].includes(parsed.protocol)) {
     throw new Error('Signal RPC URL must use http or https');
@@ -55,6 +61,14 @@ function parseJsonMessage(text: string): string {
   }
 }
 
+function normalizeSignalDataDir(value: unknown): string {
+  const candidate = typeof value === 'string' ? value.trim() : '';
+  if (!candidate || candidate === LEGACY_SIGNAL_DATA_DIR) {
+    return DEFAULT_SIGNAL_DATA_DIR;
+  }
+  return candidate;
+}
+
 // ---------------------------------------------------------------------------
 // Setup flow steps
 // ---------------------------------------------------------------------------
@@ -63,10 +77,17 @@ function getSettings(): { account: string; rpcUrl: string; dataDir: string } {
   const settings = getIntegrationSettings('signal');
   return {
     account: (settings.account as string) || SIGNAL_ACCOUNT || '',
-    rpcUrl: (settings.rpcUrl as string) || SIGNAL_RPC_URL || DEFAULT_RPC_URL,
-    dataDir:
-      (settings.dataDir as string) || `${ADMIN_DATA_DIR}/signal-cli-managed`,
+    rpcUrl: resolveSignalRpcUrl(
+      (settings.rpcUrl as string) || SIGNAL_RPC_URL || DEFAULT_RPC_URL,
+    ),
+    dataDir: normalizeSignalDataDir(settings.dataDir),
   };
+}
+
+function toHostManagedPath(localPath: string): string {
+  return resolveHostPath(
+    path.isAbsolute(localPath) ? localPath : path.join(MOUNT_ROOT, localPath),
+  );
 }
 
 const credentialStep: CredentialInputStep = {
@@ -243,7 +264,7 @@ const signalIntegration: IntegrationDefinition = {
       account: SIGNAL_ACCOUNT || '',
       rpcUrl: SIGNAL_RPC_URL || DEFAULT_RPC_URL,
       receiveTimeoutSec: 5,
-      dataDir: `${ADMIN_DATA_DIR}/signal-cli-managed`,
+      dataDir: DEFAULT_SIGNAL_DATA_DIR,
     },
   },
 
@@ -451,11 +472,15 @@ const signalIntegration: IntegrationDefinition = {
       SIGNAL_CLI_PORT: portFromRpcUrl(
         (settings.rpcUrl as string) || DEFAULT_RPC_URL,
       ),
-      SIGNAL_CLI_DATA_DIR:
-        (settings.dataDir as string) || `${ADMIN_DATA_DIR}/signal-cli-managed`,
+      SIGNAL_CLI_DATA_DIR: toHostManagedPath(
+        normalizeSignalDataDir(settings.dataDir),
+      ),
+      SIGNAL_CLI_ENABLE_READ_RECEIPTS_SCRIPT: toHostManagedPath(
+        path.join('scripts', 'signal-cli', 'enable-read-receipts.sh'),
+      ),
     }),
     healthCheck: {
-      url: `${SIGNAL_RPC_URL || DEFAULT_RPC_URL}/v1/accounts`,
+      url: `${resolveSignalRpcUrl(SIGNAL_RPC_URL || DEFAULT_RPC_URL)}/v1/accounts`,
       intervalMs: 30_000,
     },
     setup: {

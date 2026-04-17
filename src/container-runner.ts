@@ -13,16 +13,17 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  MOUNT_ROOT,
   OPENAI_API_KEY,
   OPENAI_BASE_URL,
   OPENAI_CONTEXT_WINDOW,
   OPENAI_MAX_TOKENS,
   OPENAI_MODEL,
   OPENAI_TEMPERATURE,
-  ONECLI_URL,
   TIMEZONE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
+import { resolveHostPath } from './host-paths.js';
 import { getRegisteredIntegrations } from './integrations/registry.js';
 import { isIntegrationEnabled } from './integrations/settings-store.js';
 import { logger } from './logger.js';
@@ -32,11 +33,8 @@ import {
   readonlyMountArgs,
   stopContainer,
 } from './container-runtime.js';
-import { OneCLI } from '@onecli-sh/sdk';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
-
-const onecli = new OneCLI({ url: ONECLI_URL });
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -47,6 +45,7 @@ export interface ContainerInput {
   sessionId?: string;
   groupFolder: string;
   chatJid: string;
+  runtimeStateKey?: string;
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
@@ -54,7 +53,7 @@ export interface ContainerInput {
   controlSignalJid?: string;
   /** True when the controller sent the message(s) that triggered this container. */
   controllerTriggered?: boolean;
-  /** Folder name of the main (controller) group — mounted read-only so non-main groups can read controller notes/memory. */
+  /** Folder name of the main (controller) group â€” mounted read-only so non-main groups can read controller notes/memory. */
   mainGroupFolder?: string;
   /** Calendar availability policy injected from admin settings. */
   calendarAvailability?: {
@@ -77,6 +76,42 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+function ensureWritableFile(filePath: string): void {
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, '');
+  }
+  try {
+    fs.chmodSync(filePath, 0o666);
+  } catch {
+    // Best-effort on platforms/filesystems that ignore chmod (e.g. Windows bind mounts).
+  }
+}
+
+function shouldMountCustomAgentRunnerSource(
+  groupAgentRunnerDir: string,
+): boolean {
+  const customizationMarker = path.join(groupAgentRunnerDir, '.customized');
+  return fs.existsSync(customizationMarker);
+}
+
+function syncControllerAccessFlag(
+  groupFolder: string,
+  isMain: boolean,
+  controllerTriggered: boolean,
+): void {
+  if (isMain) return;
+  const flagDir = resolveGroupIpcPath(groupFolder);
+  const flagPath = path.join(flagDir, 'controller_access');
+  if (controllerTriggered) {
+    fs.mkdirSync(flagDir, { recursive: true });
+    fs.writeFileSync(flagPath, '');
+    return;
+  }
+  if (fs.existsSync(flagPath)) {
+    fs.unlinkSync(flagPath);
+  }
+}
+
 export function resolveContainerOpenAIBaseUrl(baseUrl: string): string {
   try {
     const parsed = new URL(baseUrl);
@@ -97,12 +132,18 @@ export function resolveContainerOpenAIBaseUrl(baseUrl: string): string {
 
 function buildVolumeMounts(
   group: RegisteredGroup,
+  runtimeStateKey: string,
   isMain: boolean,
   mainGroupFolder?: string,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
+  const mountRoot = MOUNT_ROOT;
+  const hostProjectRoot = resolveHostPath(mountRoot);
   const groupDir = resolveGroupFolderPath(group.folder);
+  const hostGroupDir = resolveHostPath(
+    path.join(mountRoot, 'groups', group.folder),
+  );
 
   if (isMain) {
     // Main gets the project root read-only. Writable paths the agent needs
@@ -111,13 +152,13 @@ function buildVolumeMounts(
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
     mounts.push({
-      hostPath: projectRoot,
+      hostPath: hostProjectRoot,
       containerPath: '/workspace/project',
       readonly: true,
     });
 
     // Shadow .env so the agent cannot read secrets from the mounted project root.
-    // Credentials are injected by the OneCLI gateway, never exposed to containers.
+    // Secrets stay on the host and are provided through explicit runtime env.
     const envFile = path.join(projectRoot, '.env');
     if (fs.existsSync(envFile)) {
       mounts.push({
@@ -131,21 +172,20 @@ function buildVolumeMounts(
     // query and write to the database directly.
     const storeDir = path.join(projectRoot, 'store');
     mounts.push({
-      hostPath: storeDir,
+      hostPath: resolveHostPath(path.join(mountRoot, 'store')),
       containerPath: '/workspace/project/store',
       readonly: false,
     });
 
     // Main also gets its group folder as the working directory
     mounts.push({
-      hostPath: groupDir,
+      hostPath: hostGroupDir,
       containerPath: '/workspace/group',
       readonly: false,
     });
-  } else {
     // Other groups only get their own folder
     mounts.push({
-      hostPath: groupDir,
+      hostPath: hostGroupDir,
       containerPath: '/workspace/group',
       readonly: false,
     });
@@ -155,7 +195,7 @@ function buildVolumeMounts(
     const globalDir = path.join(GROUPS_DIR, 'global');
     if (fs.existsSync(globalDir)) {
       mounts.push({
-        hostPath: globalDir,
+        hostPath: resolveHostPath(path.join(mountRoot, 'groups', 'global')),
         containerPath: '/workspace/global',
         readonly: true,
       });
@@ -167,7 +207,9 @@ function buildVolumeMounts(
       const mainDir = path.join(GROUPS_DIR, mainGroupFolder);
       if (fs.existsSync(mainDir)) {
         mounts.push({
-          hostPath: mainDir,
+          hostPath: resolveHostPath(
+            path.join(mountRoot, 'groups', mainGroupFolder),
+          ),
           containerPath: '/workspace/controller-notes',
           readonly: true,
         });
@@ -176,10 +218,21 @@ function buildVolumeMounts(
   }
 
   // Per-group runtime state (history, summaries, archives, ephemeral data).
-  const groupRuntimeStateDir = path.join(DATA_DIR, 'sessions', group.folder);
+  const groupRuntimeStateDir = path.join(DATA_DIR, 'sessions', runtimeStateKey);
   fs.mkdirSync(groupRuntimeStateDir, { recursive: true });
+  try {
+    fs.chmodSync(groupRuntimeStateDir, 0o777);
+  } catch {
+    // Best-effort on platforms/filesystems that ignore chmod.
+  }
+  const historyFile = path.join(groupRuntimeStateDir, 'history.jsonl');
+  const summaryFile = path.join(groupRuntimeStateDir, 'summary.md');
+  ensureWritableFile(historyFile);
+  ensureWritableFile(summaryFile);
   mounts.push({
-    hostPath: groupRuntimeStateDir,
+    hostPath: resolveHostPath(
+      path.join(mountRoot, 'data', 'sessions', runtimeStateKey),
+    ),
     containerPath: '/workspace/state',
     readonly: false,
   });
@@ -190,50 +243,47 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'responses'), { recursive: true });
   mounts.push({
-    hostPath: groupIpcDir,
+    hostPath: resolveHostPath(
+      path.join(mountRoot, 'data', 'ipc', group.folder),
+    ),
     containerPath: '/workspace/ipc',
     readonly: false,
   });
 
-  // Copy agent-runner source into a per-group writable location so agents
-  // can customize it (add tools, change behavior) without affecting other
-  // groups. Recompiled on container startup via entrypoint.sh.
-  const agentRunnerSrc = path.join(
-    projectRoot,
-    'container',
-    'agent-runner',
-    'src',
-  );
   const groupAgentRunnerDir = path.join(
     DATA_DIR,
     'sessions',
     group.folder,
     'agent-runner-src',
   );
-  if (fs.existsSync(agentRunnerSrc)) {
-    const srcIndex = path.join(agentRunnerSrc, 'index.ts');
-    const cachedIndex = path.join(groupAgentRunnerDir, 'index.ts');
-    const needsCopy =
-      !fs.existsSync(groupAgentRunnerDir) ||
-      !fs.existsSync(cachedIndex) ||
-      (fs.existsSync(srcIndex) &&
-        fs.statSync(srcIndex).mtimeMs > fs.statSync(cachedIndex).mtimeMs);
-    if (needsCopy) {
-      fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
-    }
+  // Mount per-group runner source only when explicitly opted in.
+  // Legacy session snapshots are often just stale copies of the default
+  // runner, and mounting them forces an unnecessary checksum/recompile path
+  // on every container start. Creating `agent-runner-src/.customized`
+  // preserves the old override behavior for the rare group that truly needs it.
+  if (shouldMountCustomAgentRunnerSource(groupAgentRunnerDir)) {
+    mounts.push({
+      hostPath: resolveHostPath(
+        path.join(
+          mountRoot,
+          'data',
+          'sessions',
+          group.folder,
+          'agent-runner-src',
+        ),
+      ),
+      containerPath: '/app/src',
+      readonly: false,
+    });
   }
-  mounts.push({
-    hostPath: groupAgentRunnerDir,
-    containerPath: '/app/src',
-    readonly: false,
-  });
 
   // Container skills (read-only behavioral instructions loaded into system prompt)
   const skillsDir = path.join(projectRoot, 'container', 'skills');
   if (fs.existsSync(skillsDir)) {
     mounts.push({
-      hostPath: skillsDir,
+      hostPath: resolveHostPath(path.join(mountRoot, 'container', 'skills')),
       containerPath: '/workspace/skills',
       readonly: true,
     });
@@ -255,7 +305,6 @@ function buildVolumeMounts(
 async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
-  agentIdentifier?: string,
 ): Promise<string[]> {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
   const containerOpenAIBaseUrl = resolveContainerOpenAIBaseUrl(OPENAI_BASE_URL);
@@ -267,22 +316,7 @@ async function buildContainerArgs(
   args.push('-e', `OPENAI_MAX_TOKENS=${OPENAI_MAX_TOKENS}`);
   args.push('-e', `OPENAI_TEMPERATURE=${OPENAI_TEMPERATURE}`);
   args.push('-e', `OPENAI_CONTEXT_WINDOW=${OPENAI_CONTEXT_WINDOW}`);
-
-  // OneCLI gateway handles credential injection — containers never see real secrets.
-  // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
-  const onecliApplied = await onecli.applyContainerConfig(args, {
-    addHostMapping: false, // Nanoclaw already handles host gateway
-    agent: agentIdentifier,
-  });
-  if (onecliApplied) {
-    logger.info({ containerName }, 'OneCLI gateway config applied');
-  } else {
-    logger.warn(
-      { containerName },
-      'OneCLI gateway not reachable — container will have no credentials',
-    );
-  }
-  if (!onecliApplied && OPENAI_API_KEY) {
+  if (OPENAI_API_KEY) {
     args.push('-e', `OPENAI_API_KEY=${OPENAI_API_KEY}`);
   }
 
@@ -322,19 +356,22 @@ export async function runContainerAgent(
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
+  syncControllerAccessFlag(
+    group.folder,
+    input.isMain,
+    input.controllerTriggered === true,
+  );
+  const runtimeStateKey = input.runtimeStateKey || group.folder;
 
-  const mounts = buildVolumeMounts(group, input.isMain, input.mainGroupFolder);
+  const mounts = buildVolumeMounts(
+    group,
+    runtimeStateKey,
+    input.isMain,
+    input.mainGroupFolder,
+  );
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  // Main group uses the default OneCLI agent; others use their own agent.
-  const agentIdentifier = input.isMain
-    ? undefined
-    : group.folder.toLowerCase().replace(/_/g, '-');
-  const containerArgs = await buildContainerArgs(
-    mounts,
-    containerName,
-    agentIdentifier,
-  );
+  const containerArgs = await buildContainerArgs(mounts, containerName);
 
   logger.debug(
     {
@@ -420,7 +457,7 @@ export async function runContainerAgent(
               newSessionId = parsed.newSessionId;
             }
             hadStreamingOutput = true;
-            // Activity detected — reset the hard timeout
+            // Activity detected â€” reset the hard timeout
             resetTimeout();
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
@@ -441,7 +478,7 @@ export async function runContainerAgent(
       for (const line of lines) {
         if (line) logger.debug({ container: group.folder }, line);
       }
-      // Don't reset timeout on stderr — SDK writes debug logs continuously.
+      // Don't reset timeout on stderr â€” SDK writes debug logs continuously.
       // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
       if (stderrTruncated) return;
       const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
@@ -560,7 +597,7 @@ export async function runContainerAgent(
       const isError = code !== 0;
 
       if (isVerbose || isError) {
-        // On error, log input metadata only — not the full prompt.
+        // On error, log input metadata only â€” not the full prompt.
         // Full input is only included at verbose level to avoid
         // persisting user conversation content on every non-zero exit.
         if (isVerbose) {
@@ -782,6 +819,7 @@ export function writeGroupsSnapshot(
 export function writeIntegrationToolsManifest(
   groupFolder: string,
   isMain: boolean,
+  controllerTriggered: boolean = false,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });
@@ -800,8 +838,9 @@ export function writeIntegrationToolsManifest(
     if (!def.tools) continue;
     for (const tool of def.tools) {
       if (tool.location !== 'host') continue;
-      // Filter controller-only tools for non-main groups
-      if (tool.controllerOnly && !isMain) continue;
+      // Filter controller-only tools unless the session is acting with
+      // controller privileges (main chat or an explicitly controller-triggered run).
+      if (tool.controllerOnly && !(isMain || controllerTriggered)) continue;
       tools.push({
         name: tool.name,
         description: tool.description,

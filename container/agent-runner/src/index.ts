@@ -9,6 +9,8 @@ import { CronExpressionParser } from 'cron-parser';
 import { resolve as dnsResolve } from 'dns/promises';
 import fs from 'fs';
 import path from 'path';
+import { shouldForcePreflightCompaction } from './startup-utils.js';
+import { hasControllerAccess } from './tool-access.js';
 
 interface ContainerInput {
   prompt: string;
@@ -470,7 +472,7 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
       : `Sharing full calendar details with the controller is fine — they own the calendar.`,
     `ERROR ESCALATION: If a tool call fails, you hit a permission error, or you cannot complete a requested action (e.g. missing event ID, API error, blocked operation), immediately notify the controller via notify_controller with a clear explanation of what went wrong and what you need. Do NOT just tell the group chat that something failed — always escalate to the controller directly so they can help resolve it.`,
     `If recipient, channel, or content is ambiguous, ask a clarifying question instead of guessing.`,
-    `Do not mention OneCLI or secrets unless directly relevant; host-side credentials may be managed outside the container.`,
+    `Do not mention credential internals unless directly relevant; host-side credentials may be managed outside the container.`,
     containerInput.controlSignalJid
       ? `The user you are talking to is the owner (controller). When they say "me", "myself", or "I" in the context of messaging or group membership, they are referring to themselves — use their Signal JID: ${containerInput.controlSignalJid}.`
       : '',
@@ -671,7 +673,12 @@ function fallbackSummary(messages: OpenAIMessage[]): string {
 async function archiveAndCompactHistory(systemPrompt: string): Promise<void> {
   const summary = readSummary();
   const history = loadHistory();
-  if (estimateTokens(history, summary) <= OPENAI_CONTEXT_WINDOW) return;
+  if (
+    estimateConversationRequestTokens(systemPrompt, history) <=
+    OPENAI_CONTEXT_WINDOW
+  ) {
+    return;
+  }
   if (history.length <= MAX_HISTORY_KEEP_MESSAGES) return;
 
   const archived = history.slice(0, history.length - MAX_HISTORY_KEEP_MESSAGES);
@@ -725,6 +732,41 @@ async function archiveAndCompactHistory(systemPrompt: string): Promise<void> {
 
   fs.writeFileSync(SUMMARY_FILE, newSummary + '\n');
   saveHistory(retained);
+}
+
+function fastCompactHistory(): boolean {
+  const summary = readSummary();
+  const history = loadHistory();
+  if (history.length <= MAX_HISTORY_KEEP_MESSAGES) return false;
+
+  const archived = history.slice(0, history.length - MAX_HISTORY_KEEP_MESSAGES);
+  const retained = history.slice(history.length - MAX_HISTORY_KEEP_MESSAGES);
+  if (archived.length === 0) return false;
+
+  const archiveSummary = fallbackSummary(archived);
+  const mergedSummary = [summary, archiveSummary].filter(Boolean).join('\n\n');
+  const timestamp = new Date().toISOString();
+  const archivePath = path.join(
+    CONVERSATIONS_DIR,
+    `${timestamp.slice(0, 10)}-${slugify(archiveSummary || 'conversation')}.md`,
+  );
+  const archiveContent = [
+    `# Archived Conversation`,
+    '',
+    `Archived: ${timestamp}`,
+    '',
+    `## Summary`,
+    '',
+    archiveSummary,
+    '',
+    `## Messages`,
+    '',
+    formatMessagesForArchive(archived),
+  ].join('\n');
+  fs.writeFileSync(archivePath, archiveContent);
+  fs.writeFileSync(SUMMARY_FILE, mergedSummary + '\n');
+  saveHistory(retained);
+  return true;
 }
 
 function buildConversationMessages(
@@ -2300,14 +2342,23 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
 // Dynamic integration tools — loaded from manifest written by the host
 // ---------------------------------------------------------------------------
 
+let loadedIntegrationManifestSignature: string | null = null;
+
 function loadIntegrationTools(): void {
+  const manifestPath = path.join(IPC_DIR, 'integration_tools.json');
+  if (!fs.existsSync(manifestPath)) return;
+
+  const stat = fs.statSync(manifestPath);
+  const signature = `${stat.size}:${stat.mtimeMs}`;
+  if (signature === loadedIntegrationManifestSignature) {
+    return;
+  }
+
   for (const [name, spec] of Object.entries(TOOL_REGISTRY)) {
     if (spec.dynamicIntegrationTool) {
       delete TOOL_REGISTRY[name];
     }
   }
-  const manifestPath = path.join(IPC_DIR, 'integration_tools.json');
-  if (!fs.existsSync(manifestPath)) return;
   try {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Array<{
       name: string;
@@ -2348,21 +2399,19 @@ function loadIntegrationTools(): void {
         },
       };
     }
+    loadedIntegrationManifestSignature = signature;
     log(`Loaded ${manifest.length} integration tools from manifest`);
   } catch (err) {
     log(`Failed to load integration tools manifest: ${err}`);
   }
 }
 
-// Load integration tools on startup
-loadIntegrationTools();
-
 function buildOpenAITools(
-  controllerTriggered: boolean,
+  controllerAccess: boolean,
 ): Array<Record<string, unknown>> {
   return Object.entries(TOOL_REGISTRY)
     .filter(
-      ([, spec]) => !spec.controllerOnly || controllerTriggered,
+      ([, spec]) => !spec.controllerOnly || controllerAccess,
     )
     .map(([name, spec]) => ({
       type: 'function',
@@ -2393,7 +2442,7 @@ async function executeToolCall(
     };
   }
   // Defense in depth: block controller-only tools even if model hallucinates them
-  if (tool.controllerOnly && !ctx.containerInput.controllerTriggered) {
+  if (tool.controllerOnly && !hasControllerAccess(ctx.containerInput)) {
     return {
       role: 'tool',
       name: toolName,
@@ -2463,7 +2512,7 @@ async function runConversationTurn(
   const history = loadHistory();
   const workingHistory: OpenAIMessage[] = [...history, { role: 'user', content: prompt }];
   const ctx: ToolContext = { containerInput };
-  const tools = buildOpenAITools(containerInput.controllerTriggered === true);
+  const tools = buildOpenAITools(hasControllerAccess(containerInput));
   const toolCallCounts: Record<string, number> = {}; // per-turn rate limit counters
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -2621,9 +2670,18 @@ async function main(): Promise<void> {
   // Guard: if history is too large to fit in the context window, force-compact
   // before the first turn to prevent repeated context-limit failures.
   const preHistory = loadHistory();
-  if (preHistory.length > MAX_HISTORY_KEEP_MESSAGES) {
-    log(`History has ${preHistory.length} messages (limit ${MAX_HISTORY_KEEP_MESSAGES}), forcing compaction`);
-    await archiveAndCompactHistory(systemPrompt);
+  if (
+    shouldForcePreflightCompaction(
+      preHistory.length,
+      estimateConversationRequestTokens(systemPrompt, preHistory),
+      OPENAI_CONTEXT_WINDOW,
+      MAX_HISTORY_KEEP_MESSAGES,
+    )
+  ) {
+    log(`History has ${preHistory.length} messages (limit ${MAX_HISTORY_KEEP_MESSAGES}), forcing fast compaction`);
+    if (!fastCompactHistory()) {
+      await archiveAndCompactHistory(systemPrompt);
+    }
   }
 
   const pending = drainIpcInput();

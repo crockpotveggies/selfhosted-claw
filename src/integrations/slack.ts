@@ -3,7 +3,11 @@ import { ASSISTANT_NAME } from '../config.js';
 import { canonicalizeIdentity } from '../control-identities.js';
 import { ControlStore } from '../control-store.js';
 import { createChildLogger } from '../logger.js';
-import type { Channel, ChannelGroupLookupResult, NewMessage } from '../types.js';
+import type {
+  Channel,
+  ChannelGroupLookupResult,
+  NewMessage,
+} from '../types.js';
 
 import { registerIntegration } from './registry.js';
 import {
@@ -76,11 +80,7 @@ function getStoredToken(
   settings?: Record<string, unknown>,
 ): string {
   const env = readEnvFile([key]);
-  return (
-    env[key] ||
-    process.env[key] ||
-    String(settings?.[key] || '')
-  ).trim();
+  return (env[key] || process.env[key] || String(settings?.[key] || '')).trim();
 }
 
 function getBotToken(settings?: Record<string, unknown>): string {
@@ -100,7 +100,9 @@ function normalizeControllerSlackIdentity(value: string): string {
   return canonicalizeIdentity(prefixed);
 }
 
-function hasVerifiedSlackController(settings?: Record<string, unknown>): boolean {
+function hasVerifiedSlackController(
+  settings?: Record<string, unknown>,
+): boolean {
   const identity = normalizeControllerSlackIdentity(
     String(settings?.[CONTROLLER_IDENTITY_SETTING] || ''),
   );
@@ -446,7 +448,10 @@ class SlackChannel implements Channel {
 
       socket.onmessage = (event) => {
         this.handleSocketMessage(event.data).catch((error) => {
-          log.warn({ err: String(error) }, 'Slack socket event handling failed');
+          log.warn(
+            { err: String(error) },
+            'Slack socket event handling failed',
+          );
         });
       };
     });
@@ -538,11 +543,9 @@ class SlackChannel implements Channel {
     if (cached) return cached;
 
     try {
-      const payload = await callSlackApi(
-        'conversations.info',
-        this.botToken,
-        { channel: conversationId },
-      );
+      const payload = await callSlackApi('conversations.info', this.botToken, {
+        channel: conversationId,
+      });
       const raw = (payload.channel || {}) as Record<string, unknown>;
       const mapped = this.mapConversation(raw, channelType);
       this.conversationCache.set(conversationId, mapped);
@@ -669,7 +672,8 @@ const credentialStep: CredentialInputStep = {
     } catch (error) {
       return {
         valid: false,
-        error: error instanceof Error ? error.message : 'Slack validation failed',
+        error:
+          error instanceof Error ? error.message : 'Slack validation failed',
       };
     }
   },
@@ -897,13 +901,15 @@ const slackIntegration: IntegrationDefinition = {
   tools: [
     {
       name: 'slack.send_message',
-      description: 'Send a Slack message to a Slack channel or conversation. Accepts a channel name like #general or tests, or a Slack JID like slack:C12345678.',
+      description:
+        'Send a Slack message to a Slack channel or conversation. Accepts a channel name like #general or tests, or a Slack JID like slack:C12345678.',
       parameters: {
         type: 'object',
         properties: {
           to: {
             type: 'string',
-            description: 'Channel name (e.g. #tests or tests) or Slack JID (e.g. slack:C12345678)',
+            description:
+              'Channel name (e.g. #tests or tests) or Slack JID (e.g. slack:C12345678)',
           },
           text: {
             type: 'string',
@@ -914,32 +920,33 @@ const slackIntegration: IntegrationDefinition = {
       },
       location: 'host' as const,
       controllerOnly: true,
-        execute: async (args, ctx) => {
-          const to = String(args.to || '').trim();
-          const text = String(args.text || '').trim();
-          if (!to) throw new Error('to is required');
-          if (!text) throw new Error('text is required');
-          const channel = ctx.channels?.find(
-            (candidate) => candidate.name === INTEGRATION_NAME,
-          ) as SlackChannel | undefined;
-          if (!channel) throw new Error('Slack channel is not connected');
-          let destination = to;
-          if (!isSlackJid(destination)) {
-            const matchedGroup = await channel.findGroupByName(destination);
-            if (!matchedGroup?.jid) {
-              throw new Error(
-                'Slack messaging requires a slack:<id> JID or an already-known Slack channel name',
-              );
-            }
-            destination = matchedGroup.jid;
+      execute: async (args, ctx) => {
+        const to = String(args.to || '').trim();
+        const text = String(args.text || '').trim();
+        if (!to) throw new Error('to is required');
+        if (!text) throw new Error('text is required');
+        const channel = ctx.channels?.find(
+          (candidate) => candidate.name === INTEGRATION_NAME,
+        ) as SlackChannel | undefined;
+        if (!channel) throw new Error('Slack channel is not connected');
+        let destination = to;
+        if (!isSlackJid(destination)) {
+          const matchedGroup = await channel.findGroupByName(destination);
+          if (!matchedGroup?.jid) {
+            throw new Error(
+              'Slack messaging requires a slack:<id> JID or an already-known Slack channel name',
+            );
           }
-          await channel.sendMessage(destination, text);
-          return JSON.stringify({ status: 'sent', to: destination });
-        },
+          destination = matchedGroup.jid;
+        }
+        await channel.sendMessage(destination, text);
+        return JSON.stringify({ status: 'sent', to: destination });
       },
+    },
     {
       name: 'slack.list_channels',
-      description: 'List all Slack channels and conversations the bot is a member of. Returns names and JIDs.',
+      description:
+        'List all Slack channels and conversations the bot is a member of. Returns names and JIDs.',
       parameters: {
         type: 'object',
         properties: {},
@@ -953,7 +960,9 @@ const slackIntegration: IntegrationDefinition = {
         ) as SlackChannel | undefined;
         if (!channel) throw new Error('Slack channel is not connected');
         const groups = await channel.getGroups();
-        return JSON.stringify(groups.map((g) => ({ name: g.name, jid: g.jid })));
+        return JSON.stringify(
+          groups.map((g) => ({ name: g.name, jid: g.jid })),
+        );
       },
     },
     {

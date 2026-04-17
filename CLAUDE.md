@@ -42,28 +42,28 @@ Single Node.js process with a unified integration system. Integrations (Signal, 
 Integrations are the primary extension mechanism. Each integration is a self-contained package that declares its capabilities. See [src/integrations/README.md](src/integrations/README.md) for the full developer guide.
 
 **Core integrations** (always on, cannot be disabled):
-- `signal` — Channel + Docker service (signal-cli) + setup wizard
+- `signal` â€” Channel + Docker service (signal-cli) + setup wizard
 
 **Installable integrations** (optional, enabled via admin UI):
-- `google-calendar` — 6 calendar tools + OAuth setup + memory
+- `google-calendar` â€” 6 calendar tools + OAuth setup + memory
 
 Creating a new integration: add a file to `src/integrations/`, call `registerIntegration()`, import it from `src/integrations/index.ts`.
 
 ## Admin UI
 
 React + CoreUI dashboard at `http://localhost:3030` with pages:
-- **Dashboard** — metric cards, recent activity table, audit log
-- **Contacts** — identity trust management, message history
-- **Personality** — agent personality profiles, Signal profile, rendered preview
-- **Policy** — verified identities, provider controls, contact resolution
-- **Availability** — calendar availability windows, timezone, scheduling preferences
-- **Integrations** — card grid of all integrations with setup wizards, settings, logs
-- **Tools** — registry of control actions grouped by type
-- **Skills** — container skill editor (CRUD for markdown skill files)
-- **Tasks** — scheduled/recurring agent tasks
-- **Approvals** — pending control actions requiring human decision
-- **Audit** — immutable action history log
-- **Logs** — structured log viewer with filtering (level, integration, group, text search)
+- **Dashboard** â€” metric cards, recent activity table, audit log
+- **Contacts** â€” identity trust management, message history
+- **Personality** â€” agent personality profiles, Signal profile, rendered preview
+- **Policy** â€” verified identities, provider controls, contact resolution
+- **Availability** â€” calendar availability windows, timezone, scheduling preferences
+- **Integrations** â€” card grid of all integrations with setup wizards, settings, logs
+- **Tools** â€” registry of control actions grouped by type
+- **Skills** â€” container skill editor (CRUD for markdown skill files)
+- **Tasks** â€” scheduled/recurring agent tasks
+- **Approvals** â€” pending control actions requiring human decision
+- **Audit** â€” immutable action history log
+- **Logs** â€” structured log viewer with filtering (level, integration, group, text search)
 
 Notification bell in header shows integration health alerts (expired tokens, offline services, circuit breakers).
 
@@ -81,18 +81,18 @@ File-based with YAML frontmatter tags, 3D scoping:
 Storage: `data/memory/{entity-type}/{id}/{integration}/*.md`
 Agent tools: `memory_search`, `memory_store`, `memory_forget` (container-local).
 
-## Secrets / Credentials / Proxy (OneCLI)
+## Secrets / Credentials / Proxy
 
-API keys, secret keys, OAuth tokens, and auth credentials are managed by the OneCLI gateway — which handles secret injection into containers at request time, so no keys or tokens are ever passed to containers directly. Integration settings (`~/.config/self-hosted-claw/integrations/`) are never mounted into containers. Run `onecli --help`.
+API keys, secret keys, OAuth tokens, and auth credentials are managed from host-side environment and persisted integration settings. Containers only receive the narrow runtime values they need. Integration settings (`~/.config/self-hosted-claw/integrations/`) are never mounted into containers.
 
 ## Skills
 
 Four types of skills exist in Self-Hosted Claw. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full taxonomy and guidelines.
 
-- **Feature skills** — merge a `skill/*` branch to add capabilities (e.g. `/add-telegram`, `/add-slack`)
-- **Utility skills** — ship code files alongside SKILL.md (e.g. `/claw`)
-- **Operational skills** — instruction-only workflows, always on `main` (e.g. `/setup`, `/debug`)
-- **Container skills** — loaded inside agent containers at runtime (`container/skills/`)
+- **Feature skills** â€” merge a `skill/*` branch to add capabilities (e.g. `/add-telegram`, `/add-slack`)
+- **Utility skills** â€” ship code files alongside SKILL.md (e.g. `/claw`)
+- **Operational skills** â€” instruction-only workflows, always on `main` (e.g. `/setup`, `/debug`)
+- **Container skills** â€” loaded inside agent containers at runtime (`container/skills/`)
 
 | Skill | When to Use |
 |-------|-------------|
@@ -100,7 +100,6 @@ Four types of skills exist in Self-Hosted Claw. See [CONTRIBUTING.md](CONTRIBUTI
 | `/customize` | Adding channels, integrations, changing behavior |
 | `/debug` | Container issues, logs, troubleshooting |
 | `/update-nanoclaw` | Bring upstream Self-Hosted Claw updates into a customized install |
-| `/init-onecli` | Install OneCLI Agent Vault and migrate `.env` credentials to it |
 
 ## Contributing
 
@@ -108,7 +107,7 @@ Before creating a PR, adding a skill, or preparing any contribution, you MUST re
 
 ## Development
 
-Run commands directly—don't tell the user to run them.
+Run commands directlyâ€”don't tell the user to run them.
 
 ```bash
 npm run dev          # Run with hot reload
@@ -118,16 +117,14 @@ npm run build        # Compile TypeScript + admin UI
 
 Service management:
 ```bash
-# PM2 (Windows / cross-platform)
-npx pm2 restart nanoclaw
-npx pm2 logs nanoclaw
-npx pm2 status
+# Build or refresh the control plane image
+npm run service:install
 
-# macOS (launchd)
-launchctl kickstart -k gui/$(id -u)/com.nanoclaw
-
-# Linux (systemd)
-systemctl --user restart nanoclaw
+# Start / restart / inspect the compose-managed control plane
+npm run service:start
+npm run service:restart
+npm run service:status
+npm run service:logs
 ```
 
 ## Container Performance

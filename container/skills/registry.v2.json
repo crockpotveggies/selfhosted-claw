@@ -1,0 +1,106 @@
+{
+  "skills": [
+    {
+      "name": "agent-browser",
+      "category": "web",
+      "kind": "agent",
+      "visibility": {
+        "principalTypes": ["controller"],
+        "trustTiers": ["trusted"],
+        "permissionGroups": ["trusted-ops"]
+      },
+      "allowedRunnerPools": ["trusted"],
+      "sideEffectLevel": "draft",
+      "requiredContext": ["task_summary"],
+      "requiredArtifacts": [],
+      "preconditions": [],
+      "outputs": ["browser-notes.md"],
+      "tags": ["browser", "research"]
+    },
+    {
+      "name": "capabilities",
+      "category": "system-report",
+      "kind": "agent",
+      "visibility": {
+        "principalTypes": ["controller"],
+        "trustTiers": ["trusted"],
+        "permissionGroups": ["trusted-ops"]
+      },
+      "allowedRunnerPools": ["trusted"],
+      "sideEffectLevel": "none",
+      "requiredContext": ["system_state"],
+      "requiredArtifacts": [],
+      "preconditions": [],
+      "outputs": ["capabilities-report.md"],
+      "tags": ["status", "inventory"]
+    },
+    {
+      "name": "executive-assistant",
+      "category": "coordination",
+      "kind": "agent",
+      "visibility": {
+        "principalTypes": ["controller", "external"],
+        "trustTiers": ["trusted", "restricted"],
+        "permissionGroups": ["drafting", "scheduling"]
+      },
+      "allowedRunnerPools": ["trusted", "restricted"],
+      "sideEffectLevel": "draft",
+      "requiredContext": ["thread_summary", "principal_summary"],
+      "requiredArtifacts": [],
+      "preconditions": ["controller_context_for_outreach"],
+      "outputs": ["draft-reply.txt", "meeting-brief.md"],
+      "tags": ["calendar", "assistant", "scheduling"]
+    },
+    {
+      "name": "google-places",
+      "category": "reference",
+      "kind": "agent",
+      "visibility": {
+        "principalTypes": ["controller"],
+        "trustTiers": ["trusted"],
+        "permissionGroups": ["trusted-ops"]
+      },
+      "allowedRunnerPools": ["trusted"],
+      "sideEffectLevel": "draft",
+      "requiredContext": ["task_summary"],
+      "requiredArtifacts": [],
+      "preconditions": [],
+      "outputs": ["places-summary.md"],
+      "tags": ["places", "maps"]
+    },
+    {
+      "name": "slack-formatting",
+      "category": "formatting",
+      "kind": "system",
+      "visibility": {
+        "principalTypes": ["system"],
+        "trustTiers": ["trusted"],
+        "permissionGroups": ["internal"]
+      },
+      "allowedRunnerPools": ["trusted"],
+      "sideEffectLevel": "none",
+      "requiredContext": [],
+      "requiredArtifacts": [],
+      "preconditions": [],
+      "outputs": [],
+      "tags": ["internal", "slack"]
+    },
+    {
+      "name": "status",
+      "category": "system-report",
+      "kind": "agent",
+      "visibility": {
+        "principalTypes": ["controller"],
+        "trustTiers": ["trusted"],
+        "permissionGroups": ["trusted-ops"]
+      },
+      "allowedRunnerPools": ["trusted"],
+      "sideEffectLevel": "none",
+      "requiredContext": ["system_state"],
+      "requiredArtifacts": [],
+      "preconditions": [],
+      "outputs": ["status-report.md"],
+      "tags": ["status", "healthcheck"]
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Prune stale session artifacts (JSONLs, debug logs, todos, telemetry, group logs).
-# Safe to run while NanoClaw is live — active sessions are read from the DB.
+# Safe to run while NanoClaw is live - active sessions are read from the DB.
 #
 # Usage:  ./scripts/cleanup-sessions.sh [--dry-run]
 #
@@ -144,7 +144,7 @@ done < <(find "$GROUPS_DIR"/*/logs -type f -mtime +7 -print0 2>/dev/null)
 # --- Summary ---
 
 if $DRY_RUN; then
-  log "DRY RUN complete — would free ~${TOTAL_FREED}K"
+  log "DRY RUN complete - would free ~${TOTAL_FREED}K"
 else
-  log "Done — freed ~${TOTAL_FREED}K"
+  log "Done - freed ~${TOTAL_FREED}K"
 fi

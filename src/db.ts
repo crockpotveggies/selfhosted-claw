@@ -3,6 +3,18 @@ import fs from 'fs';
 import path from 'path';
 
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
+import type {
+  ActionRecord,
+  ApprovalRecord,
+  ArtifactRecord,
+  AuditLogRecord,
+  GroupMembershipRecord,
+  IdentityRecord,
+  PrincipalGroupRecord,
+  PrincipalRecord,
+  RunRecord,
+  TaskRecord,
+} from './core/state/types.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -13,6 +25,37 @@ import {
 } from './types.js';
 
 let db: Database.Database;
+
+function normalizeScheduledTaskContextModes(database: Database.Database): void {
+  database
+    .prepare(
+      `
+      UPDATE scheduled_tasks
+      SET context_mode = 'isolated'
+      WHERE context_mode IS NULL
+        OR context_mode NOT IN ('group', 'isolated')
+    `,
+    )
+    .run();
+
+  const migratedLegacyDirectTasks = database
+    .prepare(
+      `
+      UPDATE scheduled_tasks
+      SET context_mode = 'isolated'
+      WHERE context_mode = 'group'
+        AND chat_jid LIKE 'signal:user:%'
+    `,
+    )
+    .run().changes;
+
+  if (migratedLegacyDirectTasks > 0) {
+    logger.info(
+      { migratedLegacyDirectTasks },
+      'Migrated legacy direct-message scheduled tasks to isolated context',
+    );
+  }
+}
 
 function createSchema(database: Database.Database): void {
   database.exec(`
@@ -86,6 +129,174 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS cp_principals (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL CHECK (type IN ('controller', 'external', 'system')),
+      display_name TEXT NOT NULL,
+      trust_tier TEXT NOT NULL CHECK (trust_tier IN ('trusted', 'restricted')),
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS cp_identities (
+      id TEXT PRIMARY KEY,
+      principal_id TEXT NOT NULL,
+      channel_type TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      external_handle TEXT,
+      verified INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(channel_type, external_id),
+      FOREIGN KEY (principal_id) REFERENCES cp_principals(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cp_identities_principal
+      ON cp_identities(principal_id);
+
+    CREATE TABLE IF NOT EXISTS cp_groups (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      visibility TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS cp_group_memberships (
+      principal_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      PRIMARY KEY (principal_id, group_id),
+      FOREIGN KEY (principal_id) REFERENCES cp_principals(id),
+      FOREIGN KEY (group_id) REFERENCES cp_groups(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS cp_tasks (
+      id TEXT PRIMARY KEY,
+      principal_id TEXT NOT NULL,
+      source_channel TEXT NOT NULL,
+      source_thread_id TEXT,
+      status TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (principal_id) REFERENCES cp_principals(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cp_tasks_principal
+      ON cp_tasks(principal_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS cp_actions (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (
+        status IN (
+          'proposed',
+          'approved',
+          'queued',
+          'executing',
+          'succeeded',
+          'failed_retryable',
+          'failed_terminal',
+          'outcome_unknown'
+        )
+      ),
+      runner_pool TEXT NOT NULL CHECK (runner_pool IN ('trusted', 'restricted')),
+      permission_profile TEXT NOT NULL,
+      idempotency_key TEXT,
+      semantic_dedupe_key TEXT,
+      requested_by_principal_id TEXT NOT NULL,
+      approved_by_principal_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES cp_tasks(id),
+      FOREIGN KEY (requested_by_principal_id) REFERENCES cp_principals(id),
+      FOREIGN KEY (approved_by_principal_id) REFERENCES cp_principals(id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_cp_actions_idempotency
+      ON cp_actions(idempotency_key);
+    CREATE INDEX IF NOT EXISTS idx_cp_actions_semantic
+      ON cp_actions(semantic_dedupe_key);
+    CREATE INDEX IF NOT EXISTS idx_cp_actions_task
+      ON cp_actions(task_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS cp_runs (
+      id TEXT PRIMARY KEY,
+      action_id TEXT NOT NULL,
+      runner_pool TEXT NOT NULL CHECK (runner_pool IN ('trusted', 'restricted')),
+      status TEXT NOT NULL,
+      attempt_no INTEGER NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      exit_code INTEGER,
+      error_class TEXT,
+      FOREIGN KEY (action_id) REFERENCES cp_actions(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cp_runs_action
+      ON cp_runs(action_id, attempt_no DESC);
+
+    CREATE TABLE IF NOT EXISTS cp_artifacts (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      path TEXT NOT NULL,
+      media_type TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      created_by_run_id TEXT,
+      FOREIGN KEY (task_id) REFERENCES cp_tasks(id),
+      FOREIGN KEY (created_by_run_id) REFERENCES cp_runs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cp_artifacts_task
+      ON cp_artifacts(task_id, created_by_run_id);
+
+    CREATE TABLE IF NOT EXISTS cp_approvals (
+      id TEXT PRIMARY KEY,
+      action_id TEXT NOT NULL,
+      required_from_principal_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      FOREIGN KEY (action_id) REFERENCES cp_actions(id),
+      FOREIGN KEY (required_from_principal_id) REFERENCES cp_principals(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cp_approvals_action
+      ON cp_approvals(action_id);
+
+    CREATE TABLE IF NOT EXISTS cp_audit_logs (
+      id TEXT PRIMARY KEY,
+      principal_id TEXT,
+      task_id TEXT,
+      action_id TEXT,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (principal_id) REFERENCES cp_principals(id),
+      FOREIGN KEY (task_id) REFERENCES cp_tasks(id),
+      FOREIGN KEY (action_id) REFERENCES cp_actions(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cp_audit_logs_created
+      ON cp_audit_logs(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS cp_inbound_events (
+      id TEXT PRIMARY KEY,
+      source_system TEXT NOT NULL,
+      source_event_id TEXT NOT NULL,
+      message_hash TEXT NOT NULL,
+      principal_id TEXT,
+      task_id TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(source_system, source_event_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cp_inbound_events_hash
+      ON cp_inbound_events(source_system, message_hash);
+
+    CREATE TABLE IF NOT EXISTS cp_action_leases (
+      action_id TEXT PRIMARY KEY,
+      lease_token TEXT NOT NULL,
+      worker_id TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      claimed_at TEXT NOT NULL,
+      FOREIGN KEY (action_id) REFERENCES cp_actions(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cp_action_leases_expiry
+      ON cp_action_leases(expires_at);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -155,22 +366,24 @@ function createSchema(database: Database.Database): void {
   }
 
   // Add reply context columns if they don't exist (migration for existing DBs)
-    try {
-      database.exec(`ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT`);
-      database.exec(
-        `ALTER TABLE messages ADD COLUMN reply_to_message_content TEXT`,
-      );
-      database.exec(`ALTER TABLE messages ADD COLUMN reply_to_sender_name TEXT`);
-    } catch {
-      /* columns already exist */
-    }
-
-    try {
-      database.exec(`ALTER TABLE messages ADD COLUMN thread_id TEXT`);
-    } catch {
-      /* column already exists */
-    }
+  try {
+    database.exec(`ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT`);
+    database.exec(
+      `ALTER TABLE messages ADD COLUMN reply_to_message_content TEXT`,
+    );
+    database.exec(`ALTER TABLE messages ADD COLUMN reply_to_sender_name TEXT`);
+  } catch {
+    /* columns already exist */
   }
+
+  try {
+    database.exec(`ALTER TABLE messages ADD COLUMN thread_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  normalizeScheduledTaskContextModes(database);
+}
 
 export function initDatabase(): void {
   const dbPath = path.join(STORE_DIR, 'messages.db');
@@ -192,6 +405,11 @@ export function _initTestDatabase(): void {
 /** @internal - for tests only. */
 export function _closeDatabase(): void {
   db.close();
+}
+
+/** @internal - for tests only. */
+export function _normalizeScheduledTaskContextModesForTests(): void {
+  normalizeScheduledTaskContextModes(db);
 }
 
 /**
@@ -331,7 +549,7 @@ export function getMessagesBySender(
 ): NewMessage[] {
   return db
     .prepare(
-        `
+      `
       SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me,
              thread_id, reply_to_message_id, reply_to_message_content, reply_to_sender_name
       FROM messages
@@ -787,6 +1005,500 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- Control-plane v2 accessors ---
+
+export function createPrincipal(principal: PrincipalRecord): void {
+  db.prepare(
+    `
+    INSERT OR REPLACE INTO cp_principals (id, type, display_name, trust_tier, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    principal.id,
+    principal.type,
+    principal.display_name,
+    principal.trust_tier,
+    principal.status,
+    principal.created_at,
+  );
+}
+
+export function getPrincipal(id: string): PrincipalRecord | undefined {
+  return db
+    .prepare(
+      `SELECT id, type, display_name, trust_tier, status, created_at
+       FROM cp_principals
+       WHERE id = ?`,
+    )
+    .get(id) as PrincipalRecord | undefined;
+}
+
+export function upsertIdentity(identity: IdentityRecord): void {
+  db.prepare(
+    `
+    INSERT INTO cp_identities (id, principal_id, channel_type, external_id, external_handle, verified)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(channel_type, external_id) DO UPDATE SET
+      id = excluded.id,
+      principal_id = excluded.principal_id,
+      external_handle = excluded.external_handle,
+      verified = excluded.verified
+  `,
+  ).run(
+    identity.id,
+    identity.principal_id,
+    identity.channel_type,
+    identity.external_id,
+    identity.external_handle ?? null,
+    identity.verified ? 1 : 0,
+  );
+}
+
+export function findIdentity(
+  channelType: string,
+  externalId: string,
+): IdentityRecord | undefined {
+  const row = db
+    .prepare(
+      `SELECT id, principal_id, channel_type, external_id, external_handle, verified
+       FROM cp_identities
+       WHERE channel_type = ? AND external_id = ?`,
+    )
+    .get(channelType, externalId) as
+    | (Omit<IdentityRecord, 'verified'> & { verified: number })
+    | undefined;
+  if (!row) return undefined;
+  return {
+    ...row,
+    verified: row.verified === 1,
+  };
+}
+
+export function createPrincipalGroup(group: PrincipalGroupRecord): void {
+  db.prepare(
+    `
+    INSERT OR REPLACE INTO cp_groups (id, name, type, visibility)
+    VALUES (?, ?, ?, ?)
+  `,
+  ).run(group.id, group.name, group.type, group.visibility);
+}
+
+export function addGroupMembership(membership: GroupMembershipRecord): void {
+  db.prepare(
+    `
+    INSERT OR REPLACE INTO cp_group_memberships (principal_id, group_id, role)
+    VALUES (?, ?, ?)
+  `,
+  ).run(membership.principal_id, membership.group_id, membership.role);
+}
+
+export function createCoreTask(task: TaskRecord): void {
+  db.prepare(
+    `
+    INSERT OR REPLACE INTO cp_tasks (id, principal_id, source_channel, source_thread_id, status, summary, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    task.id,
+    task.principal_id,
+    task.source_channel,
+    task.source_thread_id ?? null,
+    task.status,
+    task.summary,
+    task.created_at,
+    task.updated_at,
+  );
+}
+
+export function getCoreTask(id: string): TaskRecord | undefined {
+  return db
+    .prepare(
+      `SELECT id, principal_id, source_channel, source_thread_id, status, summary, created_at, updated_at
+       FROM cp_tasks
+       WHERE id = ?`,
+    )
+    .get(id) as TaskRecord | undefined;
+}
+
+export function updateCoreTaskSummary(
+  id: string,
+  summary: string,
+  updatedAt = new Date().toISOString(),
+): void {
+  db.prepare(
+    `
+    UPDATE cp_tasks
+    SET summary = ?, updated_at = ?
+    WHERE id = ?
+  `,
+  ).run(summary, updatedAt, id);
+}
+
+export function createActionRecord(action: ActionRecord): void {
+  db.prepare(
+    `
+    INSERT OR REPLACE INTO cp_actions (
+      id, task_id, type, status, runner_pool, permission_profile,
+      idempotency_key, semantic_dedupe_key, requested_by_principal_id,
+      approved_by_principal_id, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    action.id,
+    action.task_id,
+    action.type,
+    action.status,
+    action.runner_pool,
+    action.permission_profile,
+    action.idempotency_key ?? null,
+    action.semantic_dedupe_key ?? null,
+    action.requested_by_principal_id,
+    action.approved_by_principal_id ?? null,
+    action.created_at,
+    action.updated_at,
+  );
+}
+
+export function getActionRecord(id: string): ActionRecord | undefined {
+  return db
+    .prepare(
+      `SELECT id, task_id, type, status, runner_pool, permission_profile,
+              idempotency_key, semantic_dedupe_key, requested_by_principal_id,
+              approved_by_principal_id, created_at, updated_at
+       FROM cp_actions
+       WHERE id = ?`,
+    )
+    .get(id) as ActionRecord | undefined;
+}
+
+export function findSucceededActionBySemanticKey(
+  semanticDedupeKey: string,
+): ActionRecord | undefined {
+  return db
+    .prepare(
+      `SELECT id, task_id, type, status, runner_pool, permission_profile,
+              idempotency_key, semantic_dedupe_key, requested_by_principal_id,
+              approved_by_principal_id, created_at, updated_at
+       FROM cp_actions
+       WHERE semantic_dedupe_key = ? AND status = 'succeeded'
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+    )
+    .get(semanticDedupeKey) as ActionRecord | undefined;
+}
+
+export function findActionByIdempotencyKey(
+  idempotencyKey: string,
+): ActionRecord | undefined {
+  return db
+    .prepare(
+      `SELECT id, task_id, type, status, runner_pool, permission_profile,
+              idempotency_key, semantic_dedupe_key, requested_by_principal_id,
+              approved_by_principal_id, created_at, updated_at
+       FROM cp_actions
+       WHERE idempotency_key = ?`,
+    )
+    .get(idempotencyKey) as ActionRecord | undefined;
+}
+
+export function updateActionRecordStatus(
+  id: string,
+  status: ActionRecord['status'],
+  updates?: {
+    approvedByPrincipalId?: string | null;
+    updatedAt?: string;
+  },
+): void {
+  db.prepare(
+    `
+    UPDATE cp_actions
+    SET status = ?,
+        approved_by_principal_id = COALESCE(?, approved_by_principal_id),
+        updated_at = ?
+    WHERE id = ?
+  `,
+  ).run(
+    status,
+    updates?.approvedByPrincipalId ?? null,
+    updates?.updatedAt ?? new Date().toISOString(),
+    id,
+  );
+}
+
+export function createRunRecord(run: RunRecord): void {
+  db.prepare(
+    `
+    INSERT OR REPLACE INTO cp_runs (
+      id, action_id, runner_pool, status, attempt_no,
+      started_at, finished_at, exit_code, error_class
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    run.id,
+    run.action_id,
+    run.runner_pool,
+    run.status,
+    run.attempt_no,
+    run.started_at ?? null,
+    run.finished_at ?? null,
+    run.exit_code ?? null,
+    run.error_class ?? null,
+  );
+}
+
+export function getRunRecord(id: string): RunRecord | undefined {
+  return db
+    .prepare(
+      `SELECT id, action_id, runner_pool, status, attempt_no,
+              started_at, finished_at, exit_code, error_class
+       FROM cp_runs
+       WHERE id = ?`,
+    )
+    .get(id) as RunRecord | undefined;
+}
+
+export function updateRunRecord(
+  id: string,
+  updates: Partial<
+    Pick<
+      RunRecord,
+      | 'status'
+      | 'attempt_no'
+      | 'started_at'
+      | 'finished_at'
+      | 'exit_code'
+      | 'error_class'
+    >
+  >,
+): void {
+  const existing = getRunRecord(id);
+  if (!existing) return;
+  db.prepare(
+    `
+    UPDATE cp_runs
+    SET status = ?, attempt_no = ?, started_at = ?, finished_at = ?, exit_code = ?, error_class = ?
+    WHERE id = ?
+  `,
+  ).run(
+    updates.status ?? existing.status,
+    updates.attempt_no ?? existing.attempt_no,
+    updates.started_at ?? existing.started_at ?? null,
+    updates.finished_at ?? existing.finished_at ?? null,
+    updates.exit_code ?? existing.exit_code ?? null,
+    updates.error_class ?? existing.error_class ?? null,
+    id,
+  );
+}
+
+export function createArtifactRecord(artifact: ArtifactRecord): void {
+  db.prepare(
+    `
+    INSERT OR REPLACE INTO cp_artifacts (
+      id, task_id, kind, path, media_type, sha256, size_bytes, created_by_run_id
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    artifact.id,
+    artifact.task_id,
+    artifact.kind,
+    artifact.path,
+    artifact.media_type,
+    artifact.sha256,
+    artifact.size_bytes,
+    artifact.created_by_run_id ?? null,
+  );
+}
+
+export function listArtifactsForTask(taskId: string): ArtifactRecord[] {
+  return db
+    .prepare(
+      `SELECT id, task_id, kind, path, media_type, sha256, size_bytes, created_by_run_id
+       FROM cp_artifacts
+       WHERE task_id = ?
+       ORDER BY id`,
+    )
+    .all(taskId) as ArtifactRecord[];
+}
+
+export function createApprovalRecord(approval: ApprovalRecord): void {
+  db.prepare(
+    `
+    INSERT OR REPLACE INTO cp_approvals (id, action_id, required_from_principal_id, status, reason)
+    VALUES (?, ?, ?, ?, ?)
+  `,
+  ).run(
+    approval.id,
+    approval.action_id,
+    approval.required_from_principal_id,
+    approval.status,
+    approval.reason,
+  );
+}
+
+export function listApprovalsForAction(actionId: string): ApprovalRecord[] {
+  return db
+    .prepare(
+      `SELECT id, action_id, required_from_principal_id, status, reason
+       FROM cp_approvals
+       WHERE action_id = ?
+       ORDER BY id`,
+    )
+    .all(actionId) as ApprovalRecord[];
+}
+
+export function createAuditLogRecord(log: AuditLogRecord): void {
+  db.prepare(
+    `
+    INSERT OR REPLACE INTO cp_audit_logs (
+      id, principal_id, task_id, action_id, event_type, payload_json, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    log.id,
+    log.principal_id ?? null,
+    log.task_id ?? null,
+    log.action_id ?? null,
+    log.event_type,
+    log.payload_json,
+    log.created_at,
+  );
+}
+
+export function listAuditLogRecords(limit = 100): AuditLogRecord[] {
+  return db
+    .prepare(
+      `SELECT id, principal_id, task_id, action_id, event_type, payload_json, created_at
+       FROM cp_audit_logs
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    )
+    .all(limit) as AuditLogRecord[];
+}
+
+export function hasAuditLogEvent(actionId: string, eventType: string): boolean {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as count
+       FROM cp_audit_logs
+       WHERE action_id = ? AND event_type = ?`,
+    )
+    .get(actionId, eventType) as { count: number };
+  return row.count > 0;
+}
+
+export function recordInboundEvent(input: {
+  id: string;
+  sourceSystem: string;
+  sourceEventId: string;
+  messageHash: string;
+  principalId?: string | null;
+  taskId?: string | null;
+  createdAt: string;
+}): boolean {
+  const result = db
+    .prepare(
+      `
+      INSERT OR IGNORE INTO cp_inbound_events (
+        id, source_system, source_event_id, message_hash, principal_id, task_id, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
+    )
+    .run(
+      input.id,
+      input.sourceSystem,
+      input.sourceEventId,
+      input.messageHash,
+      input.principalId ?? null,
+      input.taskId ?? null,
+      input.createdAt,
+    );
+  return result.changes > 0;
+}
+
+export function countInboundEvents(
+  sourceSystem: string,
+  sourceEventId: string,
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as count FROM cp_inbound_events WHERE source_system = ? AND source_event_id = ?`,
+    )
+    .get(sourceSystem, sourceEventId) as { count: number };
+  return row.count;
+}
+
+export function claimActionLease(input: {
+  actionId: string;
+  leaseToken: string;
+  workerId: string;
+  expiresAt: string;
+  claimedAt: string;
+}): boolean {
+  db.prepare(`DELETE FROM cp_action_leases WHERE expires_at <= ?`).run(
+    input.claimedAt,
+  );
+  const result = db
+    .prepare(
+      `
+      INSERT OR IGNORE INTO cp_action_leases (
+        action_id, lease_token, worker_id, expires_at, claimed_at
+      )
+      VALUES (?, ?, ?, ?, ?)
+    `,
+    )
+    .run(
+      input.actionId,
+      input.leaseToken,
+      input.workerId,
+      input.expiresAt,
+      input.claimedAt,
+    );
+  return result.changes > 0;
+}
+
+export function releaseActionLease(
+  actionId: string,
+  leaseToken: string,
+): boolean {
+  const result = db
+    .prepare(
+      `DELETE FROM cp_action_leases WHERE action_id = ? AND lease_token = ?`,
+    )
+    .run(actionId, leaseToken);
+  return result.changes > 0;
+}
+
+export function getActionLease(actionId: string):
+  | {
+      action_id: string;
+      lease_token: string;
+      worker_id: string;
+      expires_at: string;
+      claimed_at: string;
+    }
+  | undefined {
+  return db
+    .prepare(
+      `SELECT action_id, lease_token, worker_id, expires_at, claimed_at
+       FROM cp_action_leases
+       WHERE action_id = ?`,
+    )
+    .get(actionId) as
+    | {
+        action_id: string;
+        lease_token: string;
+        worker_id: string;
+        expires_at: string;
+        claimed_at: string;
+      }
+    | undefined;
 }
 
 // --- JSON migration ---

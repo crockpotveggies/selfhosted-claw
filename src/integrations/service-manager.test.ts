@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import fs from 'fs';
 
 // Mock dependencies
 vi.mock('../config.js', () => ({
@@ -108,6 +109,66 @@ describe('Service Manager', () => {
     expect(() => startService('test')).toThrow('container failed');
   });
 
+  it('recreates compose resources when docker requests a down/up cycle', () => {
+    const def = makeServiceDef('test');
+    mockRegistry.set('test', def);
+    runnerMock
+      .mockReturnValueOnce({
+        stdout: '',
+        stderr:
+          'Network "signal-cli_default" needs to be recreated - option "com.docker.network.enable_ipv4" has changed',
+        status: 1,
+      })
+      .mockReturnValueOnce({
+        stdout: '',
+        stderr: '',
+        status: 0,
+      })
+      .mockReturnValue({
+        stdout: 'test-svc\n',
+        stderr: '',
+        status: 0,
+      });
+
+    startService('test');
+
+    expect(runnerMock).toHaveBeenNthCalledWith(
+      1,
+      [
+        '-f',
+        'C:\\tmp\\docker-compose.yml',
+        '--env-file',
+        'C:\\tmp\\.env',
+        'up',
+        '-d',
+      ],
+      'C:\\tmp',
+    );
+    expect(runnerMock).toHaveBeenNthCalledWith(
+      2,
+      [
+        '-f',
+        'C:\\tmp\\docker-compose.yml',
+        '--env-file',
+        'C:\\tmp\\.env',
+        'down',
+      ],
+      'C:\\tmp',
+    );
+    expect(runnerMock).toHaveBeenNthCalledWith(
+      3,
+      [
+        '-f',
+        'C:\\tmp\\docker-compose.yml',
+        '--env-file',
+        'C:\\tmp\\.env',
+        'up',
+        '-d',
+      ],
+      'C:\\tmp',
+    );
+  });
+
   it('throws for integration without service', () => {
     mockRegistry.set('no-svc', {
       name: 'no-svc',
@@ -130,6 +191,28 @@ describe('Service Manager', () => {
     expect(status).toHaveProperty('serviceName', 'test-svc');
     expect(typeof status.running).toBe('boolean');
     expect(typeof status.circuitOpen).toBe('boolean');
+  });
+
+  it('uses compose ps -q for cross-version running checks', () => {
+    const def = makeServiceDef('test');
+    mockRegistry.set('test', def);
+    const existsSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+
+    getServiceStatus('test');
+
+    expect(runnerMock).toHaveBeenCalledWith(
+      [
+        '-f',
+        'C:\\tmp\\docker-compose.yml',
+        '--env-file',
+        'C:\\tmp\\.env',
+        'ps',
+        '-q',
+        'test-svc',
+      ],
+      'C:\\tmp',
+    );
+    existsSpy.mockRestore();
   });
 
   it('resetCircuitBreaker clears failure state', () => {

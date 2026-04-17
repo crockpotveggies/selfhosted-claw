@@ -5,6 +5,7 @@ import {
   SIGNAL_RPC_URL,
 } from '../config.js';
 import { logger } from '../logger.js';
+import { resolveSignalRpcUrl } from '../signal-rpc-url.js';
 import { Channel, ChannelGroupLookupResult, NewMessage } from '../types.js';
 import { ChannelOpts, registerChannel } from './registry.js';
 
@@ -145,11 +146,15 @@ export class SignalChannel implements Channel {
     private readonly opts: ChannelOpts,
     private readonly rpcUrl: string,
     private readonly account: string,
+    private readonly startupOptions: {
+      maxAttempts?: number;
+      delayMs?: number;
+    } = {},
   ) {}
 
   async connect(): Promise<void> {
     this.stopped = false;
-    await this.listGroups();
+    await this.waitForRpcReady();
     this.connected = true;
     const now = new Date().toISOString();
     this.opts.onChatMetadata(
@@ -467,12 +472,20 @@ export class SignalChannel implements Channel {
       try {
         await this.receiveOnce();
       } catch (err) {
-        this.connected = false;
         logger.warn(
           { channel: this.name, err: String(err) },
-          'Signal polling error',
+          'Signal receive websocket failed, falling back to HTTP polling',
         );
-        await new Promise((resolve) => setTimeout(resolve, 3000));
+        try {
+          await this.receiveOnceViaHttp();
+        } catch (fallbackErr) {
+          this.connected = false;
+          logger.warn(
+            { channel: this.name, err: String(fallbackErr) },
+            'Signal polling error',
+          );
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
       }
       this.connected = !this.stopped;
     }
@@ -555,6 +568,7 @@ export class SignalChannel implements Channel {
         content,
         timestamp,
         is_from_me: isFromMe,
+        is_bot_message: isFromMe,
       },
     };
   }
@@ -574,6 +588,25 @@ export class SignalChannel implements Channel {
     }
     const payload = (await response.json()) as unknown;
     return Array.isArray(payload) ? payload : [];
+  }
+
+  private async waitForRpcReady(): Promise<void> {
+    const maxAttempts = Math.max(1, this.startupOptions.maxAttempts ?? 15);
+    const delayMs = Math.max(0, this.startupOptions.delayMs ?? 1000);
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.listGroups();
+        return;
+      } catch (err) {
+        lastError = err;
+        if (attempt >= maxAttempts) break;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
   private async fetchWithContext(
@@ -636,6 +669,27 @@ export class SignalChannel implements Channel {
     });
   }
 
+  private async receiveOnceViaHttp(): Promise<void> {
+    const url = new URL(
+      `/v1/receive/${encodeURIComponent(this.account)}`,
+      this.rpcUrl,
+    );
+    url.searchParams.set('timeout', String(SIGNAL_RECEIVE_TIMEOUT_SEC));
+    const response = await this.fetchWithContext(
+      url,
+      {
+        method: 'GET',
+        signal: AbortSignal.timeout((SIGNAL_RECEIVE_TIMEOUT_SEC + 2) * 1000),
+      },
+      'receive',
+    );
+    if (!response.ok) {
+      throw new Error(`Signal RPC receive failed with ${response.status}`);
+    }
+    this.connected = true;
+    this.handleReceivePayload(await response.text());
+  }
+
   private handleReceivePayload(raw: unknown): void {
     const text =
       typeof raw === 'string'
@@ -678,5 +732,9 @@ export class SignalChannel implements Channel {
 
 registerChannel('signal', (opts: ChannelOpts) => {
   if (!SIGNAL_ACCOUNT.trim()) return null;
-  return new SignalChannel(opts, SIGNAL_RPC_URL, SIGNAL_ACCOUNT);
+  return new SignalChannel(
+    opts,
+    resolveSignalRpcUrl(SIGNAL_RPC_URL),
+    SIGNAL_ACCOUNT,
+  );
 });

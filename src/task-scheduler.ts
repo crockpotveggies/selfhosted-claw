@@ -1,11 +1,13 @@
 import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
+import path from 'path';
 
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
   ContainerOutput,
   runContainerAgent,
+  writeIntegrationToolsManifest,
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
@@ -74,6 +76,8 @@ export interface SchedulerDependencies {
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
 
+let schedulerDeps: SchedulerDependencies | null = null;
+
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
@@ -130,6 +134,14 @@ async function runTask(
 
   // Update tasks snapshot for container to read (filtered by group)
   const isMain = group.isMain === true;
+  // Scheduled tasks are controller-created background jobs, so they should
+  // retain controller-only tools and policy gates even though no human just
+  // sent the triggering message.
+  const controllerTriggered = true;
+  const runtimeStateKey =
+    task.context_mode === 'isolated'
+      ? path.join(task.group_folder, 'tasks', task.id)
+      : task.group_folder;
   const tasks = getAllTasks();
   writeTasksSnapshot(
     task.group_folder,
@@ -145,6 +157,7 @@ async function runTask(
       next_run: t.next_run,
     })),
   );
+  writeIntegrationToolsManifest(task.group_folder, isMain, controllerTriggered);
 
   let result: string | null = null;
   let error: string | null = null;
@@ -170,8 +183,10 @@ async function runTask(
         prompt: task.prompt,
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,
+        runtimeStateKey,
         isMain,
         isScheduledTask: true,
+        controllerTriggered,
         assistantName: ASSISTANT_NAME,
         script: task.script || undefined,
       },
@@ -241,6 +256,7 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
     return;
   }
   schedulerRunning = true;
+  schedulerDeps = deps;
   logger.info('Scheduler loop started');
 
   const loop = async () => {
@@ -271,7 +287,23 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
   loop();
 }
 
+export function runTaskNow(taskId: string): void {
+  if (!schedulerDeps) {
+    throw new Error('Scheduler is not running');
+  }
+
+  const task = getTaskById(taskId);
+  if (!task) {
+    throw new Error(`Task not found: ${taskId}`);
+  }
+
+  schedulerDeps.queue.enqueueTask(task.chat_jid, task.id, () =>
+    runTask(task, schedulerDeps!),
+  );
+}
+
 /** @internal - for tests only. */
 export function _resetSchedulerLoopForTests(): void {
   schedulerRunning = false;
+  schedulerDeps = null;
 }

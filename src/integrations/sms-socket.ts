@@ -1,5 +1,9 @@
 import { readEnvFile } from '../env.js';
 import { createChildLogger } from '../logger.js';
+import {
+  parseSmsSocketGatewayUrl,
+  resolveSmsSocketGatewayUrl,
+} from '../sms-socket-gateway-url.js';
 import type { Channel, NewMessage } from '../types.js';
 import { normalizePhone } from '../contact-resolution.js';
 
@@ -57,18 +61,15 @@ function getApiKey(settings?: Record<string, unknown>): string {
   ).trim();
 }
 
-function parseGatewayUrl(raw: string): URL {
-  const value = raw.trim() || DEFAULT_GATEWAY_URL;
-  const parsed = new URL(value);
-  if (!['ws:', 'wss:'].includes(parsed.protocol)) {
-    throw new Error('SMS Socket gateway URL must use ws:// or wss://');
-  }
-  if (!parsed.pathname) parsed.pathname = '/';
-  return parsed;
-}
-
 function getGatewayUrl(settings?: Record<string, unknown>): string {
   return String(settings?.gatewayUrl || DEFAULT_GATEWAY_URL).trim();
+}
+
+function getGatewayRelayHint(settings?: Record<string, unknown>): string {
+  const configured = parseSmsSocketGatewayUrl(getGatewayUrl(settings));
+  const resolved = resolveSmsSocketGatewayUrl(getGatewayUrl(settings));
+  if (configured.toString() === resolved.toString()) return '';
+  return ` Routed through ${resolved.host} via SMS_SOCKET_HOST_RELAY_PORT.`;
 }
 
 function getRehydrateLimit(settings?: Record<string, unknown>): number {
@@ -258,7 +259,7 @@ export class SmsSocketChannel implements Channel {
       throw new Error('SMS Socket API key is not configured');
     }
 
-    const wsUrl = parseGatewayUrl(getGatewayUrl(this.settings));
+    const wsUrl = resolveSmsSocketGatewayUrl(getGatewayUrl(this.settings));
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -636,7 +637,13 @@ const smsSocketIntegration: IntegrationDefinition = {
     validate: (values) => {
       const errors: Record<string, string> = {};
       try {
-        parseGatewayUrl(String(values.gatewayUrl || DEFAULT_GATEWAY_URL));
+        resolveSmsSocketGatewayUrl(
+          String(values.gatewayUrl || DEFAULT_GATEWAY_URL),
+          {
+            inContainer: false,
+            relayPort: null,
+          },
+        );
       } catch (error) {
         errors.gatewayUrl =
           error instanceof Error ? error.message : 'Invalid gateway URL';
@@ -672,13 +679,13 @@ const smsSocketIntegration: IntegrationDefinition = {
           state: 'online',
           message: address
             ? `Connected to SMS gateway at ${address}`
-            : 'Connected to SMS gateway',
+            : `Connected to SMS gateway.${getGatewayRelayHint(ctx.settings)}`,
         };
       }
 
       return {
         state: 'offline',
-        message: `Configured but not connected to ${getGatewayUrl(ctx.settings)}`,
+        message: `Configured but not connected to ${getGatewayUrl(ctx.settings)}.${getGatewayRelayHint(ctx.settings)}`,
       };
     },
     getNotifications: async (ctx) => {

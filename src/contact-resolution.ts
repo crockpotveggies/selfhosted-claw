@@ -3,10 +3,8 @@ import { resolveSignalTarget } from './outbound-directives.js';
 export type OutboundChannel = 'signal' | 'sms' | 'email';
 
 export interface ProviderAvailability {
-  onecliConfigured: boolean;
-  onecliReachable: boolean;
   googleContactsAvailable: boolean;
-  googleContactsSource: 'env' | 'onecli' | 'oauth' | 'none';
+  googleContactsSource: 'env' | 'oauth' | 'none';
   signalOutboundAvailable: boolean;
   smsOutboundAvailable: boolean;
   emailOutboundAvailable: boolean;

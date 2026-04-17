@@ -2,6 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
 
+export function getEnvFilePath(
+  envPath: string = process.env.SELF_HOSTED_CLAW_ENV_FILE ||
+    path.join(process.cwd(), '.env'),
+): string {
+  return path.resolve(envPath);
+}
+
 /**
  * Parse the .env file and return values for the requested keys.
  * Does NOT load anything into process.env — callers decide what to
@@ -9,7 +16,7 @@ import { logger } from './logger.js';
  * so they don't leak to child processes.
  */
 export function readEnvFile(keys: string[]): Record<string, string> {
-  const envFile = path.join(process.cwd(), '.env');
+  const envFile = getEnvFilePath();
   let content: string;
   try {
     content = fs.readFileSync(envFile, 'utf-8');
@@ -52,7 +59,7 @@ function formatEnvValue(value: string): string {
 
 export function setEnvFileValues(
   updates: Record<string, string>,
-  envPath: string = path.join(process.cwd(), '.env'),
+  envPath: string = getEnvFilePath(),
 ): void {
   let content = '';
   try {
@@ -80,6 +87,20 @@ export function setEnvFileValues(
   }
 
   const tempPath = `${envPath}.tmp`;
-  fs.writeFileSync(tempPath, `${nextLines.join('\n').replace(/\n*$/, '\n')}`);
-  fs.renameSync(tempPath, envPath);
+  const nextContent = `${nextLines.join('\n').replace(/\n*$/, '\n')}`;
+  fs.writeFileSync(tempPath, nextContent);
+  try {
+    fs.renameSync(tempPath, envPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EBUSY' && code !== 'EPERM' && code !== 'EXDEV') {
+      throw err;
+    }
+    logger.warn(
+      { err, envPath },
+      'Atomic .env replace failed, falling back to direct overwrite',
+    );
+    fs.writeFileSync(envPath, nextContent);
+    fs.unlinkSync(tempPath);
+  }
 }

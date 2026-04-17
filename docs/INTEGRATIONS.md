@@ -72,7 +72,7 @@ import './my-service.js';
 
 ```bash
 npm run build:server
-npx pm2 restart nanoclaw
+npm run service:restart
 ```
 
 The integration now appears in the admin UI Integrations page.
@@ -302,7 +302,7 @@ This gives the channel admin UI presence without modifying the channel registrat
 - Credentials declared with `envVar` are checked in `.env` (via `readEnvFile`), `process.env`, and integration settings
 - Integration settings files (`~/.config/self-hosted-claw/integrations/`) are **never mounted into containers**
 - `.env` is shadowed with `/dev/null` in containers
-- Real credentials reach containers only via OneCLI gateway or host-side IPC tool execution
+- Real credentials reach containers only via explicit runtime env or host-side IPC tool execution
 
 ## File Structure
 

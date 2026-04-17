@@ -1,5 +1,6 @@
 import fs from 'fs';
 import http from 'http';
+import net from 'net';
 import path from 'path';
 
 import Database from 'better-sqlite3';
@@ -41,6 +42,8 @@ import {
 } from './integrations/setup-router.js';
 import { getLogSettings, saveLogSettings } from './logger/pruner.js';
 import { logger } from './logger.js';
+import { resolveSignalRpcUrl } from './signal-rpc-url.js';
+import { runTaskNow } from './task-scheduler.js';
 
 interface StartAdminServerOptions {
   service: ControlActionService;
@@ -60,12 +63,98 @@ function getGoogleContactsOAuthStep() {
   };
 }
 
-function isLocalAddress(remoteAddress: string | undefined): boolean {
-  if (!remoteAddress) return false;
+function isContainerRuntime(): boolean {
+  return fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
+}
+
+function normalizeRemoteAddress(remoteAddress: string | undefined): string {
+  if (!remoteAddress) return '';
+  return remoteAddress.startsWith('::ffff:')
+    ? remoteAddress.slice('::ffff:'.length)
+    : remoteAddress;
+}
+
+function isPrivateIpv4Address(remoteAddress: string): boolean {
+  if (net.isIP(remoteAddress) !== 4) return false;
+  const [a, b] = remoteAddress.split('.').map((part) => Number(part));
   return (
-    remoteAddress === '127.0.0.1' ||
-    remoteAddress === '::1' ||
-    remoteAddress === '::ffff:127.0.0.1'
+    a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)
+  );
+}
+
+export function isAllowedAdminRemoteAddress(
+  remoteAddress: string | undefined,
+  inContainer = isContainerRuntime(),
+): boolean {
+  const normalized = normalizeRemoteAddress(remoteAddress);
+  if (!normalized) return false;
+  return (
+    normalized === '127.0.0.1' ||
+    normalized === '::1' ||
+    (inContainer && isPrivateIpv4Address(normalized))
+  );
+}
+
+export function requiresAdminAuth(pathname: string): boolean {
+  return pathname.startsWith('/api/admin/');
+}
+
+export interface SetupChecks {
+  openAIConfigured: boolean;
+  signalConfigured: boolean;
+  signalReachable: boolean;
+  signalComposeConfigured: boolean;
+  signalComposeRunning: boolean;
+  googleContactsAvailable: boolean;
+  googleContactsSource: 'env' | 'oauth' | 'none';
+  controlChatConfigured: boolean;
+  verifiedIdentityCount: number;
+  assistantSignalConfigured: boolean;
+  wizardComplete: boolean;
+}
+
+export function buildSetupChecks(input: {
+  openAIConfigured: boolean;
+  signalConfigured: boolean;
+  signalReachable: boolean;
+  signalComposeConfigured: boolean;
+  signalComposeRunning: boolean;
+  controlChatConfigured: boolean;
+  verifiedIdentityCount: number;
+  assistantSignalConfigured: boolean;
+  setupWizardReviewed: boolean;
+}): SetupChecks {
+  const coreSetupComplete =
+    input.openAIConfigured &&
+    input.signalConfigured &&
+    input.signalComposeRunning &&
+    input.signalReachable &&
+    input.controlChatConfigured &&
+    input.verifiedIdentityCount > 0;
+
+  return {
+    openAIConfigured: input.openAIConfigured,
+    signalConfigured: input.signalConfigured,
+    signalReachable: input.signalReachable,
+    signalComposeConfigured: input.signalComposeConfigured,
+    signalComposeRunning: input.signalComposeRunning,
+    googleContactsAvailable: false,
+    googleContactsSource: 'none',
+    controlChatConfigured: input.controlChatConfigured,
+    verifiedIdentityCount: input.verifiedIdentityCount,
+    assistantSignalConfigured: input.assistantSignalConfigured,
+    wizardComplete: input.setupWizardReviewed || coreSetupComplete,
+  };
+}
+
+export function buildSignalReachabilityProbeUrl(
+  rawRpcUrl: string,
+  account: string,
+  inContainer?: boolean,
+): URL {
+  return new URL(
+    `/v1/groups/${encodeURIComponent(account)}`,
+    resolveSignalRpcUrl(rawRpcUrl, inContainer),
   );
 }
 
@@ -177,11 +266,16 @@ export function startAdminServer(
         return;
       }
 
-      if (!isLocalAddress(req.socket.remoteAddress)) {
+      if (!isAllowedAdminRemoteAddress(req.socket.remoteAddress)) {
         sendJson(res, 403, { error: 'admin_ui_local_only' });
         return;
       }
-      if (ADMIN_UI_TOKEN) {
+      const url = new URL(
+        req.url || '/',
+        `http://${req.headers.host || 'localhost'}`,
+      );
+
+      if (ADMIN_UI_TOKEN && requiresAdminAuth(url.pathname)) {
         const provided = req.headers['x-admin-token'];
         const tokenAuthorized = provided === ADMIN_UI_TOKEN;
         const basicAuthorized = isBasicAuthAuthorized(
@@ -194,11 +288,6 @@ export function startAdminServer(
           return;
         }
       }
-
-      const url = new URL(
-        req.url || '/',
-        `http://${req.headers.host || 'localhost'}`,
-      );
 
       if (req.method === 'GET' && url.pathname === '/api/admin/health') {
         sendJson(res, 200, { ok: true });
@@ -414,43 +503,31 @@ export function startAdminServer(
         return;
       }
 
+      const runTaskMatch =
+        req.method === 'POST' &&
+        url.pathname.match(/^\/api\/admin\/tasks\/([^/]+)\/run$/);
+      if (runTaskMatch) {
+        const taskId = decodeURIComponent(runTaskMatch[1]);
+        runTaskNow(taskId);
+        sendJson(res, 200, {
+          ok: true,
+          message: `Queued task ${taskId} for immediate execution.`,
+        });
+        return;
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/admin/setup-status') {
         const env = options.service.getSetupEnvironment();
         const signalCompose = options.service.getSignalComposeStatus();
-        let providers;
-        try {
-          providers = await options.service.getProviderAvailability();
-        } catch {
-          // Provider check failed (e.g., expired OAuth token) — use safe defaults
-          providers = {
-            onecliConfigured: false,
-            onecliReachable: false,
-            googleContactsAvailable: false,
-            googleContactsSource: 'none' as const,
-            signalOutboundAvailable: false,
-            smsOutboundAvailable: false,
-            emailOutboundAvailable: false,
-            contactResolutionAvailable: false,
-          };
-        }
         const signalConfigured = Boolean(
           env.SIGNAL_ACCOUNT && env.SIGNAL_RPC_URL,
         );
-        let onecliReachable = false;
-        if (env.ONECLI_URL) {
-          try {
-            const response = await fetch(env.ONECLI_URL, { method: 'GET' });
-            onecliReachable = response.status < 500;
-          } catch {
-            onecliReachable = false;
-          }
-        }
         let signalReachable = false;
         if (signalConfigured) {
           try {
-            const signalUrl = new URL(
-              `/v1/groups/${encodeURIComponent(env.SIGNAL_ACCOUNT)}`,
+            const signalUrl = buildSignalReachabilityProbeUrl(
               env.SIGNAL_RPC_URL,
+              env.SIGNAL_ACCOUNT,
             );
             const response = await fetch(signalUrl, { method: 'GET' });
             signalReachable = response.ok;
@@ -470,7 +547,6 @@ export function startAdminServer(
             SIGNAL_RPC_URL: env.SIGNAL_RPC_URL || '',
             SIGNAL_RECEIVE_TIMEOUT_SEC: env.SIGNAL_RECEIVE_TIMEOUT_SEC || '',
             CONTROL_SIGNAL_JID: env.CONTROL_SIGNAL_JID || '',
-            ONECLI_URL: env.ONECLI_URL || '',
             GOOGLE_CLIENT_ID: env.GOOGLE_CLIENT_ID || '',
             ADMIN_BIND_HOST: env.ADMIN_BIND_HOST || '',
             ADMIN_PORT: env.ADMIN_PORT || '',
@@ -478,16 +554,12 @@ export function startAdminServer(
             OPENAI_API_KEY_SET: Boolean(env.OPENAI_API_KEY),
             ADMIN_UI_TOKEN_SET: Boolean(env.ADMIN_UI_TOKEN),
           },
-          checks: {
+          checks: buildSetupChecks({
             openAIConfigured: Boolean(env.OPENAI_BASE_URL && env.OPENAI_MODEL),
             signalConfigured,
             signalReachable,
             signalComposeConfigured: signalCompose.configured,
             signalComposeRunning: signalCompose.running,
-            onecliConfigured: Boolean(env.ONECLI_URL),
-            onecliReachable,
-            googleContactsAvailable: providers.googleContactsAvailable,
-            googleContactsSource: providers.googleContactsSource,
             controlChatConfigured: Boolean(env.CONTROL_SIGNAL_JID),
             verifiedIdentityCount:
               options.service.listVerifiedIdentities().length,
@@ -495,14 +567,9 @@ export function startAdminServer(
               options.service.getSettings().assistantSignalIdentity ||
               env.SIGNAL_ACCOUNT,
             ),
-            wizardComplete:
-              Boolean(env.OPENAI_BASE_URL && env.OPENAI_MODEL) &&
-              signalConfigured &&
-              signalCompose.running &&
-              signalReachable &&
-              Boolean(env.CONTROL_SIGNAL_JID) &&
-              options.service.listVerifiedIdentities().length > 0,
-          },
+            setupWizardReviewed:
+              options.service.getSettings().setupWizardReviewed,
+          }),
           signalCompose,
         });
         return;
@@ -1263,12 +1330,12 @@ export function startAdminServer(
               ),
           };
 
-            if (def.channel) {
-              await reconnectRegisteredChannel(name);
-            } else if (def.lifecycle?.onReconnect) {
-              await def.lifecycle.onReconnect(ctx);
-            } else if (def.service) {
-              resetCircuitBreaker(name);
+          if (def.channel) {
+            await reconnectRegisteredChannel(name);
+          } else if (def.lifecycle?.onReconnect) {
+            await def.lifecycle.onReconnect(ctx);
+          } else if (def.service) {
+            resetCircuitBreaker(name);
             startService(name);
           } else {
             sendJson(res, 400, { error: 'reconnect_not_supported' });

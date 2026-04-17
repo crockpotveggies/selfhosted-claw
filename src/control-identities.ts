@@ -19,7 +19,10 @@ function normalizeSignalUser(value: string): string {
 }
 
 function normalizeSlackUser(value: string): string {
-  return value.trim().replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  return value
+    .trim()
+    .replace(/[^A-Za-z0-9]/g, '')
+    .toUpperCase();
 }
 
 function isPhoneLike(value: string): boolean {

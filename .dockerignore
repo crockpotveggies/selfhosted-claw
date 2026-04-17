@@ -1,0 +1,13 @@
+node_modules
+dist
+admin-ui/dist
+data
+store
+logs
+admin-config
+admin-data
+.git
+.claude
+.agents
+graphify-out
+repo-tokens

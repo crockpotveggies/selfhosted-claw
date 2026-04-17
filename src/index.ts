@@ -1,8 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 
-import { OneCLI } from '@onecli-sh/sdk';
-
 import {
   ASSISTANT_NAME,
   CONTROL_SIGNAL_JID,
@@ -15,7 +13,6 @@ import {
   OPENAI_API_KEY,
   OPENAI_BASE_URL,
   OPENAI_MODEL,
-  ONECLI_URL,
   POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
@@ -64,6 +61,10 @@ import { GroupQueue } from './group-queue.js';
 import { ControlActionService } from './control-actions.js';
 import type { ApprovalReplyDecision } from './control-actions.js';
 import { SignalControlCommandParser } from './control-commands.js';
+import { featureFlags } from './core/feature-flags.js';
+import { LegacyWrappedActionEngine } from './core/tasks/action-engine.js';
+import { RunSpecDispatcher } from './dispatcher/runspec-dispatcher.js';
+import { AgentSendFinalizer } from './egress/agent-send-finalizer.js';
 import {
   deriveUniqueGroupFolder,
   deriveGroupFolder,
@@ -108,27 +109,9 @@ let executeAgentDirective: (
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 let controlServiceRef: ControlActionService | null = null;
-
-const onecli = new OneCLI({ url: ONECLI_URL });
-
-function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
-  if (group.isMain) return;
-  const identifier = group.folder.toLowerCase().replace(/_/g, '-');
-  onecli.ensureAgent({ name: group.name, identifier }).then(
-    (res) => {
-      logger.info(
-        { jid, identifier, created: res.created },
-        'OneCLI agent ensured',
-      );
-    },
-    (err) => {
-      logger.debug(
-        { jid, identifier, err: String(err) },
-        'OneCLI agent ensure skipped',
-      );
-    },
-  );
-}
+const runSpecDispatcher = featureFlags.enableRunspecRunners
+  ? new RunSpecDispatcher()
+  : undefined;
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -197,9 +180,6 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     path.join(GROUPS_DIR, group.isMain ? 'main' : 'global'),
     ASSISTANT_NAME,
   );
-
-  // Ensure a corresponding OneCLI agent exists (best-effort, non-blocking)
-  ensureOneCLIAgent(jid, group);
 
   logger.info(
     { jid, name: group.name, folder: group.folder },
@@ -369,119 +349,157 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
-
-  const output = await runAgent(
-    group,
-    prompt,
-    chatJid,
-    controllerTriggered,
-    async (result) => {
-      // Streaming output callback — called for each agent result
-      if (result.result) {
-        const raw =
-          typeof result.result === 'string'
-            ? result.result
-            : JSON.stringify(result.result);
-        const cleaned = raw
-          .replace(/<internal>[\s\S]*?<\/internal>/g, '')
-          .trim();
-        const parsed = parseAgentOutput(cleaned);
-        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-        const statusLines: string[] = [];
-        for (const directive of parsed.directives) {
-          try {
-            statusLines.push(await executeAgentDirective(directive, chatJid));
-          } catch (err) {
-            statusLines.push(
-              err instanceof Error
-                ? `Send failed: ${err.message}`
-                : `Send failed: ${String(err)}`,
-            );
-          }
+  const handleAgentOutput = async (result: ContainerOutput) => {
+    // Streaming output callback — called for each agent result
+    if (result.result) {
+      const raw =
+        typeof result.result === 'string'
+          ? result.result
+          : JSON.stringify(result.result);
+      const cleaned = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+      const parsed = parseAgentOutput(cleaned);
+      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+      const statusLines: string[] = [];
+      for (const directive of parsed.directives) {
+        try {
+          statusLines.push(await executeAgentDirective(directive, chatJid));
+        } catch (err) {
+          statusLines.push(
+            err instanceof Error
+              ? `Send failed: ${err.message}`
+              : `Send failed: ${String(err)}`,
+          );
         }
-        // For non-main (external) chats, route directive status messages
-        // (approval requests, send confirmations) to the controller, not the
-        // external contact.
-        const isExternalChat = !group.isMain;
-        const statusText = statusLines.filter(Boolean).join('\n\n').trim();
-        if (isExternalChat && statusText && CONTROL_SIGNAL_JID) {
+      }
+      // For non-main (external) chats, route directive status messages
+      // (approval requests, send confirmations) to the controller, not the
+      // external contact.
+      const isExternalChat = !group.isMain;
+      const statusText = statusLines.filter(Boolean).join('\n\n').trim();
+      if (isExternalChat && statusText && CONTROL_SIGNAL_JID) {
+        const controlChannel = findChannel(channels, CONTROL_SIGNAL_JID);
+        if (controlChannel) {
+          await controlChannel.sendMessage(
+            CONTROL_SIGNAL_JID,
+            `[${group.name}] ${statusText}`,
+          );
+        }
+      }
+
+      let text = isExternalChat
+        ? (parsed.visibleText || '').trim()
+        : [parsed.visibleText, ...statusLines]
+            .filter(Boolean)
+            .join('\n\n')
+            .trim();
+
+      // Hard guard: detect operational/controller-facing content that the
+      // agent accidentally put into its visible text response for a group
+      // chat. If the entire response looks operational, redirect it to the
+      // controller and suppress it from the group.
+      if (isExternalChat && text && CONTROL_SIGNAL_JID) {
+        const OPERATIONAL_PATTERNS = [
+          /\bcross-check\b.*\bcalendar\b/i,
+          /\bcheck\b.*\b(your|the)\s+calendar\b/i,
+          /\bconfirm\b.*\btime\s*slot\b/i,
+          /\bwhat(?:'s| is) the meeting context\b/i,
+          /\bwho else is attending\b/i,
+          /\bwhat are we scheduling\b/i,
+          /\bescalat(e|ing) to\b/i,
+          /\bfor your confirmation\b/i,
+          /\bpropose a.*time\b.*\bconfirmation\b/i,
+          /\bneed to verify\b.*\bwith you\b/i,
+          /\bcontroller\b/i,
+        ];
+        const looksOperational = OPERATIONAL_PATTERNS.some((p) => p.test(text));
+        if (looksOperational) {
           const controlChannel = findChannel(channels, CONTROL_SIGNAL_JID);
           if (controlChannel) {
+            logger.warn(
+              { group: group.name },
+              'Redirected operational text response from group to controller',
+            );
             await controlChannel.sendMessage(
               CONTROL_SIGNAL_JID,
-              `[${group.name}] ${statusText}`,
+              `[${group.name}] (redirected from group) ${text}`,
             );
           }
+          text = '';
         }
+      }
 
-        let text = isExternalChat
-          ? (parsed.visibleText || '').trim()
-          : [parsed.visibleText, ...statusLines]
-              .filter(Boolean)
-              .join('\n\n')
-              .trim();
-
-        // Hard guard: detect operational/controller-facing content that the
-        // agent accidentally put into its visible text response for a group
-        // chat.  If the entire response looks operational, redirect it to the
-        // controller and suppress it from the group.
-        if (isExternalChat && text && CONTROL_SIGNAL_JID) {
-          const OPERATIONAL_PATTERNS = [
-            /\bcross-check\b.*\bcalendar\b/i,
-            /\bcheck\b.*\b(your|the)\s+calendar\b/i,
-            /\bconfirm\b.*\btime\s*slot\b/i,
-            /\bwhat(?:'s| is) the meeting context\b/i,
-            /\bwho else is attending\b/i,
-            /\bwhat are we scheduling\b/i,
-            /\bescalat(e|ing) to\b/i,
-            /\bfor your confirmation\b/i,
-            /\bpropose a.*time\b.*\bconfirmation\b/i,
-            /\bneed to verify\b.*\bwith you\b/i,
-            /\bcontroller\b/i,
-          ];
-          const looksOperational = OPERATIONAL_PATTERNS.some((p) =>
-            p.test(text),
-          );
-          if (looksOperational) {
-            const controlChannel = findChannel(channels, CONTROL_SIGNAL_JID);
-            if (controlChannel) {
-              logger.warn(
-                { group: group.name },
-                'Redirected operational text response from group to controller',
-              );
-              await controlChannel.sendMessage(
-                CONTROL_SIGNAL_JID,
-                `[${group.name}] (redirected from group) ${text}`,
-              );
-            }
-            text = '';
+      if (text) {
+        const latestThreadId =
+          missedMessages[missedMessages.length - 1]?.thread_id || undefined;
+        await channel.setTyping?.(chatJid, true);
+        await new Promise((r) => setTimeout(r, 1000));
+        if (featureFlags.enableNewActionEngine && channel.name === 'signal') {
+          const finalized = await new AgentSendFinalizer().finalizeSignalSend({
+            channel,
+            sourceChatJid: chatJid,
+            targetJid: chatJid,
+            message: text,
+            threadId: latestThreadId,
+          });
+          if (finalized.result === 'duplicate') {
+            logger.info(
+              { chatJid },
+              'Skipped duplicate control-plane finalized reply',
+            );
           }
-        }
-
-        if (text) {
-          const latestThreadId =
-            missedMessages[missedMessages.length - 1]?.thread_id || undefined;
-          // Brief typing indicator so the reply feels natural
-          await channel.setTyping?.(chatJid, true);
-          await new Promise((r) => setTimeout(r, 1000));
+        } else {
           await channel.sendMessage(chatJid, text, {
             threadId: latestThreadId,
           });
-          outputSentToUser = true;
         }
-        // Only reset idle timer on actual results, not session-update markers (result: null)
-        resetIdleTimer();
+        outputSentToUser = true;
       }
+      // Only reset idle timer on actual results, not session-update markers (result: null)
+      resetIdleTimer();
+    }
 
-      if (result.status === 'success') {
-        queue.notifyIdle(chatJid);
-      }
+    if (result.status === 'success') {
+      queue.notifyIdle(chatJid);
+    }
 
-      if (result.status === 'error') {
-        hadError = true;
-      }
-    },
-  );
+    if (result.status === 'error') {
+      hadError = true;
+    }
+  };
+
+  const output = featureFlags.enableNewActionEngine
+    ? (() => {
+        const engine = new LegacyWrappedActionEngine(
+          {
+            run: async (input) =>
+              runAgent(
+                input.group,
+                input.prompt,
+                input.chatJid,
+                input.controllerTriggered,
+                input.onOutput,
+              ),
+          },
+          {
+            runSpecDispatcher,
+          },
+        );
+        return engine.processInbound({
+          group,
+          chatJid,
+          prompt,
+          missedMessages,
+          controllerTriggered,
+          onOutput: handleAgentOutput,
+        });
+      })().then((result) => (result.outcome === 'error' ? 'error' : 'success'))
+    : await runAgent(
+        group,
+        prompt,
+        chatJid,
+        controllerTriggered,
+        handleAgentOutput,
+      );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
@@ -555,7 +573,7 @@ async function runAgent(
   );
 
   // Write integration tools manifest so the agent-runner can register dynamic tools
-  writeIntegrationToolsManifest(group.folder, isMain);
+  writeIntegrationToolsManifest(group.folder, isMain, controllerTriggered);
 
   try {
     const mainGroup = Object.values(registeredGroups).find((g) => g.isMain);
@@ -752,12 +770,6 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
-  // Ensure OneCLI agents exist for all registered groups.
-  // Recovers from missed creates (e.g. OneCLI was down at registration time).
-  for (const [jid, group] of Object.entries(registeredGroups)) {
-    ensureOneCLIAgent(jid, group);
-  }
-
   restoreRemoteControl();
   const controlService = new ControlActionService();
   controlServiceRef = controlService;
@@ -880,6 +892,7 @@ async function main(): Promise<void> {
     directive: ReturnType<typeof parseAgentOutput>['directives'][number],
     sourceChatJid: string,
   ): Promise<string> => {
+    const agentSendFinalizer = new AgentSendFinalizer();
     const agentContext = {
       actorIdentity: 'agent:nanoclaw',
       source: 'agent' as const,
@@ -911,6 +924,23 @@ async function main(): Promise<void> {
             { chatJid: sourceChatJid },
           );
           return `Confirmation required before starting a new Signal conversation with ${target.displayName} (${target.resolvedTarget}).\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
+        }
+        if (featureFlags.enableNewActionEngine) {
+          const channel = findChannel(channels, target.resolvedTarget);
+          if (!channel) {
+            throw new Error(
+              `No channel available for resolved target ${target.resolvedTarget}`,
+            );
+          }
+          const finalized = await agentSendFinalizer.finalizeSignalSend({
+            channel,
+            sourceChatJid,
+            targetJid: target.resolvedTarget,
+            message: directive.message,
+          });
+          return finalized.result === 'duplicate'
+            ? `Skipped duplicate Signal send to ${target.displayName} (${target.resolvedTarget}).`
+            : `Sent via Signal to ${target.displayName} (${target.resolvedTarget}).`;
         }
         await controlService.executeAction(
           'outbound.send' as string,
@@ -1116,6 +1146,14 @@ async function main(): Promise<void> {
     return `Confirmation required before deleting ${directive.channel} item "${directive.target}".\nPending ID: ${pending.id}\nReply naturally to approve, reject, or request changes. You can also use /approve ${pending.id} or /reject ${pending.id}.`;
   };
 
+  if (runSpecDispatcher) {
+    await runSpecDispatcher.prewarm();
+    logger.info(
+      { pools: runSpecDispatcher.getPoolSnapshots() },
+      'RunSpec runner pools prewarmed',
+    );
+  }
+
   const controlCommandParser = new SignalControlCommandParser({
     service: controlService,
     sendMessage: (jid, text) =>
@@ -1128,6 +1166,9 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     stopContainerReaper();
     await queue.shutdown(10000);
+    if (runSpecDispatcher) {
+      await runSpecDispatcher.close();
+    }
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
   };
@@ -1371,6 +1412,10 @@ async function main(): Promise<void> {
 
   initializeChannelRuntime(channelOpts, channels);
 
+  // Start the admin server before integration/channel startup so the UI
+  // remains available while slow or failing providers retry in the background.
+  startAdminServer({ service: controlService });
+
   // Ensure integration Docker services (signal-cli, etc.) are running before connecting channels.
   await ensureServicesRunning();
 
@@ -1437,8 +1482,6 @@ async function main(): Promise<void> {
     logger.fatal('No channels connected');
     process.exit(1);
   }
-
-  startAdminServer({ service: controlService });
 
   // Start integration health monitor and log pruner
   startHealthMonitor();
@@ -1747,10 +1790,9 @@ async function main(): Promise<void> {
 }
 
 // Guard: only run when executed directly, not when imported by tests.
-// PM2 sets pm_exec_path to the real script; argv[1] is PM2's fork container.
 // Use pathToFileURL for Windows backslash path compatibility.
 import { pathToFileURL } from 'url';
-const _scriptPath = process.env.pm_exec_path || process.argv[1];
+const _scriptPath = process.argv[1];
 const isDirectRun =
   Boolean(_scriptPath) &&
   pathToFileURL(_scriptPath!).pathname === new URL(import.meta.url).pathname;
