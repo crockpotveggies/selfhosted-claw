@@ -398,9 +398,9 @@ describe('container-runner timeout behavior', () => {
     const { spawn } = await import('child_process');
     const spawnMock = vi.mocked(spawn);
     const [, spawnArgs] = spawnMock.mock.calls[0] ?? [];
-    expect((spawnArgs as string[]).some((arg) => arg.endsWith(':/app/src'))).toBe(
-      true,
-    );
+    expect(
+      (spawnArgs as string[]).some((arg) => arg.endsWith(':/app/src')),
+    ).toBe(true);
 
     emitOutputMarker(fakeProc, {
       status: 'success',
@@ -430,9 +430,9 @@ describe('container-runner timeout behavior', () => {
     expect(spawnArgs).toBeDefined();
     expect(
       (spawnArgs as string[]).some((arg) =>
-        arg.replace(/\\/g, '/').includes(
-          '/data/sessions/main/tasks/task-calendar:/workspace/state',
-        ),
+        arg
+          .replace(/\\/g, '/')
+          .includes('/data/sessions/main/tasks/task-calendar:/workspace/state'),
       ),
     ).toBe(true);
 

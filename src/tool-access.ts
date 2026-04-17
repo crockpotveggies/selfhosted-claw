@@ -3,8 +3,6 @@ export interface ToolAccessContext {
   controllerTriggered?: boolean;
 }
 
-export function hasControllerAccess(
-  context: ToolAccessContext,
-): boolean {
+export function hasControllerAccess(context: ToolAccessContext): boolean {
   return context.isMain || context.controllerTriggered === true;
 }

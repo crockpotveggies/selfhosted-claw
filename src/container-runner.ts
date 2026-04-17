@@ -218,11 +218,7 @@ function buildVolumeMounts(
   }
 
   // Per-group runtime state (history, summaries, archives, ephemeral data).
-  const groupRuntimeStateDir = path.join(
-    DATA_DIR,
-    'sessions',
-    runtimeStateKey,
-  );
+  const groupRuntimeStateDir = path.join(DATA_DIR, 'sessions', runtimeStateKey);
   fs.mkdirSync(groupRuntimeStateDir, { recursive: true });
   try {
     fs.chmodSync(groupRuntimeStateDir, 0o777);
