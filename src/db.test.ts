@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
   _initTestDatabase,
+  _normalizeScheduledTaskContextModesForTests,
   createTask,
   deleteTask,
   getAllChats,
@@ -578,6 +579,44 @@ describe('task CRUD', () => {
 
     deleteTask('task-3');
     expect(getTaskById('task-3')).toBeUndefined();
+  });
+
+  it('migrates legacy direct-message tasks from group to isolated context', () => {
+    createTask({
+      id: 'task-legacy-direct',
+      group_folder: 'main',
+      chat_jid: 'signal:user:+15550001111',
+      prompt: 'Legacy direct task',
+      schedule_type: 'once',
+      schedule_value: '2026-04-17T07:00:00.000Z',
+      context_mode: 'group',
+      next_run: '2026-04-17T07:00:00.000Z',
+      status: 'active',
+      created_at: '2026-04-17T06:00:00.000Z',
+    });
+
+    _normalizeScheduledTaskContextModesForTests();
+
+    expect(getTaskById('task-legacy-direct')?.context_mode).toBe('isolated');
+  });
+
+  it('preserves explicit group context for group-chat tasks', () => {
+    createTask({
+      id: 'task-group-context',
+      group_folder: 'main',
+      chat_jid: 'signal:group:planning',
+      prompt: 'Shared group-context task',
+      schedule_type: 'once',
+      schedule_value: '2026-04-17T07:00:00.000Z',
+      context_mode: 'group',
+      next_run: '2026-04-17T07:00:00.000Z',
+      status: 'active',
+      created_at: '2026-04-17T06:00:00.000Z',
+    });
+
+    _normalizeScheduledTaskContextModesForTests();
+
+    expect(getTaskById('task-group-context')?.context_mode).toBe('group');
   });
 });
 

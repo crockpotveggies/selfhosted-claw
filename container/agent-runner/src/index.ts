@@ -10,6 +10,7 @@ import { resolve as dnsResolve } from 'dns/promises';
 import fs from 'fs';
 import path from 'path';
 import { shouldForcePreflightCompaction } from './startup-utils.js';
+import { hasControllerAccess } from './tool-access.js';
 
 interface ContainerInput {
   prompt: string;
@@ -731,6 +732,41 @@ async function archiveAndCompactHistory(systemPrompt: string): Promise<void> {
 
   fs.writeFileSync(SUMMARY_FILE, newSummary + '\n');
   saveHistory(retained);
+}
+
+function fastCompactHistory(): boolean {
+  const summary = readSummary();
+  const history = loadHistory();
+  if (history.length <= MAX_HISTORY_KEEP_MESSAGES) return false;
+
+  const archived = history.slice(0, history.length - MAX_HISTORY_KEEP_MESSAGES);
+  const retained = history.slice(history.length - MAX_HISTORY_KEEP_MESSAGES);
+  if (archived.length === 0) return false;
+
+  const archiveSummary = fallbackSummary(archived);
+  const mergedSummary = [summary, archiveSummary].filter(Boolean).join('\n\n');
+  const timestamp = new Date().toISOString();
+  const archivePath = path.join(
+    CONVERSATIONS_DIR,
+    `${timestamp.slice(0, 10)}-${slugify(archiveSummary || 'conversation')}.md`,
+  );
+  const archiveContent = [
+    `# Archived Conversation`,
+    '',
+    `Archived: ${timestamp}`,
+    '',
+    `## Summary`,
+    '',
+    archiveSummary,
+    '',
+    `## Messages`,
+    '',
+    formatMessagesForArchive(archived),
+  ].join('\n');
+  fs.writeFileSync(archivePath, archiveContent);
+  fs.writeFileSync(SUMMARY_FILE, mergedSummary + '\n');
+  saveHistory(retained);
+  return true;
 }
 
 function buildConversationMessages(
@@ -2370,15 +2406,12 @@ function loadIntegrationTools(): void {
   }
 }
 
-// Load integration tools on startup
-loadIntegrationTools();
-
 function buildOpenAITools(
-  controllerTriggered: boolean,
+  controllerAccess: boolean,
 ): Array<Record<string, unknown>> {
   return Object.entries(TOOL_REGISTRY)
     .filter(
-      ([, spec]) => !spec.controllerOnly || controllerTriggered,
+      ([, spec]) => !spec.controllerOnly || controllerAccess,
     )
     .map(([name, spec]) => ({
       type: 'function',
@@ -2409,7 +2442,7 @@ async function executeToolCall(
     };
   }
   // Defense in depth: block controller-only tools even if model hallucinates them
-  if (tool.controllerOnly && !ctx.containerInput.controllerTriggered) {
+  if (tool.controllerOnly && !hasControllerAccess(ctx.containerInput)) {
     return {
       role: 'tool',
       name: toolName,
@@ -2479,7 +2512,7 @@ async function runConversationTurn(
   const history = loadHistory();
   const workingHistory: OpenAIMessage[] = [...history, { role: 'user', content: prompt }];
   const ctx: ToolContext = { containerInput };
-  const tools = buildOpenAITools(containerInput.controllerTriggered === true);
+  const tools = buildOpenAITools(hasControllerAccess(containerInput));
   const toolCallCounts: Record<string, number> = {}; // per-turn rate limit counters
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -2645,8 +2678,10 @@ async function main(): Promise<void> {
       MAX_HISTORY_KEEP_MESSAGES,
     )
   ) {
-    log(`History has ${preHistory.length} messages (limit ${MAX_HISTORY_KEEP_MESSAGES}), forcing compaction`);
-    await archiveAndCompactHistory(systemPrompt);
+    log(`History has ${preHistory.length} messages (limit ${MAX_HISTORY_KEEP_MESSAGES}), forcing fast compaction`);
+    if (!fastCompactHistory()) {
+      await archiveAndCompactHistory(systemPrompt);
+    }
   }
 
   const pending = drainIpcInput();

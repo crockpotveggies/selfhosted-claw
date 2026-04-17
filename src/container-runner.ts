@@ -45,6 +45,7 @@ export interface ContainerInput {
   sessionId?: string;
   groupFolder: string;
   chatJid: string;
+  runtimeStateKey?: string;
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
@@ -75,6 +76,42 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+function ensureWritableFile(filePath: string): void {
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, '');
+  }
+  try {
+    fs.chmodSync(filePath, 0o666);
+  } catch {
+    // Best-effort on platforms/filesystems that ignore chmod (e.g. Windows bind mounts).
+  }
+}
+
+function shouldMountCustomAgentRunnerSource(
+  groupAgentRunnerDir: string,
+): boolean {
+  const customizationMarker = path.join(groupAgentRunnerDir, '.customized');
+  return fs.existsSync(customizationMarker);
+}
+
+function syncControllerAccessFlag(
+  groupFolder: string,
+  isMain: boolean,
+  controllerTriggered: boolean,
+): void {
+  if (isMain) return;
+  const flagDir = resolveGroupIpcPath(groupFolder);
+  const flagPath = path.join(flagDir, 'controller_access');
+  if (controllerTriggered) {
+    fs.mkdirSync(flagDir, { recursive: true });
+    fs.writeFileSync(flagPath, '');
+    return;
+  }
+  if (fs.existsSync(flagPath)) {
+    fs.unlinkSync(flagPath);
+  }
+}
+
 export function resolveContainerOpenAIBaseUrl(baseUrl: string): string {
   try {
     const parsed = new URL(baseUrl);
@@ -95,6 +132,7 @@ export function resolveContainerOpenAIBaseUrl(baseUrl: string): string {
 
 function buildVolumeMounts(
   group: RegisteredGroup,
+  runtimeStateKey: string,
   isMain: boolean,
   mainGroupFolder?: string,
 ): VolumeMount[] {
@@ -180,19 +218,24 @@ function buildVolumeMounts(
   }
 
   // Per-group runtime state (history, summaries, archives, ephemeral data).
-  const groupRuntimeStateDir = path.join(DATA_DIR, 'sessions', group.folder);
+  const groupRuntimeStateDir = path.join(
+    DATA_DIR,
+    'sessions',
+    runtimeStateKey,
+  );
   fs.mkdirSync(groupRuntimeStateDir, { recursive: true });
+  try {
+    fs.chmodSync(groupRuntimeStateDir, 0o777);
+  } catch {
+    // Best-effort on platforms/filesystems that ignore chmod.
+  }
   const historyFile = path.join(groupRuntimeStateDir, 'history.jsonl');
   const summaryFile = path.join(groupRuntimeStateDir, 'summary.md');
-  if (!fs.existsSync(historyFile)) {
-    fs.writeFileSync(historyFile, '');
-  }
-  if (!fs.existsSync(summaryFile)) {
-    fs.writeFileSync(summaryFile, '');
-  }
+  ensureWritableFile(historyFile);
+  ensureWritableFile(summaryFile);
   mounts.push({
     hostPath: resolveHostPath(
-      path.join(mountRoot, 'data', 'sessions', group.folder),
+      path.join(mountRoot, 'data', 'sessions', runtimeStateKey),
     ),
     containerPath: '/workspace/state',
     readonly: false,
@@ -213,46 +256,32 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Copy agent-runner source into a per-group writable location so agents
-  // can customize it (add tools, change behavior) without affecting other
-  // groups. Recompiled on container startup via entrypoint.sh.
-  const agentRunnerSrc = path.join(
-    projectRoot,
-    'container',
-    'agent-runner',
-    'src',
-  );
   const groupAgentRunnerDir = path.join(
     DATA_DIR,
     'sessions',
     group.folder,
     'agent-runner-src',
   );
-  if (fs.existsSync(agentRunnerSrc)) {
-    const srcIndex = path.join(agentRunnerSrc, 'index.ts');
-    const cachedIndex = path.join(groupAgentRunnerDir, 'index.ts');
-    const needsCopy =
-      !fs.existsSync(groupAgentRunnerDir) ||
-      !fs.existsSync(cachedIndex) ||
-      (fs.existsSync(srcIndex) &&
-        fs.statSync(srcIndex).mtimeMs > fs.statSync(cachedIndex).mtimeMs);
-    if (needsCopy) {
-      fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
-    }
-  }
-  mounts.push({
-    hostPath: resolveHostPath(
-      path.join(
-        mountRoot,
-        'data',
-        'sessions',
-        group.folder,
-        'agent-runner-src',
+  // Mount per-group runner source only when explicitly opted in.
+  // Legacy session snapshots are often just stale copies of the default
+  // runner, and mounting them forces an unnecessary checksum/recompile path
+  // on every container start. Creating `agent-runner-src/.customized`
+  // preserves the old override behavior for the rare group that truly needs it.
+  if (shouldMountCustomAgentRunnerSource(groupAgentRunnerDir)) {
+    mounts.push({
+      hostPath: resolveHostPath(
+        path.join(
+          mountRoot,
+          'data',
+          'sessions',
+          group.folder,
+          'agent-runner-src',
+        ),
       ),
-    ),
-    containerPath: '/app/src',
-    readonly: false,
-  });
+      containerPath: '/app/src',
+      readonly: false,
+    });
+  }
 
   // Container skills (read-only behavioral instructions loaded into system prompt)
   const skillsDir = path.join(projectRoot, 'container', 'skills');
@@ -331,8 +360,19 @@ export async function runContainerAgent(
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
+  syncControllerAccessFlag(
+    group.folder,
+    input.isMain,
+    input.controllerTriggered === true,
+  );
+  const runtimeStateKey = input.runtimeStateKey || group.folder;
 
-  const mounts = buildVolumeMounts(group, input.isMain, input.mainGroupFolder);
+  const mounts = buildVolumeMounts(
+    group,
+    runtimeStateKey,
+    input.isMain,
+    input.mainGroupFolder,
+  );
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = await buildContainerArgs(mounts, containerName);
@@ -783,6 +823,7 @@ export function writeGroupsSnapshot(
 export function writeIntegrationToolsManifest(
   groupFolder: string,
   isMain: boolean,
+  controllerTriggered: boolean = false,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });
@@ -801,8 +842,9 @@ export function writeIntegrationToolsManifest(
     if (!def.tools) continue;
     for (const tool of def.tools) {
       if (tool.location !== 'host') continue;
-      // Filter controller-only tools for non-main groups
-      if (tool.controllerOnly && !isMain) continue;
+      // Filter controller-only tools unless the session is acting with
+      // controller privileges (main chat or an explicitly controller-triggered run).
+      if (tool.controllerOnly && !(isMain || controllerTriggered)) continue;
       tools.push({
         name: tool.name,
         description: tool.description,

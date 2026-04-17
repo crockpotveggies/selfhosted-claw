@@ -568,6 +568,7 @@ export class SignalChannel implements Channel {
         content,
         timestamp,
         is_from_me: isFromMe,
+        is_bot_message: isFromMe,
       },
     };
   }

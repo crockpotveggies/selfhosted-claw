@@ -26,6 +26,37 @@ import {
 
 let db: Database.Database;
 
+function normalizeScheduledTaskContextModes(database: Database.Database): void {
+  database
+    .prepare(
+      `
+      UPDATE scheduled_tasks
+      SET context_mode = 'isolated'
+      WHERE context_mode IS NULL
+        OR context_mode NOT IN ('group', 'isolated')
+    `,
+    )
+    .run();
+
+  const migratedLegacyDirectTasks = database
+    .prepare(
+      `
+      UPDATE scheduled_tasks
+      SET context_mode = 'isolated'
+      WHERE context_mode = 'group'
+        AND chat_jid LIKE 'signal:user:%'
+    `,
+    )
+    .run().changes;
+
+  if (migratedLegacyDirectTasks > 0) {
+    logger.info(
+      { migratedLegacyDirectTasks },
+      'Migrated legacy direct-message scheduled tasks to isolated context',
+    );
+  }
+}
+
 function createSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS chats (
@@ -350,6 +381,8 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  normalizeScheduledTaskContextModes(database);
 }
 
 export function initDatabase(): void {
@@ -372,6 +405,11 @@ export function _initTestDatabase(): void {
 /** @internal - for tests only. */
 export function _closeDatabase(): void {
   db.close();
+}
+
+/** @internal - for tests only. */
+export function _normalizeScheduledTaskContextModesForTests(): void {
+  normalizeScheduledTaskContextModes(db);
 }
 
 /**

@@ -7,6 +7,9 @@ import { describe, expect, it } from 'vitest';
 import {
   ensureControlPlaneEnvFile,
   getControlPlaneServiceCommand,
+  getRunnerImageBuildCommand,
+  getRunnerLogCommand,
+  parseRunnerContainerNames,
 } from './control-plane-service.js';
 import { getControlPlaneStatePaths } from './control-plane-state.js';
 
@@ -77,6 +80,33 @@ describe('control plane compose service commands', () => {
         'control-plane',
       ],
     });
+  });
+
+  it('builds a docker logs follower command for runner containers', () => {
+    expect(getRunnerLogCommand('nanoclaw-main-123')).toEqual({
+      command: 'docker',
+      args: ['logs', '-f', '--tail', '100', 'nanoclaw-main-123'],
+    });
+  });
+
+  it('builds the runner image from the container directory', () => {
+    expect(getRunnerImageBuildCommand()).toEqual({
+      command: 'docker',
+      args: ['build', '-t', 'nanoclaw-agent:latest', '.'],
+    });
+  });
+
+  it('extracts active runner container names from docker ps output', () => {
+    expect(
+      parseRunnerContainerNames(
+        [
+          'nanoclaw-main-123',
+          'selfhosted-claw-control-plane-1',
+          'nanoclaw-sms18337750707-456',
+          '',
+        ].join('\n'),
+      ),
+    ).toEqual(['nanoclaw-main-123', 'nanoclaw-sms18337750707-456']);
   });
 
   it('exposes a cleanup-state utility action', () => {

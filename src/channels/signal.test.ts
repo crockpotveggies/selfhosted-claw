@@ -206,6 +206,40 @@ describe('SignalChannel', () => {
         sender: '+15551234567',
         sender_name: 'Taylor',
         is_from_me: false,
+        is_bot_message: false,
+      },
+    });
+  });
+
+  it('marks self-sent sync messages as bot messages', async () => {
+    const channel = new SignalChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      'http://127.0.0.1:8080',
+      '+15555550123',
+    );
+
+    const parsed = (channel as any).parseEnvelope({
+      envelope: {
+        sourceNumber: '+15555550123',
+        sourceName: 'Assistant',
+        timestamp: 1_700_000_000_000,
+        syncMessage: {
+          sentMessage: {
+            destination: '+15551234567',
+            message: 'outbound reply',
+            timestamp: 1_700_000_000_000,
+          },
+        },
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      chatJid: 'signal:user:+15555550123',
+      message: {
+        content: 'outbound reply',
+        sender: '+15555550123',
+        is_from_me: true,
+        is_bot_message: true,
       },
     });
   });

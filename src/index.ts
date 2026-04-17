@@ -573,7 +573,7 @@ async function runAgent(
   );
 
   // Write integration tools manifest so the agent-runner can register dynamic tools
-  writeIntegrationToolsManifest(group.folder, isMain);
+  writeIntegrationToolsManifest(group.folder, isMain, controllerTriggered);
 
   try {
     const mainGroup = Object.values(registeredGroups).find((g) => g.isMain);

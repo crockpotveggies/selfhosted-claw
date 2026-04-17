@@ -48,7 +48,10 @@ vi.mock('fs', async () => {
       readFileSync: vi.fn(() => ''),
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
+      chmodSync: vi.fn(),
       copyFileSync: vi.fn(),
+      cpSync: vi.fn(),
+      unlinkSync: vi.fn(),
     },
   };
 });
@@ -154,6 +157,7 @@ describe('container-runner timeout behavior', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     fakeProc = createFakeProcess();
+    vi.clearAllMocks();
   });
 
   afterEach(() => {
@@ -274,6 +278,7 @@ describe('container-runner timeout behavior', () => {
 
   it('precreates runtime state files on the host before mounting', async () => {
     const writeFileSync = vi.mocked(fs.writeFileSync);
+    const chmodSync = vi.mocked(fs.chmodSync);
     const resultPromise = runContainerAgent(
       testGroup,
       testInput,
@@ -289,6 +294,147 @@ describe('container-runner timeout behavior', () => {
       expect.stringMatching(/[\\/]sessions[\\/]test-group[\\/]summary\.md$/),
       '',
     );
+    expect(chmodSync).toHaveBeenCalledWith(
+      expect.stringMatching(/[\\/]sessions[\\/]test-group$/),
+      0o777,
+    );
+    expect(chmodSync).toHaveBeenCalledWith(
+      expect.stringMatching(/[\\/]sessions[\\/]test-group[\\/]history\.jsonl$/),
+      0o666,
+    );
+    expect(chmodSync).toHaveBeenCalledWith(
+      expect.stringMatching(/[\\/]sessions[\\/]test-group[\\/]summary\.md$/),
+      0o666,
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+  });
+
+  it('writes the controller access flag for controller-triggered non-main sessions', async () => {
+    const writeFileSync = vi.mocked(fs.writeFileSync);
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      {
+        ...testInput,
+        controllerTriggered: true,
+      },
+      () => {},
+      async () => {},
+    );
+
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringMatching(/[\\/]ipc[\\/]test-group[\\/]controller_access$/),
+      '',
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+  });
+
+  it('does not mount per-group agent runner source without an explicit customization marker', async () => {
+    const existsSync = vi.mocked(fs.existsSync);
+    existsSync.mockImplementation((target) => {
+      const normalized = String(target).replace(/\\/g, '/');
+      return normalized.endsWith('/container/skills');
+    });
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      async () => {},
+    );
+
+    const { spawn } = await import('child_process');
+    const spawnMock = vi.mocked(spawn);
+    const [, spawnArgs] = spawnMock.mock.calls[0] ?? [];
+    expect(spawnArgs).toBeDefined();
+    expect(spawnArgs as string[]).not.toContain('/app/src');
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+  });
+
+  it('mounts per-group agent runner source when the customization marker is present', async () => {
+    const existsSync = vi.mocked(fs.existsSync);
+    existsSync.mockImplementation((target) => {
+      const normalized = String(target).replace(/\\/g, '/');
+      return (
+        normalized.endsWith('/container/skills') ||
+        normalized.endsWith('/sessions/test-group/agent-runner-src/.customized')
+      );
+    });
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      async () => {},
+    );
+
+    const { spawn } = await import('child_process');
+    const spawnMock = vi.mocked(spawn);
+    const [, spawnArgs] = spawnMock.mock.calls[0] ?? [];
+    expect((spawnArgs as string[]).some((arg) => arg.endsWith(':/app/src'))).toBe(
+      true,
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+  });
+
+  it('mounts isolated runtime state when runtimeStateKey is provided', async () => {
+    const resultPromise = runContainerAgent(
+      testGroup,
+      {
+        ...testInput,
+        runtimeStateKey: 'main/tasks/task-calendar',
+      },
+      () => {},
+      async () => {},
+    );
+
+    const { spawn } = await import('child_process');
+    const spawnMock = vi.mocked(spawn);
+    const [, spawnArgs] = spawnMock.mock.calls[0] ?? [];
+    expect(spawnArgs).toBeDefined();
+    expect(
+      (spawnArgs as string[]).some((arg) =>
+        arg.replace(/\\/g, '/').includes(
+          '/data/sessions/main/tasks/task-calendar:/workspace/state',
+        ),
+      ),
+    ).toBe(true);
 
     emitOutputMarker(fakeProc, {
       status: 'success',
