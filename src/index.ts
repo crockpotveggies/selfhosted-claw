@@ -49,6 +49,9 @@ import {
   getAllTasks,
   getLastBotMessageTimestamp,
   getMessagesSince,
+  hasMessageFromSender,
+  hasRecentOutboundActivity,
+  isChatGroup,
   getNewMessages,
   getRouterState,
   initDatabase,
@@ -294,7 +297,49 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  let prompt = formatMessages(missedMessages, TIMEZONE);
+
+  // If this is a non-main 1:1 external chat that the system recently messaged
+  // into, the reply is likely answering something the controller asked us to
+  // find out (e.g. SMS sent on their behalf). Inject a strict relay hint so
+  // the agent notifies the controller ONLY for replies that directly answer
+  // what the controller was waiting on. Skipped for group chats where the
+  // controller is already a participant — they see those replies themselves.
+  if (!isMainGroup && CONTROL_SIGNAL_JID && chatJid !== CONTROL_SIGNAL_JID) {
+    const sinceIso = new Date(
+      Date.now() - 7 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    const controllerPhone = CONTROL_SIGNAL_JID.replace(
+      /^signal:user:/,
+      '',
+    ).trim();
+    const controllerPresentInGroup =
+      isChatGroup(chatJid) &&
+      (hasMessageFromSender(chatJid, CONTROL_SIGNAL_JID) ||
+        (controllerPhone && hasMessageFromSender(chatJid, controllerPhone)));
+    if (
+      !controllerPresentInGroup &&
+      hasRecentOutboundActivity(chatJid, sinceIso)
+    ) {
+      const relayHint = [
+        `[SYSTEM NOTE] You previously messaged this contact on the`,
+        `controller's behalf. Relay a reply via notify_controller ONLY if it`,
+        `is responsive to what the controller was waiting on — a yes, a no,`,
+        `a maybe, a proposed time, a question back, a concrete decision, or`,
+        `any info the controller asked you to get. Tentative or hedged`,
+        `answers ("maybe", "I'll think about it", "not sure yet") ARE`,
+        `relevant and SHOULD be relayed — the controller needs to know the`,
+        `state of the ask. Do NOT relay: generic acknowledgments ("ok",`,
+        `"thanks", "sounds good"), emoji reactions, small talk,`,
+        `pleasantries, or tangents unrelated to what the controller asked.`,
+        `The controller does not want a running play-by-play — only content`,
+        `that moves their request forward. When in doubt about relevance,`,
+        `stay silent; they can always ask for an update. If you do relay,`,
+        `keep it to a one-line summary plus the key quote.`,
+      ].join(' ');
+      prompt = `${relayHint}\n\n${prompt}`;
+    }
+  }
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.

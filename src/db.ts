@@ -708,6 +708,55 @@ export function getLastBotMessageTimestamp(
   return row?.ts ?? undefined;
 }
 
+/**
+ * Check whether this chat has recent outbound activity from us
+ * (agent-sent or manually-sent from the host), within `sinceIso`.
+ * Used to decide whether an inbound reply should be auto-forwarded to
+ * the controller, on the assumption that we initiated the thread.
+ */
+export function hasRecentOutboundActivity(
+  chatJid: string,
+  sinceIso: string,
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 FROM messages
+       WHERE chat_jid = ? AND timestamp > ?
+         AND (is_from_me = 1 OR is_bot_message = 1)
+       LIMIT 1`,
+    )
+    .get(chatJid, sinceIso) as { '1': number } | undefined;
+  return !!row;
+}
+
+/**
+ * Whether the given sender has ever posted a message in this chat.
+ * Used to detect whether the controller is present in a group chat
+ * (and therefore sees external replies directly — no relay needed).
+ */
+export function hasMessageFromSender(
+  chatJid: string,
+  sender: string,
+): boolean {
+  if (!sender) return false;
+  const row = db
+    .prepare(
+      `SELECT 1 FROM messages
+       WHERE chat_jid = ? AND sender = ?
+       LIMIT 1`,
+    )
+    .get(chatJid, sender) as { '1': number } | undefined;
+  return !!row;
+}
+
+/** Whether the chat is a group chat (per the chats metadata table). */
+export function isChatGroup(chatJid: string): boolean {
+  const row = db
+    .prepare(`SELECT is_group FROM chats WHERE jid = ? LIMIT 1`)
+    .get(chatJid) as { is_group: number } | undefined;
+  return row?.is_group === 1;
+}
+
 export function getMessageContentById(
   id: string,
   chatJid: string,
