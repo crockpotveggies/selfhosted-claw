@@ -360,6 +360,10 @@ export class HotRunnerPool {
     } finally {
       entry.status = 'idle';
       entry.lastUsedAt = Date.now();
+      // Wake one waiter (if any) immediately — avoids up-to-25ms polling
+      // jitter in acquireSession when the pool is saturated.
+      const waiter = this.idleWaiters.shift();
+      if (waiter) waiter(entry);
       await this.reapIdleSessions();
     }
   }
@@ -385,6 +389,10 @@ export class HotRunnerPool {
     };
   }
 
+  // Waiters blocked on a saturated pool — woken by the finally block in
+  // execute() the moment a session returns to idle.
+  private readonly idleWaiters: Array<(entry: SessionEntry) => void> = [];
+
   private async acquireSession(): Promise<SessionEntry> {
     const idle = [...this.sessions.values()].find(
       (entry) => entry.status === 'idle',
@@ -402,13 +410,9 @@ export class HotRunnerPool {
       return entry;
     }
 
-    while (true) {
-      const available = [...this.sessions.values()].find(
-        (entry) => entry.status === 'idle',
-      );
-      if (available) return available;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
+    return new Promise<SessionEntry>((resolve) => {
+      this.idleWaiters.push(resolve);
+    });
   }
 
   private async reapIdleSessions(): Promise<void> {

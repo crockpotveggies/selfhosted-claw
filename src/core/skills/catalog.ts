@@ -27,10 +27,19 @@ function parseFrontmatter(raw: string): {
   return result;
 }
 
+// In-process cache — skill registry and SKILL.md files are read-only from the
+// agent's perspective, so we load once and reuse. Keyed by (projectRoot,
+// registryRelativePath) so tests and alternate layouts don't collide.
+const catalogCache = new Map<string, SkillRegistry>();
+
 export function loadSkillCatalog(
   projectRoot = process.cwd(),
   registryRelativePath = path.join('container', 'skills', 'registry.v2.json'),
 ): SkillRegistry {
+  const cacheKey = `${projectRoot}\0${registryRelativePath}`;
+  const cached = catalogCache.get(cacheKey);
+  if (cached) return cached;
+
   const registryPath = path.join(projectRoot, registryRelativePath);
   const skillsRoot = path.join(projectRoot, 'container', 'skills');
   const raw = JSON.parse(
@@ -52,5 +61,10 @@ export function loadSkillCatalog(
     });
   }
 
+  catalogCache.set(cacheKey, registry);
   return registry;
+}
+
+export function invalidateSkillCatalogCache(): void {
+  catalogCache.clear();
 }

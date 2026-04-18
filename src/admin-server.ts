@@ -6,6 +6,7 @@ import path from 'path';
 import Database from 'better-sqlite3';
 
 import { refreshIntegrationToolsManifests } from './container-runner.js';
+import { invalidateSkillCatalogCache } from './core/skills/catalog.js';
 import {
   ADMIN_BIND_HOST,
   ADMIN_PORT,
@@ -1003,6 +1004,7 @@ export function startAdminServer(
         const dir = path.join(skillsDir, skillName);
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(path.join(dir, 'SKILL.md'), fileContent);
+        invalidateSkillCatalogCache();
         sendJson(res, 200, { ok: true });
         return;
       }
@@ -1035,6 +1037,7 @@ export function startAdminServer(
         } catch {
           /* directory not empty, that's fine */
         }
+        invalidateSkillCatalogCache();
         sendJson(res, 200, { ok: true });
         return;
       }

@@ -194,7 +194,10 @@ function writeIpcResponse(
   fs.mkdirSync(responsesDir, { recursive: true });
   const filepath = path.join(responsesDir, `${requestId}.json`);
   const tempPath = `${filepath}.tmp`;
-  fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
+  // Compact JSON — these files are consumed by the container runtime, not
+  // read by humans on the hot path. Pretty-printing roughly doubles the
+  // serialize cost for large calendar payloads.
+  fs.writeFileSync(tempPath, JSON.stringify(data));
   fs.renameSync(tempPath, filepath);
 }
 
@@ -231,18 +234,68 @@ export function startIpcWatcher(deps: IpcDeps): void {
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcBaseDir, { recursive: true });
 
-  const processIpcFiles = async () => {
-    // Scan all group IPC directories (identity determined by directory)
-    let groupFolders: string[];
+  // Watch-driven dirty flag: set true when fs.watch fires on any ipc subtree,
+  // or when registration changes (new group). We still fall back to a slow
+  // periodic sweep to recover from missed events (Docker volume + SMB quirks).
+  let dirty = true;
+  const markDirty = () => {
+    dirty = true;
+  };
+  const watchedDirs = new Map<string, fs.FSWatcher>();
+  const watchDir = (dir: string) => {
+    if (watchedDirs.has(dir)) return;
     try {
-      groupFolders = fs.readdirSync(ipcBaseDir).filter((f) => {
-        const stat = fs.statSync(path.join(ipcBaseDir, f));
-        return stat.isDirectory() && f !== 'errors';
+      fs.mkdirSync(dir, { recursive: true });
+      const w = fs.watch(dir, { persistent: true }, markDirty);
+      w.on('error', () => {
+        watchedDirs.delete(dir);
       });
-    } catch (err) {
-      logger.error({ err }, 'Error reading IPC base directory');
+      watchedDirs.set(dir, w);
+    } catch {
+      /* watch failed — slow-path sweep will cover it */
+    }
+  };
+  watchDir(ipcBaseDir);
+
+  // Cached group folder list; refreshed when the base dir notifies us of a
+  // change (or by the slow-path sweep).
+  let cachedGroupFolders: string[] | null = null;
+  const SLOW_SWEEP_INTERVAL = 15_000; // recover from missed watch events
+  let lastSlowSweep = 0;
+
+  const processIpcFiles = async () => {
+    const now = Date.now();
+    const slowSweep = now - lastSlowSweep >= SLOW_SWEEP_INTERVAL;
+    if (!dirty && !slowSweep) {
       setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
       return;
+    }
+    dirty = false;
+    if (slowSweep) lastSlowSweep = now;
+
+    // Scan all group IPC directories (identity determined by directory).
+    // withFileTypes avoids N stat() syscalls per tick.
+    let groupFolders: string[];
+    if (cachedGroupFolders && !slowSweep) {
+      groupFolders = cachedGroupFolders;
+    } else {
+      try {
+        groupFolders = fs
+          .readdirSync(ipcBaseDir, { withFileTypes: true })
+          .filter((d) => d.isDirectory() && d.name !== 'errors')
+          .map((d) => d.name);
+        cachedGroupFolders = groupFolders;
+        // Attach watches to each group's messages/ and tasks/ so future
+        // writes trigger an immediate sweep instead of waiting for the tick.
+        for (const folder of groupFolders) {
+          watchDir(path.join(ipcBaseDir, folder, 'messages'));
+          watchDir(path.join(ipcBaseDir, folder, 'tasks'));
+        }
+      } catch (err) {
+        logger.error({ err }, 'Error reading IPC base directory');
+        setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
+        return;
+      }
     }
 
     const registeredGroups = deps.registeredGroups();
@@ -1636,7 +1689,8 @@ export async function processTaskIpc(
       const target = (data.target || '').trim();
       if (!target) {
         writeIpcResponse(sourceGroup, data.requestId, {
-          error: 'read_chat_history requires a target (chat JID, name, or phone).',
+          error:
+            'read_chat_history requires a target (chat JID, name, or phone).',
         });
         break;
       }

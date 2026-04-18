@@ -53,7 +53,7 @@ RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/stat
 
 # Save a checksum of the built source so the entrypoint can skip recompilation
 # when the mounted source matches the image build.
-RUN find /app/src -name '*.ts' -exec md5sum {} \; | sort | md5sum | cut -d' ' -f1 > /app/.src-checksum
+RUN find /app/src -name '*.ts' -printf '%s %T@ %p\n' | sort | md5sum | cut -d' ' -f1 > /app/.src-checksum
 
 # Create entrypoint script
 # Container input (prompt, group info) is passed via stdin JSON.

@@ -472,11 +472,25 @@ export async function runContainerAgent(
       }
     });
 
+    // Cache the level check — avoids re-evaluating per data event. If debug
+    // isn't enabled, we skip the per-line split/emit entirely, which otherwise
+    // burns ~5–20ms per turn on a chatty SDK.
+    const debugEnabled =
+      typeof (logger as { isLevelEnabled?: (l: string) => boolean })
+        .isLevelEnabled === 'function'
+        ? (
+            logger as { isLevelEnabled: (l: string) => boolean }
+          ).isLevelEnabled('debug')
+        : (logger as { level?: string }).level === 'debug' ||
+          (logger as { level?: string }).level === 'trace';
+
     container.stderr.on('data', (data) => {
       const chunk = data.toString();
-      const lines = chunk.trim().split('\n');
-      for (const line of lines) {
-        if (line) logger.debug({ container: group.folder }, line);
+      if (debugEnabled) {
+        const lines = chunk.trim().split('\n');
+        for (const line of lines) {
+          if (line) logger.debug({ container: group.folder }, line);
+        }
       }
       // Don't reset timeout on stderr â€” SDK writes debug logs continuously.
       // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
@@ -642,8 +656,21 @@ export async function runContainerAgent(
         );
       }
 
-      fs.writeFileSync(logFile, logLines.join('\n'));
-      logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
+      // Async write — log file is for post-hoc debugging, no caller waits on
+      // it. Blocking here adds 10–50ms to every turn on the hot path.
+      fs.writeFile(logFile, logLines.join('\n'), (err) => {
+        if (err) {
+          logger.warn(
+            { logFile, err: String(err) },
+            'Deferred container log write failed',
+          );
+        } else {
+          logger.debug(
+            { logFile, verbose: isVerbose },
+            'Container log written',
+          );
+        }
+      });
 
       if (code !== 0) {
         logger.error(
