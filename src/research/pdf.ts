@@ -78,9 +78,15 @@ function wrapToWidth(
     } else {
       // Hard split on overly long tokens (URLs, etc.).
       let remaining = word;
-      while (measure(remaining, size, font) > maxWidth && remaining.length > 1) {
+      while (
+        measure(remaining, size, font) > maxWidth &&
+        remaining.length > 1
+      ) {
         let cut = remaining.length;
-        while (cut > 1 && measure(remaining.slice(0, cut), size, font) > maxWidth) {
+        while (
+          cut > 1 &&
+          measure(remaining.slice(0, cut), size, font) > maxWidth
+        ) {
           cut -= 1;
         }
         lines.push(remaining.slice(0, cut));

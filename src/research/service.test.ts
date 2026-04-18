@@ -54,14 +54,18 @@ describe('deep research service', () => {
     vi.doMock('../integrations/settings-store.js', () => ({
       getIntegrationSettings: vi.fn(() => settings),
     }));
-    vi.doMock('../logger.js', () => ({
-      logger: {
+    vi.doMock('../logger.js', () => {
+      const stub = {
         info: vi.fn(),
         warn: vi.fn(),
         error: vi.fn(),
         debug: vi.fn(),
-      },
-    }));
+      };
+      return {
+        logger: stub,
+        createChildLogger: vi.fn(() => stub),
+      };
+    });
     vi.doMock('./openai.js', () => ({
       callJsonChatCompletion: vi.fn(async () => {
         const next = completionQueue.shift();

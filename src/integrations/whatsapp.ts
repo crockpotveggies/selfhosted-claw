@@ -968,7 +968,8 @@ const whatsappIntegration: IntegrationDefinition = {
     },
     {
       name: 'whatsapp.list_groups',
-      description: 'List all WhatsApp groups. Returns raw group data — summarise naturally for the user.',
+      description:
+        'List all WhatsApp groups. Returns raw group data — summarise naturally for the user.',
       parameters: { type: 'object', properties: {} },
       location: 'host' as const,
       controllerOnly: true,

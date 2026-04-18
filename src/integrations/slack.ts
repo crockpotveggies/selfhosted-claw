@@ -1046,6 +1046,114 @@ const slackIntegration: IntegrationDefinition = {
         return JSON.stringify({ status: 'sent', to: ctx.chatJid });
       },
     },
+    {
+      name: 'slack.send_file',
+      description:
+        'Upload a file (PDF, image, etc.) to a Slack channel or conversation. The path must be inside a workspace path the agent can read. This tool IS the user-visible attachment — do not also produce a text reply summarising what you sent. After calling this tool, return an empty text response to end your turn. Requires the Slack bot token to have the "files:write" OAuth scope.',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: {
+            type: 'string',
+            description:
+              'Target Slack channel name (e.g. "#general" or "general") or Slack JID (e.g. "slack:C12345678"). Omit to send to the current conversation.',
+          },
+          file_path: {
+            type: 'string',
+            description:
+              'Absolute path inside the container workspace to the file being uploaded.',
+          },
+          caption: {
+            type: 'string',
+            description: 'Optional message body to post alongside the file.',
+          },
+          file_name: {
+            type: 'string',
+            description:
+              'Optional override for the visible file name. Defaults to basename(file_path).',
+          },
+        },
+        required: ['file_path'],
+      },
+      location: 'host' as const,
+      controllerOnly: true,
+      execute: async (args, ctx) => {
+        const filePath = String(args.file_path || '').trim();
+        if (!filePath) throw new Error('file_path is required');
+        if (!fs.existsSync(filePath)) {
+          throw new Error(`file_path does not exist: ${filePath}`);
+        }
+        const ch = ctx.channels?.find((c) => c.name === INTEGRATION_NAME) as
+          | (Channel & {
+              findGroupByName?: (
+                name: string,
+              ) => Promise<ChannelGroupLookupResult | null>;
+              sendAttachment?: (input: {
+                jid: string;
+                filePath: string;
+                mimeType: string;
+                caption?: string;
+                fileName?: string;
+              }) => Promise<void>;
+            })
+          | undefined;
+        if (!ch?.sendAttachment) {
+          throw new Error('Slack channel is not connected');
+        }
+        const targetRaw =
+          String(args.to || '').trim() || String(ctx.chatJid || '').trim();
+        if (!targetRaw) {
+          throw new Error(
+            'No target Slack channel — provide "to" or use inside a Slack conversation',
+          );
+        }
+        let jid = '';
+        if (isSlackJid(targetRaw)) {
+          jid = targetRaw;
+        } else if (ch.findGroupByName) {
+          const match = await ch.findGroupByName(targetRaw);
+          if (match?.jid) jid = match.jid;
+        }
+        if (!jid) {
+          throw new Error(
+            `Could not resolve Slack target "${targetRaw}" — pass a channel name (e.g. "general") or a slack:C… JID`,
+          );
+        }
+        const caption = String(args.caption || '').trim();
+        const fileName =
+          String(args.file_name || '').trim() || path.basename(filePath);
+        const ext = path.extname(filePath).toLowerCase();
+        const mimeType =
+          ext === '.pdf'
+            ? 'application/pdf'
+            : ext === '.png'
+              ? 'image/png'
+              : ext === '.jpg' || ext === '.jpeg'
+                ? 'image/jpeg'
+                : ext === '.txt'
+                  ? 'text/plain'
+                  : ext === '.md'
+                    ? 'text/markdown'
+                    : ext === '.json'
+                      ? 'application/json'
+                      : 'application/octet-stream';
+        await ch.sendAttachment({
+          jid,
+          filePath,
+          mimeType,
+          caption: caption || undefined,
+          fileName,
+        });
+        return JSON.stringify({
+          status: 'uploaded',
+          to: jid,
+          file_name: fileName,
+          ack_text: `Uploaded ${fileName} to Slack.`,
+          agent_instruction:
+            'Reply to the user with ack_text verbatim. No commentary, no emoji, no rephrasing.',
+        });
+      },
+    },
   ],
   memory: {
     contextChars: 200,

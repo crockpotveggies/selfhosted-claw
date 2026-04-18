@@ -21,7 +21,13 @@ import {
   updateActionResearchState,
   updateRunRecord,
 } from '../db.js';
-import { logger } from '../logger.js';
+import { createChildLogger } from '../logger.js';
+
+// Tag every log in this module with `integration: deep-research` so the Logs
+// UI can filter for the research pipeline. Previously this module used the
+// untagged root logger and the single error call never surfaced in the UI's
+// per-integration view.
+const log = createChildLogger({ integration: 'deep-research' });
 import { findChannel } from '../router.js';
 import type { Channel } from '../types.js';
 import { getIntegrationSettings } from '../integrations/settings-store.js';
@@ -365,6 +371,10 @@ export class DeepResearchExecutor {
     };
 
     try {
+      log.info(
+        { actionId, chatJid: progress.chatJid, prompt: progress.prompt },
+        'Deep research scoping started',
+      );
       updateActionResearchState(actionId, {
         researchSubstate: 'scoping',
         progressJson: stringifyProgress(progress),
@@ -403,6 +413,14 @@ export class DeepResearchExecutor {
         followupAnswers.length === 0 &&
         (action.followup_count ?? 0) < settings.maxFollowups
       ) {
+        log.info(
+          {
+            actionId,
+            chatJid: progress.chatJid,
+            questions: scopedPlan.followup_questions.length,
+          },
+          'Deep research paused for user clarification',
+        );
         updateActionRecordStatus(actionId, 'queued');
         updateActionResearchState(actionId, {
           researchSubstate: 'waiting_for_user',
@@ -427,6 +445,16 @@ export class DeepResearchExecutor {
         return;
       }
 
+      log.info(
+        {
+          actionId,
+          topicSlug: progress.topicSlug,
+          subqueries: scopedPlan.subqueries.length,
+          maxSearchCalls: settings.maxSearchCallsPerJob,
+          maxFetches: settings.maxFetchesPerJob,
+        },
+        'Deep research entering running phase',
+      );
       updateActionResearchState(actionId, {
         researchSubstate: 'running',
       });
@@ -526,6 +554,16 @@ export class DeepResearchExecutor {
         'utf-8',
       );
 
+      log.info(
+        {
+          actionId,
+          topicSlug: progress.topicSlug,
+          sources: citations.length,
+          searchCalls: progress.searchCalls,
+          fetchCalls: progress.fetchCalls,
+        },
+        'Deep research rendering report',
+      );
       updateActionResearchState(actionId, {
         researchSubstate: 'rendering',
       });
@@ -587,6 +625,15 @@ export class DeepResearchExecutor {
 
       progress.reportPath = pdfPath;
       progress.completedAt = new Date().toISOString();
+      log.info(
+        {
+          actionId,
+          topicSlug: progress.topicSlug,
+          pdfPath,
+          pdfBytes: fs.statSync(pdfPath).size,
+        },
+        'Deep research delivering report',
+      );
       updateActionResearchState(actionId, {
         researchSubstate: 'delivering',
         progressJson: stringifyProgress(progress),
@@ -650,7 +697,27 @@ export class DeepResearchExecutor {
         finished_at: new Date().toISOString(),
         exit_code: 0,
       });
+      log.info(
+        {
+          actionId,
+          runId,
+          topicSlug: progress.topicSlug,
+          searchCalls: progress.searchCalls,
+          fetchCalls: progress.fetchCalls,
+          sources: (progress.sources || []).length,
+        },
+        'Deep research succeeded',
+      );
     } catch (error) {
+      log.error(
+        {
+          actionId,
+          runId,
+          topicSlug: progress.topicSlug,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Deep research failed',
+      );
       setChatPendingFollowupActionId(progress.chatJid, null);
       updateActionRecordStatus(actionId, 'failed_terminal');
       updateRunRecord(runId, {
@@ -744,7 +811,9 @@ export class DeepResearchExecutor {
           ? result.objectives.map(String).filter(Boolean)
           : [],
         sections:
-          sections.length > 0 ? sections : this.defaultSections(progress.prompt),
+          sections.length > 0
+            ? sections
+            : this.defaultSections(progress.prompt),
         subqueries: Array.isArray(result.subqueries)
           ? result.subqueries.map(String).filter(Boolean)
           : [progress.prompt],
@@ -924,16 +993,12 @@ export class DeepResearchExecutor {
     } catch {
       const bulletized = summaries
         .flatMap((summary) =>
-          summary.key_points.slice(0, 3).map((point) => `- ${point} [${summary.index}]`),
+          summary.key_points
+            .slice(0, 3)
+            .map((point) => `- ${point} [${summary.index}]`),
         )
         .slice(0, 12);
-      return [
-        `## ${section.title}`,
-        '',
-        section.angle || '',
-        '',
-        ...bulletized,
-      ]
+      return [`## ${section.title}`, '', section.angle || '', '', ...bulletized]
         .filter(Boolean)
         .join('\n');
     }
@@ -953,7 +1018,7 @@ export class DeepResearchExecutor {
             content: [
               'You are writing the executive summary for a long-form research report.',
               'Return JSON with key summary_bullets: 5-7 bullets, each 1-2 sentences.',
-              'The bullets should capture the report\'s main findings and tensions, not restate the prompt. Specific, quantitative where possible.',
+              "The bullets should capture the report's main findings and tensions, not restate the prompt. Specific, quantitative where possible.",
             ].join('\n'),
           },
           {
@@ -1029,7 +1094,11 @@ export class DeepResearchExecutor {
         ].join('\n')
       : '';
     const objectivesBlock = plan.objectives.length
-      ? ['## Research Objectives', '', ...plan.objectives.map((o) => `- ${o}`)].join('\n')
+      ? [
+          '## Research Objectives',
+          '',
+          ...plan.objectives.map((o) => `- ${o}`),
+        ].join('\n')
       : '';
 
     const report = [
@@ -1098,7 +1167,7 @@ export class DeepResearchService {
       } catch {
         // ignored
       }
-      logger.error(
+      log.error(
         { actionId, err: String(error) },
         'Deep research execution failed',
       );
@@ -1165,6 +1234,17 @@ export class DeepResearchService {
       exit_code: null,
       error_class: null,
     });
+    log.info(
+      {
+        actionId,
+        taskId,
+        runId,
+        chatJid: input.chatJid,
+        groupFolder: input.groupFolder,
+        prompt: input.prompt,
+      },
+      'Deep research job queued',
+    );
     this.kickOff(actionId, runId);
     return { taskId, actionId, runId };
   }
@@ -1235,6 +1315,14 @@ export class DeepResearchService {
     if (progress?.chatJid) {
       setChatPendingFollowupActionId(progress.chatJid, null);
     }
+    log.info(
+      {
+        actionId,
+        chatJid: progress?.chatJid,
+        topicSlug: progress?.topicSlug,
+      },
+      'Deep research cancelled',
+    );
   }
 
   listJobs(limit = 100) {

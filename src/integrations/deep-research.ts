@@ -6,11 +6,14 @@ import {
   getChatPendingFollowupActionId,
   getRecentMessages,
 } from '../db.js';
+import { createChildLogger } from '../logger.js';
 import { getDeepResearchService } from '../research/service.js';
 import { BraveProvider, type ResearchProvider } from '../research/providers.js';
 
 import { registerIntegration } from './registry.js';
 import type { IntegrationDefinition } from './types.js';
+
+const log = createChildLogger({ integration: 'deep-research' });
 
 function getProvider(settings: Record<string, unknown>): ResearchProvider {
   const braveApiKey = String(
@@ -189,6 +192,14 @@ const deepResearchIntegration: IntegrationDefinition = {
         if (!ctx.chatJid) throw new Error('Chat context not available');
         const sender = getLatestInboundSender(ctx.chatJid);
         const prompt = String(args.prompt || '').trim();
+        log.info(
+          {
+            chatJid: ctx.chatJid,
+            groupFolder: ctx.sourceGroup,
+            promptLength: prompt.length,
+          },
+          'deep_research_start tool invoked',
+        );
         const result = await getDeepResearchService().start({
           prompt,
           groupFolder: ctx.sourceGroup,
