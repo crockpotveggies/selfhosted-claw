@@ -247,9 +247,7 @@ export function splitSlackMessage(text: string): string[] {
 // files.getUploadURLExternal — only accept application/x-www-form-urlencoded
 // and return `invalid_arguments` when sent JSON. Enumerate those explicitly
 // so we pick the right encoding per method.
-const FORM_ENCODED_SLACK_METHODS = new Set([
-  'files.getUploadURLExternal',
-]);
+const FORM_ENCODED_SLACK_METHODS = new Set(['files.getUploadURLExternal']);
 
 function encodeSlackFormBody(body: Record<string, unknown>): string {
   const params = new URLSearchParams();

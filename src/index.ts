@@ -488,7 +488,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     );
   };
   const controllerTriggered =
-    isMainGroup || missedMessages.some((m) => senderIsVerifiedController(m.sender));
+    isMainGroup ||
+    missedMessages.some((m) => senderIsVerifiedController(m.sender));
 
   // Grant calendar access when the controller is the one who sent messages
   // in this group. The IPC handler checks for this flag file.

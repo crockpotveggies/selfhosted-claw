@@ -22,11 +22,71 @@ const MARGIN_TOP = 54;
 const MARGIN_BOTTOM = 54;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN_X * 2;
 
+// Map common Unicode codepoints to WinAnsi (PDF built-in Helvetica) byte values.
+// Anything else non-ASCII is transliterated to a safe ASCII fallback so the
+// viewer does not render the wrong glyph (e.g. • becoming ¢).
+const WIN_ANSI_MAP: Record<string, number> = {
+  '\u2022': 0x95,
+  '\u2013': 0x96,
+  '\u2014': 0x97,
+  '\u2018': 0x91,
+  '\u2019': 0x92,
+  '\u201C': 0x93,
+  '\u201D': 0x94,
+  '\u2026': 0x85,
+  '\u00A0': 0x20,
+  '\u00A9': 0xa9,
+  '\u00AE': 0xae,
+  '\u2122': 0x99,
+};
+
+const ASCII_FALLBACK: Record<string, string> = {
+  '\u2022': '-',
+  '\u2013': '-',
+  '\u2014': '-',
+  '\u2018': "'",
+  '\u2019': "'",
+  '\u201C': '"',
+  '\u201D': '"',
+  '\u2026': '...',
+};
+
 function escapePdfText(value: string): string {
-  return value
-    .replace(/\\/g, '\\\\')
-    .replace(/\(/g, '\\(')
-    .replace(/\)/g, '\\)');
+  let out = '';
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (char === '\\') {
+      out += '\\\\';
+      continue;
+    }
+    if (char === '(') {
+      out += '\\(';
+      continue;
+    }
+    if (char === ')') {
+      out += '\\)';
+      continue;
+    }
+    if (code >= 0x20 && code <= 0x7e) {
+      out += char;
+      continue;
+    }
+    const mapped = WIN_ANSI_MAP[char];
+    if (mapped !== undefined) {
+      out += `\\${mapped.toString(8).padStart(3, '0')}`;
+      continue;
+    }
+    if (ASCII_FALLBACK[char]) {
+      out += ASCII_FALLBACK[char];
+      continue;
+    }
+    if (code >= 0xa0 && code <= 0xff) {
+      out += `\\${code.toString(8).padStart(3, '0')}`;
+      continue;
+    }
+    out += '?';
+  }
+  return out;
 }
 
 function stripInlineMarkdown(text: string): string {
@@ -330,10 +390,10 @@ export function createSimplePdf(text: string): Buffer {
     );
   }
   objects.push(
-    `${fontRegularId} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj`,
+    `${fontRegularId} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >> endobj`,
   );
   objects.push(
-    `${fontBoldId} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> endobj`,
+    `${fontBoldId} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >> endobj`,
   );
 
   let output = '%PDF-1.4\n';

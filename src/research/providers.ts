@@ -16,10 +16,26 @@ export interface ResearchFetchResult {
   contentHash: string;
 }
 
+// Exa-compatible category values. Providers that don't support categories
+// (e.g. Brave) ignore the field.
+export type ResearchCategory =
+  | 'research paper'
+  | 'news'
+  | 'pdf'
+  | 'company'
+  | 'financial report'
+  | 'github'
+  | 'personal site'
+  | 'tweet'
+  | 'linkedin profile';
+
 export interface ResearchSearchOptions {
   maxResults: number;
   includeDomains?: string[];
   excludeDomains?: string[];
+  category?: ResearchCategory;
+  startPublishedDate?: string;
+  endPublishedDate?: string;
 }
 
 export interface ResearchFetchOptions {
@@ -261,6 +277,156 @@ export class BraveProvider implements ResearchProvider {
     options?: ResearchFetchOptions,
   ): Promise<ResearchFetchResult> {
     return safeFetchUrl(url, options);
+  }
+}
+
+interface ExaSearchResult {
+  id?: string;
+  title?: string;
+  url?: string;
+  text?: string;
+  publishedDate?: string;
+  author?: string;
+}
+
+// Exa is a search API designed for LLM/research use cases. Key advantages
+// over generic web search for this pipeline:
+//   1. `category` filter returns only research papers, news, PDFs, etc.
+//   2. `/search` can return cleaned main-body text inline, eliminating our
+//      downstream HTML-stripping + boilerplate extraction.
+//   3. Neural ranking surfaces higher-signal content than keyword search.
+// See https://docs.exa.ai/ for the full API surface.
+export class ExaProvider implements ResearchProvider {
+  private readonly endpoint = 'https://api.exa.ai';
+  // Cache content returned by /search so fetch() doesn't need a second call.
+  private readonly cache = new Map<
+    string,
+    { text: string; title: string; publishedDate?: string }
+  >();
+
+  constructor(private readonly apiKey: string) {}
+
+  async search(
+    query: string,
+    options: ResearchSearchOptions,
+  ): Promise<ResearchSearchResult[]> {
+    if (!this.apiKey.trim()) {
+      throw new Error('Exa API key is required for deep research');
+    }
+    const body: Record<string, unknown> = {
+      query,
+      numResults: Math.max(1, Math.min(25, options.maxResults)),
+      type: 'auto',
+      contents: { text: { maxCharacters: 8000 } },
+    };
+    if (options.category) body.category = options.category;
+    if (options.includeDomains?.length) {
+      body.includeDomains = options.includeDomains;
+    }
+    if (options.excludeDomains?.length) {
+      body.excludeDomains = options.excludeDomains;
+    }
+    if (options.startPublishedDate) {
+      body.startPublishedDate = options.startPublishedDate;
+    }
+    if (options.endPublishedDate) {
+      body.endPublishedDate = options.endPublishedDate;
+    }
+
+    const response = await fetch(`${this.endpoint}/search`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(
+        `Exa search failed (${response.status}): ${text || response.statusText}`,
+      );
+    }
+    const payload = (await response.json()) as {
+      results?: ExaSearchResult[];
+    };
+    const results: ResearchSearchResult[] = [];
+    for (const entry of payload.results || []) {
+      const url = String(entry.url || '').trim();
+      const title = String(entry.title || '').trim();
+      if (!url || !title) continue;
+      const text = String(entry.text || '').trim();
+      if (text) {
+        this.cache.set(url, {
+          text,
+          title,
+          publishedDate: entry.publishedDate,
+        });
+      }
+      results.push({
+        title,
+        url,
+        snippet: text ? text.slice(0, 240) : undefined,
+      });
+    }
+    return results;
+  }
+
+  async fetch(
+    url: string,
+    _options?: ResearchFetchOptions,
+  ): Promise<ResearchFetchResult> {
+    const cached = this.cache.get(url);
+    if (cached) {
+      const fetchedAt = new Date().toISOString();
+      return {
+        url,
+        title: cached.title,
+        contentType: 'text/plain',
+        textContent: cached.text,
+        fetchedAt,
+        contentHash: createHash('sha256').update(cached.text).digest('hex'),
+      };
+    }
+    // Fallback: request content from Exa's /contents endpoint. Happens when
+    // fetch() is called for a URL not previously seen via search().
+    if (!this.apiKey.trim()) {
+      throw new Error('Exa API key is required for deep research');
+    }
+    const response = await fetch(`${this.endpoint}/contents`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey,
+      },
+      body: JSON.stringify({
+        urls: [url],
+        text: { maxCharacters: 8000 },
+      }),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(
+        `Exa contents failed (${response.status}): ${text || response.statusText}`,
+      );
+    }
+    const payload = (await response.json()) as {
+      results?: ExaSearchResult[];
+    };
+    const first = payload.results?.[0];
+    if (!first) throw new Error(`Exa returned no content for ${url}`);
+    const text = String(first.text || '').trim();
+    const fetchedAt = new Date().toISOString();
+    return {
+      url: String(first.url || url),
+      title: String(first.title || url),
+      contentType: 'text/plain',
+      textContent: text,
+      fetchedAt,
+      contentHash: createHash('sha256').update(text).digest('hex'),
+    };
   }
 }
 

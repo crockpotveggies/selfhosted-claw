@@ -8,7 +8,12 @@ import {
 } from '../db.js';
 import { createChildLogger } from '../logger.js';
 import { getDeepResearchService } from '../research/service.js';
-import { BraveProvider, type ResearchProvider } from '../research/providers.js';
+import {
+  BraveProvider,
+  ExaProvider,
+  type ResearchCategory,
+  type ResearchProvider,
+} from '../research/providers.js';
 
 import { registerIntegration } from './registry.js';
 import type { IntegrationDefinition } from './types.js';
@@ -16,6 +21,13 @@ import type { IntegrationDefinition } from './types.js';
 const log = createChildLogger({ integration: 'deep-research' });
 
 function getProvider(settings: Record<string, unknown>): ResearchProvider {
+  const provider = String(settings.defaultProvider || 'exa');
+  if (provider === 'exa') {
+    const exaApiKey = String(
+      settings.exaApiKey || process.env.EXA_API_KEY || '',
+    );
+    return new ExaProvider(exaApiKey);
+  }
   const braveApiKey = String(
     settings.braveApiKey || process.env.BRAVE_API_KEY || '',
   );
@@ -45,6 +57,13 @@ const deepResearchIntegration: IntegrationDefinition = {
   version: '1.0.0',
   credentials: [
     {
+      key: 'EXA_API_KEY',
+      label: 'Exa Search API Key',
+      type: 'api_key',
+      envVar: 'EXA_API_KEY',
+      required: false,
+    },
+    {
       key: 'BRAVE_API_KEY',
       label: 'Brave Search API Key',
       type: 'api_key',
@@ -59,8 +78,13 @@ const deepResearchIntegration: IntegrationDefinition = {
         defaultProvider: {
           type: 'string',
           title: 'Default Provider',
-          default: 'brave',
-          enum: ['brave'],
+          default: 'exa',
+          enum: ['exa', 'brave'],
+        },
+        exaApiKey: {
+          type: 'string',
+          title: 'Exa API Key',
+          sensitive: true,
         },
         braveApiKey: {
           type: 'string',
@@ -144,7 +168,7 @@ const deepResearchIntegration: IntegrationDefinition = {
       },
     },
     defaults: {
-      defaultProvider: 'brave',
+      defaultProvider: 'exa',
       maxRuntimeMs: 1200000,
       maxConcurrency: 2,
       maxSearchCallsPerJob: 30,
@@ -161,18 +185,23 @@ const deepResearchIntegration: IntegrationDefinition = {
   adminPage: {
     icon: 'cilDescription',
     category: 'utility',
-    getStatus: async (ctx) => ({
-      state:
-        String(ctx.settings.defaultProvider || 'brave') === 'brave' &&
-        !String(ctx.settings.braveApiKey || process.env.BRAVE_API_KEY || '')
-          ? 'unconfigured'
-          : 'online',
-      message:
-        String(ctx.settings.defaultProvider || 'brave') === 'brave' &&
-        !String(ctx.settings.braveApiKey || process.env.BRAVE_API_KEY || '')
-          ? 'Configure a Brave API key to enable deep research'
+    getStatus: async (ctx) => {
+      const provider = String(ctx.settings.defaultProvider || 'exa');
+      const exaKey = String(
+        ctx.settings.exaApiKey || process.env.EXA_API_KEY || '',
+      );
+      const braveKey = String(
+        ctx.settings.braveApiKey || process.env.BRAVE_API_KEY || '',
+      );
+      const missing =
+        (provider === 'exa' && !exaKey) || (provider === 'brave' && !braveKey);
+      return {
+        state: missing ? 'unconfigured' : 'online',
+        message: missing
+          ? `Configure a ${provider === 'exa' ? 'Exa' : 'Brave'} API key to enable deep research`
           : 'Deep research ready',
-    }),
+      };
+    },
   },
   tools: [
     {
@@ -297,12 +326,26 @@ const deepResearchIntegration: IntegrationDefinition = {
     {
       name: 'research_search',
       description:
-        'Internal deep research search helper. Prefer deep_research_start for general use.',
+        'Internal deep research search helper. Prefer deep_research_start for general use. Set `category` to "research paper" for academic sources, "news" for current events, "pdf" for whitepapers/reports, "company", "financial report", or "github". Omit for general web search.',
       parameters: {
         type: 'object',
         properties: {
           query: { type: 'string' },
           max_results: { type: 'integer' },
+          category: {
+            type: 'string',
+            enum: [
+              'research paper',
+              'news',
+              'pdf',
+              'company',
+              'financial report',
+              'github',
+              'personal site',
+              'tweet',
+              'linkedin profile',
+            ],
+          },
         },
         required: ['query'],
       },
@@ -311,6 +354,7 @@ const deepResearchIntegration: IntegrationDefinition = {
       sideEffecting: false,
       execute: async (args, ctx) => {
         const provider = getProvider(ctx.settings);
+        const category = args.category ? String(args.category) : undefined;
         const results = await provider.search(String(args.query || ''), {
           maxResults: Number(args.max_results) || 5,
           includeDomains: Array.isArray(ctx.settings.domainAllowlist)
@@ -319,6 +363,7 @@ const deepResearchIntegration: IntegrationDefinition = {
           excludeDomains: Array.isArray(ctx.settings.domainBlocklist)
             ? ctx.settings.domainBlocklist.map(String)
             : [],
+          category: category as ResearchCategory | undefined,
         });
         return JSON.stringify(results);
       },

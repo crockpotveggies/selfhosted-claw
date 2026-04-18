@@ -36,8 +36,10 @@ import { createSimplePdf } from './pdf.js';
 import { callJsonChatCompletion } from './openai.js';
 import {
   BraveProvider,
+  ExaProvider,
   FixtureProvider,
   type FixtureProviderFixture,
+  type ResearchCategory,
   type ResearchFetchResult,
   type ResearchProvider,
 } from './providers.js';
@@ -53,13 +55,55 @@ interface ResearchSection {
   key_questions: string[];
 }
 
+interface PlannedSubquery {
+  query: string;
+  category?: ResearchCategory;
+}
+
 interface ResearchPlan {
   topic_slug: string;
   objectives: string[];
   sections: ResearchSection[];
-  subqueries: string[];
+  subqueries: PlannedSubquery[];
   needs_followup: boolean;
   followup_questions: string[];
+}
+
+const VALID_RESEARCH_CATEGORIES = new Set<ResearchCategory>([
+  'research paper',
+  'news',
+  'pdf',
+  'company',
+  'financial report',
+  'github',
+  'personal site',
+  'tweet',
+  'linkedin profile',
+]);
+
+function normalizePlannedSubqueries(raw: unknown): PlannedSubquery[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PlannedSubquery[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string') {
+      const query = item.trim();
+      if (query) out.push({ query });
+      continue;
+    }
+    if (item && typeof item === 'object') {
+      const obj = item as { query?: unknown; category?: unknown };
+      const query = String(obj.query || '').trim();
+      if (!query) continue;
+      const rawCategory = String(obj.category || '').trim().toLowerCase();
+      const category = VALID_RESEARCH_CATEGORIES.has(
+        rawCategory as ResearchCategory,
+      )
+        ? (rawCategory as ResearchCategory)
+        : undefined;
+      out.push({ query, category });
+    }
+  }
+  return out;
 }
 
 interface SourceSummary {
@@ -129,10 +173,11 @@ function ensureSystemResearchPrincipal(): string {
 function getResearchSettings() {
   const settings = getIntegrationSettings('deep-research');
   return {
-    defaultProvider: String(settings.defaultProvider || 'brave'),
+    defaultProvider: String(settings.defaultProvider || 'exa'),
     braveApiKey: String(
       settings.braveApiKey || process.env.BRAVE_API_KEY || '',
     ),
+    exaApiKey: String(settings.exaApiKey || process.env.EXA_API_KEY || ''),
     maxRuntimeMs: Math.max(
       60_000,
       Number(settings.maxRuntimeMs) || 20 * 60 * 1000,
@@ -276,6 +321,9 @@ function buildProvider(): ResearchProvider {
   if (settings.defaultProvider === 'openai') {
     throw new Error('OpenAI web search provider is not implemented in v1');
   }
+  if (settings.defaultProvider === 'exa') {
+    return new ExaProvider(settings.exaApiKey);
+  }
   return new BraveProvider(settings.braveApiKey);
 }
 
@@ -402,6 +450,21 @@ export class DeepResearchExecutor {
         scopedPlan.topic_slug,
         progress.prompt,
       );
+      const categoryCounts: Record<string, number> = {};
+      for (const sq of scopedPlan.subqueries) {
+        const key = sq.category || '(general)';
+        categoryCounts[key] = (categoryCounts[key] || 0) + 1;
+      }
+      log.info(
+        {
+          actionId,
+          topicSlug: progress.topicSlug,
+          sections: scopedPlan.sections.length,
+          subqueries: scopedPlan.subqueries.length,
+          categoryCounts,
+        },
+        'Deep research plan ready',
+      );
       updateActionResearchState(actionId, {
         researchSubstate: 'scoping',
         progressJson: stringifyProgress(progress),
@@ -480,7 +543,7 @@ export class DeepResearchExecutor {
       // Progress pings and final PDF delivery still come from this service
       // because those fire after the turn closes and cannot race.
 
-      for (const query of scopedPlan.subqueries.slice(
+      for (const subquery of scopedPlan.subqueries.slice(
         0,
         settings.maxSearchCallsPerJob,
       )) {
@@ -488,10 +551,11 @@ export class DeepResearchExecutor {
         progress.searchCalls += 1;
         const results = await raceWithTimeout(
           () =>
-            provider.search(query, {
+            provider.search(subquery.query, {
               maxResults: 5,
               includeDomains,
               excludeDomains,
+              category: subquery.category,
             }),
           remainingRuntimeMs(),
           'Deep research timed out while searching for sources',
@@ -766,6 +830,33 @@ export class DeepResearchExecutor {
     return `${text.slice(0, maxChars)}\n...[truncated]`;
   }
 
+  // Strip the <web_content source="..."> framing added by providers.ts. The
+  // deep research flow passes URL/title separately, so the wrapper is pure
+  // noise and previously leaked verbatim into model output.
+  private stripSourceFraming(text: string): string {
+    return text
+      .replace(/<web_content\b[^>]*>/gi, '')
+      .replace(/<\/web_content>/gi, '')
+      .replace(/\[truncated source content\]/gi, '')
+      .trim();
+  }
+
+  // Scrub residual XML-like tags and collapse whitespace in strings returned
+  // by the summarizer. If a fallback dumps raw text, this limits the blast
+  // radius in the final report.
+  private sanitizeSummaryLine(text: string, maxChars = 320): string {
+    const cleaned = text
+      .replace(/<web_content\b[^>]*>/gi, '')
+      .replace(/<\/web_content>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!cleaned) return '';
+    return cleaned.length > maxChars
+      ? `${cleaned.slice(0, maxChars)}...`
+      : cleaned;
+  }
+
   private async buildPlan(progress: ResearchProgress): Promise<ResearchPlan> {
     const followupContext = (progress.followupAnswers || []).join('\n');
     try {
@@ -779,7 +870,7 @@ export class DeepResearchExecutor {
               '- topic_slug: 1-3 lowercase ASCII words joined by hyphens.',
               '- objectives: 3-6 concrete research goals.',
               '- sections: 5-8 report sections. Each section has {title, angle, key_questions}. `angle` is a 1-2 sentence thesis for what this section argues or explores. `key_questions` is 2-4 questions the section should answer.',
-              '- subqueries: 8-15 diverse web search queries. Mix broad framing, specific entities, counter-arguments, and recent developments.',
+              '- subqueries: 8-15 diverse web search queries. Each entry is {query, category}, where `query` is the search string and `category` optionally restricts source type. Valid categories: "research paper" (academic / peer-reviewed), "news" (current events), "pdf" (whitepapers, reports), "company", "financial report", "github", or omit for general web search. Choose categories deliberately — use "research paper" for foundational / technical claims, "news" for recent developments, general (no category) for broad context. Mix broad framing, specific entities, counter-arguments, and recent developments.',
               '- needs_followup: only true if the prompt is genuinely ambiguous. Prefer false.',
               'Aim for richness: favor more sections over fewer, and queries that will surface contrasting viewpoints.',
             ].join('\n'),
@@ -814,9 +905,12 @@ export class DeepResearchExecutor {
           sections.length > 0
             ? sections
             : this.defaultSections(progress.prompt),
-        subqueries: Array.isArray(result.subqueries)
-          ? result.subqueries.map(String).filter(Boolean)
-          : [progress.prompt],
+        subqueries: (() => {
+          const normalized = normalizePlannedSubqueries(result.subqueries);
+          return normalized.length > 0
+            ? normalized
+            : [{ query: progress.prompt }];
+        })(),
         needs_followup: Boolean(result.needs_followup),
         followup_questions: Array.isArray(result.followup_questions)
           ? result.followup_questions.map(String).filter(Boolean).slice(0, 2)
@@ -827,7 +921,7 @@ export class DeepResearchExecutor {
         topic_slug: deterministicTopicSlug(progress.prompt),
         objectives: [progress.prompt],
         sections: this.defaultSections(progress.prompt),
-        subqueries: [progress.prompt],
+        subqueries: [{ query: progress.prompt }],
         needs_followup: false,
         followup_questions: [],
       };
@@ -870,7 +964,8 @@ export class DeepResearchExecutor {
     source: ResearchFetchResult,
     index: number,
   ): Promise<SourceSummary> {
-    const truncated = this.truncateForPrompt(source.textContent, 12000);
+    const unframed = this.stripSourceFraming(source.textContent);
+    const truncated = this.truncateForPrompt(unframed, 12000);
     try {
       const result = await callJsonChatCompletion<{
         key_points: string[];
@@ -906,20 +1001,29 @@ export class DeepResearchExecutor {
         url: source.url,
         title: source.title,
         key_points: Array.isArray(result.key_points)
-          ? result.key_points.map(String).filter(Boolean)
+          ? result.key_points
+              .map((raw) => this.sanitizeSummaryLine(String(raw)))
+              .filter(Boolean)
           : [],
         notable_quotes: Array.isArray(result.notable_quotes)
-          ? result.notable_quotes.map(String).filter(Boolean)
+          ? result.notable_quotes
+              .map((raw) => this.sanitizeSummaryLine(String(raw)))
+              .filter(Boolean)
           : [],
-        relevance_notes: String(result.relevance_notes || '').trim(),
+        relevance_notes: this.sanitizeSummaryLine(
+          String(result.relevance_notes || ''),
+        ),
       };
     } catch {
-      const snippet = truncated.slice(0, 600).replace(/\s+/g, ' ').trim();
+      // Summarizer failed or emitted unparseable output. Skip the source
+      // entirely rather than dumping raw framed text as a "key point" — that
+      // was the cause of the wrapper leakage. The section drafter can work
+      // from fewer sources.
       return {
         index,
         url: source.url,
         title: source.title,
-        key_points: snippet ? [snippet] : [],
+        key_points: [],
         notable_quotes: [],
         relevance_notes: '',
       };
