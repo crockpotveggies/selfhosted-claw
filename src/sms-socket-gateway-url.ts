@@ -1,19 +1,4 @@
-import fs from 'fs';
-import net from 'net';
-
 const DEFAULT_GATEWAY_URL = 'ws://127.0.0.1:8787/';
-
-function isContainerRuntime(): boolean {
-  return fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
-}
-
-function isPrivateIpv4Address(hostname: string): boolean {
-  if (net.isIP(hostname) !== 4) return false;
-  const [a, b] = hostname.split('.').map((part) => Number(part));
-  return (
-    a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)
-  );
-}
 
 export function parseSmsSocketGatewayUrl(raw: string): URL {
   const value = raw.trim() || DEFAULT_GATEWAY_URL;
@@ -25,36 +10,27 @@ export function parseSmsSocketGatewayUrl(raw: string): URL {
   return parsed;
 }
 
+/**
+ * Resolve the gateway URL used by the WebSocket client.
+ *
+ * Historically this rewrote LAN targets to `host.docker.internal` + a
+ * `SMS_SOCKET_HOST_RELAY_PORT` because Docker Desktop on Windows was thought
+ * to block container→LAN traffic. That premise was wrong — Docker Desktop
+ * bridges LAN access on all supported platforms, and the relay hop added
+ * latency, a second failure mode (the Windows portproxy dropping), and a
+ * required `netsh` install step. The resolver now passes the configured URL
+ * through unchanged so the container connects directly to the phone.
+ *
+ * The second options argument is retained (ignored) so existing callers and
+ * tests don't need to be touched simultaneously.
+ */
 export function resolveSmsSocketGatewayUrl(
   raw: string,
-  options?: {
+  _options?: {
     inContainer?: boolean;
     relayPort?: number | null;
     relayHost?: string;
   },
 ): URL {
-  const parsed = parseSmsSocketGatewayUrl(raw);
-  const inContainer = options?.inContainer ?? isContainerRuntime();
-  const configuredRelayPort =
-    options?.relayPort ??
-    Number.parseInt(process.env.SMS_SOCKET_HOST_RELAY_PORT || '', 10);
-  const fallbackPort = Number(
-    parsed.port || (parsed.protocol === 'wss:' ? 443 : 80),
-  );
-  const relayPort = Number.isFinite(configuredRelayPort)
-    ? configuredRelayPort
-    : fallbackPort;
-  const relayHost = options?.relayHost || 'host.docker.internal';
-
-  if (
-    inContainer &&
-    Number.isFinite(relayPort) &&
-    relayPort > 0 &&
-    isPrivateIpv4Address(parsed.hostname)
-  ) {
-    parsed.hostname = relayHost;
-    parsed.port = String(relayPort);
-  }
-
-  return parsed;
+  return parseSmsSocketGatewayUrl(raw);
 }

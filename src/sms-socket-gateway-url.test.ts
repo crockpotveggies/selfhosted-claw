@@ -12,21 +12,27 @@ describe('sms socket gateway URL helpers', () => {
     );
   });
 
-  it('rewrites private LAN gateway URLs through host relay in containers', () => {
+  it('rejects non-websocket schemes', () => {
+    expect(() => parseSmsSocketGatewayUrl('http://1.2.3.4:8787/')).toThrow();
+  });
+
+  it('passes private LAN gateway URLs through unchanged (no relay rewrite)', () => {
+    // Historically this was rewritten to host.docker.internal via a Windows
+    // portproxy relay. That hop is gone — the container connects directly.
     expect(
       resolveSmsSocketGatewayUrl('ws://172.20.1.42:8787/', {
         inContainer: true,
         relayPort: 8787,
       }).toString(),
-    ).toBe('ws://host.docker.internal:8787/');
+    ).toBe('ws://172.20.1.42:8787/');
   });
 
-  it('defaults to the original gateway port when relay port is not configured', () => {
+  it('preserves the original host and port regardless of relayPort option', () => {
     expect(
-      resolveSmsSocketGatewayUrl('ws://172.20.1.42:8787/', {
+      resolveSmsSocketGatewayUrl('ws://192.168.1.50:8787/', {
         inContainer: true,
         relayPort: null,
       }).toString(),
-    ).toBe('ws://host.docker.internal:8787/');
+    ).toBe('ws://192.168.1.50:8787/');
   });
 });

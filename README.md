@@ -258,27 +258,13 @@ The `sms-socket` integration:
 - rehydrates recent SMS history after reconnects
 - exposes host-side SMS send/reply tools to the agent
 
-**Docker on Windows note**
+**Docker networking note**
 
-If the control plane runs in Docker and your Android gateway is on a private LAN IP like `ws://172.x.x.x:8787/`, Docker Desktop may not be able to reach that phone directly even when the Windows host can. In that case, install a Windows host relay from an elevated terminal:
-
-```bash
-npm run sms-socket:relay:install
-```
-
-Then add this to `.env` and restart the control plane:
-
-```bash
-SMS_SOCKET_HOST_RELAY_PORT=8787
-npm run service:restart
-```
-
-The relay helper reads the saved SMS integration settings, creates a Windows `netsh interface portproxy` rule on the host, and lets the Dockerized control plane reach the gateway through `host.docker.internal`.
-
-Useful relay commands:
-
-- `npm run sms-socket:relay:status`
-- `npm run sms-socket:relay:remove`
+Set `gatewayUrl` in the SMS integration settings to the phone's LAN address,
+e.g. `ws://192.168.1.42:8787/`. The container connects directly to that IP —
+no Windows portproxy / `host.docker.internal` relay is required. Make sure
+the Docker network mode allows outbound LAN access (the default bridge does
+on Docker Desktop Windows/Mac and on Linux).
 
 ### 7. Restart after wizard changes
 

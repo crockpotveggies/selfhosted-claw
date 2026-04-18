@@ -1,9 +1,6 @@
 import { readEnvFile } from '../env.js';
 import { createChildLogger } from '../logger.js';
-import {
-  parseSmsSocketGatewayUrl,
-  resolveSmsSocketGatewayUrl,
-} from '../sms-socket-gateway-url.js';
+import { resolveSmsSocketGatewayUrl } from '../sms-socket-gateway-url.js';
 import type { Channel, NewMessage } from '../types.js';
 import { normalizePhone } from '../contact-resolution.js';
 
@@ -68,11 +65,11 @@ function getGatewayUrl(settings?: Record<string, unknown>): string {
   return String(settings?.gatewayUrl || DEFAULT_GATEWAY_URL).trim();
 }
 
-function getGatewayRelayHint(settings?: Record<string, unknown>): string {
-  const configured = parseSmsSocketGatewayUrl(getGatewayUrl(settings));
-  const resolved = resolveSmsSocketGatewayUrl(getGatewayUrl(settings));
-  if (configured.toString() === resolved.toString()) return '';
-  return ` Routed through ${resolved.host} via SMS_SOCKET_HOST_RELAY_PORT.`;
+function getGatewayRelayHint(_settings?: Record<string, unknown>): string {
+  // The Windows portproxy relay was removed — the container connects directly
+  // to the gateway URL. Kept as a no-op so status/notification call sites stay
+  // stable; can be inlined and deleted in a follow-up.
+  return '';
 }
 
 function getRehydrateLimit(settings?: Record<string, unknown>): number {
@@ -288,6 +285,13 @@ export class SmsSocketChannel implements Channel {
     }
 
     const wsUrl = resolveSmsSocketGatewayUrl(getGatewayUrl(this.settings));
+    log.info(
+      {
+        gatewayUrl: wsUrl.toString(),
+        hostNetwork: process.env.NANOCLAW_CONTROL_PLANE_NET === 'host',
+      },
+      'SMS Socket dialing gateway',
+    );
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;

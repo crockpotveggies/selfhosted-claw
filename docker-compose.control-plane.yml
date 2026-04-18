@@ -5,19 +5,37 @@ services:
       dockerfile: Dockerfile.control-plane
     image: nanoclaw-control-plane:latest
     restart: unless-stopped
+    # Host networking so the container shares the host's routing table and
+    # can reach LAN devices (e.g. an Android phone running the SMS gateway)
+    # directly by IP. Under the default bridge network, Docker Desktop on
+    # Windows/Mac NATs outbound traffic through the Docker VM, which does
+    # not route to arbitrary LAN IPs. This previously required a Windows
+    # portproxy relay — host networking removes that hop.
+    #
+    # Windows/Mac: requires Docker Desktop 4.34+ with "Enable host
+    # networking" turned on (Settings → Resources → Network). On Linux this
+    # works out of the box.
+    network_mode: host
     env_file:
       - .env
     environment:
-      ADMIN_BIND_HOST: 0.0.0.0
+      # With host networking, ADMIN_BIND_HOST must be 127.0.0.1 to keep the
+      # admin UI off the LAN. Override to 0.0.0.0 only if you explicitly
+      # want to expose it.
+      ADMIN_BIND_HOST: 127.0.0.1
       SELF_HOSTED_CLAW_ENV_FILE: /app/.env
       SELF_HOSTED_CLAW_MOUNT_ROOT: /workspace-host
       SELF_HOSTED_CLAW_COMPOSE_BIN: docker-compose
       SELF_HOSTED_CLAW_ADMIN_CONFIG_DIR: /app/admin-config
       SELF_HOSTED_CLAW_ADMIN_DATA_DIR: /app/admin-data
-    ports:
-      - "127.0.0.1:${ADMIN_PORT:-3030}:3030"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      # Tells host-side code it is in host-network mode so "127.0.0.1" is
+      # not rewritten to "host.docker.internal" (which is bridge-network
+      # terminology and doesn't exist on Linux host mode).
+      NANOCLAW_CONTROL_PLANE_NET: host
+    # NOTE: `ports:` and `extra_hosts:` are intentionally omitted — both
+    # are ignored under network_mode: host. The admin UI listens directly
+    # on the host's loopback at ADMIN_PORT, and `host.docker.internal`
+    # resolves to the host naturally in host-network mode.
     volumes:
       - ./.env:/app/.env
       - ./:/workspace-host:ro
