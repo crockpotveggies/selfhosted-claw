@@ -10,7 +10,14 @@ import {
   TIMEZONE,
 } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  createTask,
+  deleteTask,
+  getAllChats,
+  getRecentMessages,
+  getTaskById,
+  updateTask,
+} from './db.js';
 import { deriveGroupFolder, isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { getIntegration } from './integrations/registry.js';
@@ -434,6 +441,9 @@ export async function processTaskIpc(
     description?: string;
     location?: string;
     attendees?: string[];
+    // For chat history tools
+    target?: string;
+    limit?: number;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -1579,6 +1589,102 @@ export async function processTaskIpc(
           },
           `Integration tool failed: ${data.tool}`,
         );
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      break;
+    }
+
+    case 'list_chats': {
+      if (!data.requestId) break;
+      // Controller-only: only the main group (or an explicitly
+      // controller-triggered session) can enumerate all chats.
+      if (!isMain && !calendarAccess) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'list_chats is restricted to the controller.',
+        });
+        break;
+      }
+      try {
+        const chats = getAllChats().slice(0, data.limit || 100);
+        writeIpcResponse(sourceGroup, data.requestId, {
+          chats: chats.map((c) => ({
+            jid: c.jid,
+            name: c.name,
+            channel: c.channel,
+            is_group: c.is_group,
+            last_message_time: c.last_message_time,
+          })),
+        });
+      } catch (err) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      break;
+    }
+
+    case 'read_chat_history': {
+      if (!data.requestId) break;
+      if (!isMain && !calendarAccess) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'read_chat_history is restricted to the controller.',
+        });
+        break;
+      }
+      const target = (data.target || '').trim();
+      if (!target) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'read_chat_history requires a target (chat JID, name, or phone).',
+        });
+        break;
+      }
+      try {
+        let chatJid = target;
+        const chats = getAllChats();
+        const knownByJid = chats.find((c) => c.jid === target);
+        if (!knownByJid) {
+          const lower = target.toLowerCase();
+          const byName = chats.find(
+            (c) => (c.name || '').toLowerCase() === lower,
+          );
+          if (byName) {
+            chatJid = byName.jid;
+          } else {
+            const partial = chats.find((c) =>
+              (c.name || '').toLowerCase().includes(lower),
+            );
+            if (partial) {
+              chatJid = partial.jid;
+            } else {
+              // Fall back to channel-specific recipient resolution (names
+              // -> phone -> JID) for SMS/Signal/WhatsApp lookups.
+              try {
+                chatJid = await deps.resolveRecipient(target);
+              } catch {
+                writeIpcResponse(sourceGroup, data.requestId, {
+                  error: `No chat matched "${target}".`,
+                });
+                break;
+              }
+            }
+          }
+        }
+        const chatMeta = chats.find((c) => c.jid === chatJid);
+        const messages = getRecentMessages(chatJid, data.limit || 25);
+        writeIpcResponse(sourceGroup, data.requestId, {
+          chatJid,
+          name: chatMeta?.name,
+          channel: chatMeta?.channel,
+          messages: messages.map((m) => ({
+            sender_name: m.sender_name || m.sender,
+            is_from_me: m.is_from_me ? true : false,
+            content: m.content,
+            timestamp: m.timestamp,
+          })),
+        });
+      } catch (err) {
         writeIpcResponse(sourceGroup, data.requestId, {
           error: err instanceof Error ? err.message : String(err),
         });

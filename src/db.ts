@@ -734,10 +734,7 @@ export function hasRecentOutboundActivity(
  * Used to detect whether the controller is present in a group chat
  * (and therefore sees external replies directly — no relay needed).
  */
-export function hasMessageFromSender(
-  chatJid: string,
-  sender: string,
-): boolean {
+export function hasMessageFromSender(chatJid: string, sender: string): boolean {
   if (!sender) return false;
   const row = db
     .prepare(
@@ -755,6 +752,30 @@ export function isChatGroup(chatJid: string): boolean {
     .prepare(`SELECT is_group FROM chats WHERE jid = ? LIMIT 1`)
     .get(chatJid) as { is_group: number } | undefined;
   return row?.is_group === 1;
+}
+
+/**
+ * Get the most recent messages in a chat regardless of timestamp cursor.
+ * Used by the controller's read_chat_history tool so the main-chat agent
+ * can see replies that landed in sibling chats (SMS, Signal DMs, etc.).
+ */
+export function getRecentMessages(
+  chatJid: string,
+  limit: number = 25,
+): NewMessage[] {
+  const bounded = Math.max(1, Math.min(200, limit));
+  const sql = `
+    SELECT * FROM (
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me,
+             thread_id, reply_to_message_id, reply_to_message_content, reply_to_sender_name
+      FROM messages
+      WHERE chat_jid = ?
+        AND content IS NOT NULL AND content != ''
+      ORDER BY timestamp DESC
+      LIMIT ?
+    ) ORDER BY timestamp
+  `;
+  return db.prepare(sql).all(chatJid, bounded) as NewMessage[];
 }
 
 export function getMessageContentById(

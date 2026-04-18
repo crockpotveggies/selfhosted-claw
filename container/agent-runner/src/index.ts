@@ -471,6 +471,11 @@ function buildSystemPrompt(containerInput: ContainerInput): string {
       ? `CALENDAR PRIVACY (HARD RULE): When sharing availability with anyone other than the controller, ONLY share free/busy time blocks — NEVER reveal event titles, descriptions, attendees, locations, or any other event details. Say "busy 9-10am" NOT "busy 9-10am - Tree Trimming". Say "free after 7:15pm" NOT "free after the BISCUT Demo". Event details are private. The ONLY acceptable format is generic time blocks: "busy 7:30-8am, 9-10am, 6:15-7:15pm" or "free 10am-6:15pm". If someone asks what the events are, say that's private.`
       : `Sharing full calendar details with the controller is fine — they own the calendar.`,
     `ERROR ESCALATION: If a tool call fails, you hit a permission error, or you cannot complete a requested action (e.g. missing event ID, API error, blocked operation), immediately notify the controller via notify_controller with a clear explanation of what went wrong and what you need. Do NOT just tell the group chat that something failed — always escalate to the controller directly so they can help resolve it.`,
+    // Cross-chat history visibility: the controller can ask about replies in
+    // other threads (SMS, Signal DMs, group chats) and expects you to check.
+    !hasExternalAudience
+      ? `CROSS-CHAT HISTORY: You CAN read conversation history from other chats. When the controller asks about a reply from someone ("did she say yes?", "what did X say?", "check the SMS thread"), use read_chat_history with the contact's name or phone number. If you don't know which chat they mean, use list_chats first to see recent threads. Never tell the controller you "can't see replies" — you can. Always check before claiming an absence of reply.`
+      : '',
     `If recipient, channel, or content is ambiguous, ask a clarifying question instead of guessing.`,
     `Do not mention credential internals unless directly relevant; host-side credentials may be managed outside the container.`,
     containerInput.controlSignalJid
@@ -1268,22 +1273,91 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
     execute: async (args, ctx) => {
       const text = String(args.text || '').trim();
       if (!text) throw new Error('notify_controller requires non-empty text');
-      // In non-main groups, route to the controller's private DM.
-      // In main/DM conversations, send to the current chat.
-      const targetJid =
-        !ctx.containerInput.isMain && ctx.containerInput.controlSignalJid
-          ? ctx.containerInput.controlSignalJid
-          : ctx.containerInput.chatJid;
+      // In main/DM conversations, your regular text response is ALREADY
+      // delivered to the controller — sending via notify_controller too
+      // would produce a visible duplicate. Treat it as a no-op and tell the
+      // model to put the content in its text response instead.
+      if (ctx.containerInput.isMain) {
+        return 'Already in the controller DM — put the message in your normal text response rather than calling notify_controller.';
+      }
+      // Non-main groups: route privately to the controller's DM.
+      const targetJid = ctx.containerInput.controlSignalJid;
+      if (!targetJid) {
+        throw new Error(
+          'notify_controller is unavailable: no controller DM is configured.',
+        );
+      }
       writeIpcFile(MESSAGES_DIR, {
         type: 'message',
         chatJid: targetJid,
-        text: !ctx.containerInput.isMain
-          ? `[${ctx.containerInput.groupFolder}] ${text}`
-          : text,
+        text: `[${ctx.containerInput.groupFolder}] ${text}`,
         groupFolder: ctx.containerInput.groupFolder,
         timestamp: new Date().toISOString(),
       });
       return 'Message sent to controller.';
+    },
+  },
+  list_chats: {
+    controllerOnly: true,
+    description:
+      'List known chats across all channels (Signal, SMS, WhatsApp, etc.) ordered by most recent activity. Use when the controller asks about conversations with other people — e.g. "did anyone reply", "what did X say". Returns JID, name, channel, is_group, last_message_time.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'integer',
+          description: 'Max chats to return (default 50, max 200).',
+        },
+      },
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const requestId = `chats-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await writeIpcTaskAndWaitForResponse(
+        {
+          type: 'list_chats',
+          limit: Math.max(1, Math.min(200, Number(args.limit) || 50)),
+          groupFolder: ctx.containerInput.groupFolder,
+        },
+        requestId,
+      );
+      return truncate(JSON.stringify(result, null, 2));
+    },
+  },
+  read_chat_history: {
+    controllerOnly: true,
+    description:
+      'Read recent messages from a specific chat by name, phone number, or JID. Use this when the controller asks "did they reply?", "what did X say?", or wants to check a conversation you had with someone on their behalf (e.g. an SMS thread). Returns messages in chronological order with sender, is_from_me, content, and timestamp.',
+    parameters: {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          description:
+            'Chat to read: a contact name ("Elyssa"), a phone number ("+15551234567"), or a JID ("sms:+15551234567", "signal:user:+...").',
+        },
+        limit: {
+          type: 'integer',
+          description: 'Max messages to return (default 25, max 200).',
+        },
+      },
+      required: ['target'],
+      additionalProperties: false,
+    },
+    execute: async (args, ctx) => {
+      const target = String(args.target || '').trim();
+      if (!target) throw new Error('read_chat_history requires a target.');
+      const requestId = `hist-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await writeIpcTaskAndWaitForResponse(
+        {
+          type: 'read_chat_history',
+          target,
+          limit: Math.max(1, Math.min(200, Number(args.limit) || 25)),
+          groupFolder: ctx.containerInput.groupFolder,
+        },
+        requestId,
+      );
+      return truncate(JSON.stringify(result, null, 2));
     },
   },
   shell: {
