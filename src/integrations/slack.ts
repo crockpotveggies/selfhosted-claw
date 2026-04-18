@@ -3,6 +3,10 @@ import path from 'path';
 
 import { readEnvFile } from '../env.js';
 import { ASSISTANT_NAME } from '../config.js';
+import {
+  inferMimeTypeFromPath,
+  resolveAgentFilePath,
+} from '../agent-path-resolver.js';
 import { canonicalizeIdentity } from '../control-identities.js';
 import { ControlStore } from '../control-store.js';
 import { createChildLogger } from '../logger.js';
@@ -97,10 +101,16 @@ function getAppToken(settings?: Record<string, unknown>): string {
 function normalizeControllerSlackIdentity(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return '';
-  const prefixed = trimmed.startsWith('slack:user:')
-    ? trimmed
-    : `slack:user:${trimmed}`;
-  return canonicalizeIdentity(prefixed);
+  // Accept any of: bare user id ("U0A5GB3BJFL"), the "slack:user:…" event
+  // form, or the already-canonical "slack-user:…" form. Previously this
+  // only recognised "slack:user:", so an already-canonical input got
+  // re-prefixed → re-canonicalised, stripping the colon and mangling it to
+  // "slack-user:SLACKUSER…". That left a broken identity in storage that
+  // no real inbound sender could ever match.
+  if (trimmed.startsWith('slack-user:') || trimmed.startsWith('slack:user:')) {
+    return canonicalizeIdentity(trimmed);
+  }
+  return canonicalizeIdentity(`slack:user:${trimmed}`);
 }
 
 function hasVerifiedSlackController(
@@ -231,18 +241,45 @@ export function splitSlackMessage(text: string): string[] {
   return chunks.filter(Boolean);
 }
 
+// Slack has two body-encoding conventions across Web API methods. Most JSON-
+// friendly methods (chat.postMessage, conversations.list, etc.) accept
+// application/json. A handful of legacy / file-transfer methods — notably
+// files.getUploadURLExternal — only accept application/x-www-form-urlencoded
+// and return `invalid_arguments` when sent JSON. Enumerate those explicitly
+// so we pick the right encoding per method.
+const FORM_ENCODED_SLACK_METHODS = new Set([
+  'files.getUploadURLExternal',
+]);
+
+function encodeSlackFormBody(body: Record<string, unknown>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined || value === null) continue;
+    params.append(
+      key,
+      typeof value === 'string' ? value : JSON.stringify(value),
+    );
+  }
+  return params.toString();
+}
+
 async function callSlackApi(
   method: string,
   token: string,
   body?: Record<string, unknown>,
 ): Promise<SlackApiSuccess> {
+  const useForm = FORM_ENCODED_SLACK_METHODS.has(method);
   const response = await fetch(`${SLACK_API_BASE}/${method}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Type': useForm
+        ? 'application/x-www-form-urlencoded; charset=utf-8'
+        : 'application/json; charset=utf-8',
     },
-    body: JSON.stringify(body || {}),
+    body: useForm
+      ? encodeSlackFormBody(body || {})
+      : JSON.stringify(body || {}),
   });
   if (!response.ok) {
     throw new Error(`Slack API ${method} failed with ${response.status}`);
@@ -1078,10 +1115,16 @@ const slackIntegration: IntegrationDefinition = {
       location: 'host' as const,
       controllerOnly: true,
       execute: async (args, ctx) => {
-        const filePath = String(args.file_path || '').trim();
-        if (!filePath) throw new Error('file_path is required');
+        const rawFilePath = String(args.file_path || '').trim();
+        if (!rawFilePath) throw new Error('file_path is required');
+        const filePath = resolveAgentFilePath(rawFilePath, ctx.sourceGroup);
         if (!fs.existsSync(filePath)) {
-          throw new Error(`file_path does not exist: ${filePath}`);
+          throw new Error(
+            `file_path does not exist: ${rawFilePath}` +
+              (rawFilePath === filePath
+                ? ''
+                : ` (resolved host path: ${filePath})`),
+          );
         }
         const ch = ctx.channels?.find((c) => c.name === INTEGRATION_NAME) as
           | (Channel & {
@@ -1122,27 +1165,20 @@ const slackIntegration: IntegrationDefinition = {
         const caption = String(args.caption || '').trim();
         const fileName =
           String(args.file_name || '').trim() || path.basename(filePath);
-        const ext = path.extname(filePath).toLowerCase();
-        const mimeType =
-          ext === '.pdf'
-            ? 'application/pdf'
-            : ext === '.png'
-              ? 'image/png'
-              : ext === '.jpg' || ext === '.jpeg'
-                ? 'image/jpeg'
-                : ext === '.txt'
-                  ? 'text/plain'
-                  : ext === '.md'
-                    ? 'text/markdown'
-                    : ext === '.json'
-                      ? 'application/json'
-                      : 'application/octet-stream';
+        const mimeType = inferMimeTypeFromPath(filePath);
         await ch.sendAttachment({
           jid,
           filePath,
           mimeType,
           caption: caption || undefined,
           fileName,
+          // Keep uploads in the inbound thread when the user asked from one.
+          // If 'to' was an explicit different channel, ctx.threadId is still
+          // from the originating chat — only apply it when we're replying to
+          // the same chat the request came from.
+          ...(jid === ctx.chatJid && ctx.threadId
+            ? { threadId: ctx.threadId }
+            : {}),
         });
         return JSON.stringify({
           status: 'uploaded',

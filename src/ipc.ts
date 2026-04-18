@@ -55,7 +55,11 @@ export function isDuplicateAgentOutbound(
 }
 
 export interface IpcDeps {
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMessage: (
+    jid: string,
+    text: string,
+    options?: { threadId?: string },
+  ) => Promise<void>;
   resolveRecipient: (name: string) => Promise<string>;
   resolveMessageRecipient?: (
     sourceGroup: string,
@@ -1145,13 +1149,55 @@ export async function processTaskIpc(
           },
           `Integration tool called: ${data.tool}`,
         );
+
+        // Derive the thread the user wrote from. This keeps replies / sends
+        // that target the same chat in the same thread (e.g. Slack
+        // thread_ts) without each tool having to know about threads. Tools
+        // that explicitly pass a threadId override still win.
+        let derivedThreadId: string | undefined;
+        if (data.chatJid) {
+          try {
+            const latestInbound = getRecentMessages(data.chatJid, 10)
+              .filter((message) => !message.is_from_me)
+              .at(-1);
+            if (latestInbound?.thread_id) {
+              derivedThreadId = latestInbound.thread_id;
+            }
+          } catch {
+            // best-effort — thread preservation is not a correctness requirement
+          }
+        }
+        const wrappedSendMessage: (
+          jid: string,
+          text: string,
+          options?: { threadId?: string },
+        ) => Promise<void> = async (jid, text, options) => {
+          const resolvedOptions =
+            options?.threadId !== undefined
+              ? options
+              : jid === data.chatJid && derivedThreadId
+                ? { threadId: derivedThreadId }
+                : options;
+          // deps.sendMessage currently does not accept options. Route
+          // same-chat replies via sendHostMessage-style call by exposing
+          // an extended variant on deps when available; otherwise fall
+          // back to the plain two-arg form.
+          const send = deps.sendMessage as unknown as (
+            jid: string,
+            text: string,
+            options?: { threadId?: string },
+          ) => Promise<void>;
+          await send(jid, text, resolvedOptions);
+        };
+
         const result = await toolDef.execute(data.args || {}, {
           settings,
           sourceGroup,
           isMain,
           calendarAccess,
           chatJid: data.chatJid,
-          sendMessage: deps.sendMessage,
+          threadId: derivedThreadId,
+          sendMessage: wrappedSendMessage,
           resolveRecipient: deps.resolveRecipient,
           channels: deps.channels?.() || [],
         });

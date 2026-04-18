@@ -42,6 +42,10 @@ import QRCode from 'qrcode';
 
 import { ASSISTANT_NAME, STORE_DIR } from '../config.js';
 import {
+  inferMimeTypeFromPath,
+  resolveAgentFilePath,
+} from '../agent-path-resolver.js';
+import {
   getLastGroupSync,
   getMessageContentById,
   setLastGroupSync,
@@ -1009,6 +1013,99 @@ const whatsappIntegration: IntegrationDefinition = {
           status: 'left_group',
           group: group.name,
           ack_text: `Left WhatsApp group "${group.name}".`,
+          agent_instruction:
+            'Reply to the user with ack_text verbatim. No commentary, no emoji, no rephrasing.',
+        });
+      },
+    },
+    {
+      name: 'whatsapp.send_file',
+      description:
+        'Upload a file (PDF, image, etc.) to a WhatsApp chat or group. The path can be an agent-visible container path (e.g. /workspace/group/foo.pdf) or an absolute host path. This tool IS the user-visible attachment — do not also produce a text reply summarising what you sent. After calling this tool, return an empty text response to end your turn.',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: {
+            type: 'string',
+            description:
+              'Recipient name, phone number, or WhatsApp JID (e.g. 15551234567@s.whatsapp.net, XXX@g.us). Omit to send to the current conversation.',
+          },
+          file_path: {
+            type: 'string',
+            description:
+              'Path to the file being uploaded. Agent-visible paths under /workspace/group, /workspace/global, and /workspace/state are auto-translated to their host equivalents.',
+          },
+          caption: {
+            type: 'string',
+            description: 'Optional message body to post alongside the file.',
+          },
+          file_name: {
+            type: 'string',
+            description:
+              'Optional override for the visible file name. Defaults to basename(file_path).',
+          },
+        },
+        required: ['file_path'],
+      },
+      location: 'host' as const,
+      controllerOnly: true,
+      execute: async (args, ctx) => {
+        if (!channelInstance?.isConnected()) {
+          throw new Error('WhatsApp not connected');
+        }
+        const rawFilePath = String(args.file_path || '').trim();
+        if (!rawFilePath) throw new Error('file_path is required');
+        const filePath = resolveAgentFilePath(rawFilePath, ctx.sourceGroup);
+        if (!fs.existsSync(filePath)) {
+          throw new Error(
+            `file_path does not exist: ${rawFilePath}` +
+              (rawFilePath === filePath
+                ? ''
+                : ` (resolved host path: ${filePath})`),
+          );
+        }
+        const targetRaw =
+          String(args.to || '').trim() || String(ctx.chatJid || '').trim();
+        if (!targetRaw) {
+          throw new Error(
+            'No target WhatsApp conversation — provide "to" or use inside a WhatsApp chat',
+          );
+        }
+        let jid = '';
+        if (isWhatsAppJid(targetRaw)) {
+          jid = targetRaw;
+        } else if (ctx.resolveRecipient) {
+          try {
+            jid = await ctx.resolveRecipient(targetRaw);
+          } catch {
+            /* fall through to digit-normalise */
+          }
+        }
+        if (!jid) {
+          const digits = targetRaw.replace(/[^0-9]/g, '');
+          if (digits.length >= 7) jid = `${digits}@s.whatsapp.net`;
+        }
+        if (!jid) {
+          throw new Error(
+            `Could not resolve WhatsApp target "${targetRaw}" — pass a phone number, a contact name, or a JID like 15551234567@s.whatsapp.net`,
+          );
+        }
+        const caption = String(args.caption || '').trim();
+        const fileName =
+          String(args.file_name || '').trim() || path.basename(filePath);
+        const mimeType = inferMimeTypeFromPath(filePath);
+        await channelInstance.sendAttachment({
+          jid,
+          filePath,
+          mimeType,
+          caption: caption || undefined,
+          fileName,
+        });
+        return JSON.stringify({
+          status: 'uploaded',
+          to: jid,
+          file_name: fileName,
+          ack_text: `Uploaded ${fileName} to WhatsApp.`,
           agent_instruction:
             'Reply to the user with ack_text verbatim. No commentary, no emoji, no rephrasing.',
         });

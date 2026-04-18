@@ -78,8 +78,25 @@ export interface ToolContext {
   calendarAccess: boolean;
   /** Chat JID of the group that triggered this container run. */
   chatJid?: string;
-  /** Send a message to any JID (channel-agnostic routing via ownsJid). */
-  sendMessage?: (jid: string, text: string) => Promise<void>;
+  /**
+   * Thread id of the latest inbound message in chatJid (e.g. Slack
+   * thread_ts). When a tool sends a reply without an explicit threadId, the
+   * host wraps ctx.sendMessage so that replies to ctx.chatJid automatically
+   * land in the same thread. Tools can still override by passing an explicit
+   * threadId option.
+   */
+  threadId?: string;
+  /**
+   * Send a message to any JID (channel-agnostic routing via ownsJid). If the
+   * options arg is omitted and the jid matches ctx.chatJid, the host will
+   * auto-apply ctx.threadId so thread continuity is preserved without tools
+   * having to know about threads at all.
+   */
+  sendMessage?: (
+    jid: string,
+    text: string,
+    options?: { threadId?: string },
+  ) => Promise<void>;
   /** Resolve a name/phone to a channel-specific JID. */
   resolveRecipient?: (name: string) => Promise<string>;
   /** All connected channel instances (for channel-specific operations). */

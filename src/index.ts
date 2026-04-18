@@ -17,6 +17,8 @@ import {
   TIMEZONE,
 } from './config.js';
 import { ensureAgentMemoryFile } from './agent-memory.js';
+import { identitiesMatch } from './control-identities.js';
+import { ControlStore } from './control-store.js';
 import { startAdminServer } from './admin-server.js';
 import './channels/index.js';
 import './integrations/index.js';
@@ -461,13 +463,32 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // Determine if the controller triggered this container session.
   // Used for: (1) IPC calendar access flag, (2) container tool gating.
-  const controllerSender = CONTROL_SIGNAL_JID
+  //
+  // Historically this only checked CONTROL_SIGNAL_JID, so a verified
+  // controller messaging from Slack / WhatsApp / SMS in a non-main chat
+  // was treated as an external sender and controller-only tools were
+  // hidden. Now we check against EVERY verified identity in the control
+  // store so any channel the controller has registered counts.
+  const controllerSignalPhone = CONTROL_SIGNAL_JID
     ? CONTROL_SIGNAL_JID.replace(/^signal:user:/, '').trim()
     : '';
+  const verifiedIdentities = (() => {
+    try {
+      return new ControlStore().getVerifiedIdentities();
+    } catch {
+      return [];
+    }
+  })();
+  const senderIsVerifiedController = (sender: string | undefined): boolean => {
+    if (!sender) return false;
+    if (controllerSignalPhone && sender === controllerSignalPhone) return true;
+    if (verifiedIdentities.length === 0) return false;
+    return verifiedIdentities.some((item) =>
+      identitiesMatch(item.identity, sender),
+    );
+  };
   const controllerTriggered =
-    isMainGroup ||
-    (!!controllerSender &&
-      missedMessages.some((m) => m.sender === controllerSender));
+    isMainGroup || missedMessages.some((m) => senderIsVerifiedController(m.sender));
 
   // Grant calendar access when the controller is the one who sent messages
   // in this group. The IPC handler checks for this flag file.
@@ -1854,7 +1875,8 @@ async function main(): Promise<void> {
   };
 
   startIpcWatcher({
-    sendMessage: (jid, text) => sendHostMessage(jid, text),
+    sendMessage: (jid, text, options) =>
+      sendHostMessage(jid, text, { threadId: options?.threadId }),
     channels: () => channels,
     resolveRecipient: async (name: string) => {
       const target = await controlService.resolveOutboundTarget('signal', name);

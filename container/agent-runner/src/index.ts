@@ -282,6 +282,13 @@ const TOOL_RATE_LIMITS: Record<string, number> = {
   web_fetch: 3,
   web_search: 3,
   shell: 10,
+  // Attachment uploads: if this fails once on a bad path, re-trying 10 more
+  // times with the same path isn't going to help and looks terrible to the
+  // user. Cap low; combined with the same-args dedup below, a bad file path
+  // fails cleanly instead of looping.
+  'slack.send_file': 3,
+  'whatsapp.send_file': 3,
+  'signal.send_file': 3,
 };
 
 function writeOutput(output: ContainerOutput): void {
@@ -1960,6 +1967,16 @@ function buildOpenAITools(
 /** Tools whose output comes from untrusted external sources and needs sanitisation. */
 const UNTRUSTED_OUTPUT_TOOLS = new Set(['web_fetch', 'web_search', 'shell']);
 
+// Per-turn record of tool calls that already failed so we can short-circuit
+// an identical retry instead of letting the model spin on the same bad
+// input. Keyed by `${toolName}|${argsJson}`; value is the recorded error.
+// Cleared at the start of each conversation turn (see runConversationTurn).
+const failedToolCallCache = new Map<string, string>();
+
+function failedCallKey(toolName: string, argsJson: string): string {
+  return `${toolName}|${argsJson}`;
+}
+
 async function executeToolCall(
   call: OpenAIToolCall,
   ctx: ToolContext,
@@ -1973,6 +1990,23 @@ async function executeToolCall(
       name: toolName,
       tool_call_id: call.id,
       content: `Unknown tool: ${toolName}`,
+    };
+  }
+  // Same-args dedup: if this exact call already failed earlier in this
+  // turn, return a terminal "stop retrying" message instead of re-running.
+  // Retrying a file-not-found or missing-scope error with the same args
+  // never succeeds and produces visible user-facing latency.
+  const rawArgs = call.function.arguments ?? '';
+  const dedupKey = failedCallKey(toolName, rawArgs);
+  const priorFailure = failedToolCallCache.get(dedupKey);
+  if (priorFailure) {
+    return {
+      role: 'tool',
+      name: toolName,
+      tool_call_id: call.id,
+      content:
+        `Tool error: ${toolName} was already called with these exact arguments earlier in this turn and failed: ${priorFailure}. ` +
+        `Do not retry with the same arguments. Either change the arguments (e.g. a different path or recipient) or stop and tell the user what's missing.`,
     };
   }
   // Defense in depth: block controller-only tools even if model hallucinates them
@@ -2036,11 +2070,13 @@ async function executeToolCall(
       content: truncate(result),
     };
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    failedToolCallCache.set(dedupKey, message);
     return {
       role: 'tool',
       name: toolName,
       tool_call_id: call.id,
-      content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+      content: `Tool error: ${message}`,
     };
   }
 }
@@ -2057,6 +2093,9 @@ async function runConversationTurn(
   const ctx: ToolContext = { containerInput };
   const tools = buildOpenAITools(hasControllerAccess(containerInput));
   const toolCallCounts: Record<string, number> = {}; // per-turn rate limit counters
+  // Same-args dedup cache is per-turn — a new turn starts with a clean slate
+  // so a tool that failed in one turn can still be attempted in the next.
+  failedToolCallCache.clear();
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     let response: ChatCompletionResult;
