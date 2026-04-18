@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-import { GROUPS_DIR } from '../config.js';
+import { GROUPS_DIR, OPENAI_MAX_TOKENS } from '../config.js';
 import {
   createActionRecord,
   createArtifactRecord,
@@ -41,12 +41,28 @@ const SYSTEM_RESEARCH_PRINCIPAL_ID = 'principal-system-deep-research';
 const DEFAULT_ATTACHMENT_CAP_BYTES = 25_000_000;
 let activeResearchRuns = 0;
 
+interface ResearchSection {
+  title: string;
+  angle: string;
+  key_questions: string[];
+}
+
 interface ResearchPlan {
   topic_slug: string;
   objectives: string[];
+  sections: ResearchSection[];
   subqueries: string[];
   needs_followup: boolean;
   followup_questions: string[];
+}
+
+interface SourceSummary {
+  index: number;
+  url: string;
+  title: string;
+  key_points: string[];
+  notable_quotes: string[];
+  relevance_notes: string;
 }
 
 interface ResearchProgress {
@@ -108,13 +124,18 @@ function getResearchSettings() {
   const settings = getIntegrationSettings('deep-research');
   return {
     defaultProvider: String(settings.defaultProvider || 'brave'),
-    braveApiKey: String(settings.braveApiKey || process.env.BRAVE_API_KEY || ''),
+    braveApiKey: String(
+      settings.braveApiKey || process.env.BRAVE_API_KEY || '',
+    ),
     maxRuntimeMs: Math.max(
       60_000,
       Number(settings.maxRuntimeMs) || 20 * 60 * 1000,
     ),
     maxConcurrency: Math.max(1, Number(settings.maxConcurrency) || 2),
-    maxSearchCallsPerJob: Math.max(1, Number(settings.maxSearchCallsPerJob) || 30),
+    maxSearchCallsPerJob: Math.max(
+      1,
+      Number(settings.maxSearchCallsPerJob) || 30,
+    ),
     maxFetchesPerJob: Math.max(1, Number(settings.maxFetchesPerJob) || 40),
     dailyProviderQuota: Math.max(1, Number(settings.dailyProviderQuota) || 250),
     maxFollowups: Math.max(0, Number(settings.maxFollowups) || 2),
@@ -355,7 +376,9 @@ export class DeepResearchExecutor {
         today,
       );
       if (dailyUsage >= settings.dailyProviderQuota) {
-        throw new Error('Daily deep research provider quota has been exhausted');
+        throw new Error(
+          'Daily deep research provider quota has been exhausted',
+        );
       }
 
       ensureWithinRuntime();
@@ -365,7 +388,10 @@ export class DeepResearchExecutor {
         'Deep research timed out while preparing the research plan',
       );
       progress.plan = scopedPlan;
-      progress.topicSlug = ensureTopicSlug(scopedPlan.topic_slug, progress.prompt);
+      progress.topicSlug = ensureTopicSlug(
+        scopedPlan.topic_slug,
+        progress.prompt,
+      );
       updateActionResearchState(actionId, {
         researchSubstate: 'scoping',
         progressJson: stringifyProgress(progress),
@@ -388,7 +414,9 @@ export class DeepResearchExecutor {
           progress.chatJid,
           [
             `Deep research needs one clarification before I start ${progress.topicSlug}-report.pdf:`,
-            ...scopedPlan.followup_questions.map((question, index) => `${index + 1}. ${question}`),
+            ...scopedPlan.followup_questions.map(
+              (question, index) => `${index + 1}. ${question}`,
+            ),
           ].join('\n'),
         );
         updateRunRecord(runId, {
@@ -415,10 +443,14 @@ export class DeepResearchExecutor {
       progress.searchCalls = 0;
       progress.fetchCalls = 0;
       ensureWithinRuntime();
-      await this.runtime.sendMessage(
-        progress.chatJid,
-        `Starting deep research on "${progress.prompt}". I’ll send back ${progress.topicSlug}-report.pdf when it’s ready.`,
-      );
+      // NOTE: the "Starting deep research..." acknowledgement is no longer
+      // sent from the service. It used to race the agent's own final-text
+      // reply within the same turn and caused duplicate user-facing messages
+      // (one from here, one from the agent summarising the tool result).
+      // The tool itself (deep_research_start) now returns the ack text and
+      // instructs the agent to relay it verbatim — single source of truth.
+      // Progress pings and final PDF delivery still come from this service
+      // because those fire after the turn closes and cannot race.
 
       for (const query of scopedPlan.subqueries.slice(
         0,
@@ -478,14 +510,21 @@ export class DeepResearchExecutor {
       );
       fs.mkdirSync(reportDir, { recursive: true });
       const basePath = path.join(reportDir, `${progress.topicSlug}-report`);
-      const sourcesPath = path.join(reportDir, `${progress.topicSlug}-sources.json`);
+      const sourcesPath = path.join(
+        reportDir,
+        `${progress.topicSlug}-sources.json`,
+      );
       const planPath = path.join(reportDir, `${progress.topicSlug}-plan.json`);
       const markdownPath = `${basePath}.md`;
       const htmlPath = `${basePath}.html`;
       const pdfPath = `${basePath}.pdf`;
 
       fs.writeFileSync(planPath, JSON.stringify(scopedPlan, null, 2), 'utf-8');
-      fs.writeFileSync(sourcesPath, JSON.stringify(citations, null, 2), 'utf-8');
+      fs.writeFileSync(
+        sourcesPath,
+        JSON.stringify(citations, null, 2),
+        'utf-8',
+      );
 
       updateActionResearchState(actionId, {
         researchSubstate: 'rendering',
@@ -493,22 +532,18 @@ export class DeepResearchExecutor {
 
       ensureWithinRuntime();
       const reportPayload = await raceWithTimeout(
-        () => this.buildReport(progress, sourcePayloads),
+        () =>
+          this.buildReport(progress, sourcePayloads, () => {
+            ensureWithinRuntime();
+            return remainingRuntimeMs();
+          }),
         remainingRuntimeMs(),
         'Deep research timed out while writing the report',
       );
       progress.summaryBullets = reportPayload.summary_bullets;
       const markdown = reportPayload.report_markdown.trim();
       const html = markdownToHtml(markdown);
-      const pdf = createSimplePdf(
-        [
-          progress.prompt,
-          '',
-          ...reportPayload.summary_bullets.map((bullet) => `- ${bullet}`),
-          '',
-          markdown,
-        ].join('\n'),
-      );
+      const pdf = createSimplePdf(markdown);
 
       fs.writeFileSync(markdownPath, markdown, 'utf-8');
       fs.writeFileSync(htmlPath, html, 'utf-8');
@@ -568,7 +603,8 @@ export class DeepResearchExecutor {
       const channel = findChannel(this.runtime.channels(), progress.chatJid);
       const attachmentCap = Math.min(
         settings.attachmentSizeCapBytes,
-        channel?.capabilities?.attachments?.maxBytes ?? settings.attachmentSizeCapBytes,
+        channel?.capabilities?.attachments?.maxBytes ??
+          settings.attachmentSizeCapBytes,
       );
       const pdfSize = fs.statSync(pdfPath).size;
       const summaryLines = (progress.summaryBullets || [])
@@ -579,10 +615,7 @@ export class DeepResearchExecutor {
         ...summaryLines,
       ].join('\n');
 
-      if (
-        !channel?.sendAttachment ||
-        !channel.capabilities?.attachments?.pdf
-      ) {
+      if (!channel?.sendAttachment || !channel.capabilities?.attachments?.pdf) {
         await this.runtime.sendMessage(
           progress.chatJid,
           `${coverMessage}\n\nThis channel cannot receive PDF attachments. The report is saved at ${pdfPath}.`,
@@ -624,7 +657,8 @@ export class DeepResearchExecutor {
         status: 'failed_terminal',
         finished_at: new Date().toISOString(),
         exit_code: 1,
-        error_class: error instanceof Error ? error.name : 'deep_research_error',
+        error_class:
+          error instanceof Error ? error.name : 'deep_research_error',
       });
       createAuditLogRecord({
         id: randomUUID(),
@@ -647,6 +681,24 @@ export class DeepResearchExecutor {
     }
   }
 
+  private planBudget(): number {
+    return Math.min(2000, Math.max(800, OPENAI_MAX_TOKENS - 200));
+  }
+
+  private sectionBudget(): number {
+    // Section drafts are the bulk of output length.
+    return Math.min(3500, Math.max(1200, OPENAI_MAX_TOKENS - 400));
+  }
+
+  private smallBudget(): number {
+    return Math.min(800, Math.max(400, OPENAI_MAX_TOKENS - 200));
+  }
+
+  private truncateForPrompt(text: string, maxChars: number): string {
+    if (text.length <= maxChars) return text;
+    return `${text.slice(0, maxChars)}\n...[truncated]`;
+  }
+
   private async buildPlan(progress: ResearchProgress): Promise<ResearchPlan> {
     const followupContext = (progress.followupAnswers || []).join('\n');
     try {
@@ -654,21 +706,45 @@ export class DeepResearchExecutor {
         [
           {
             role: 'system',
-            content:
-              'You are planning a deep research run. Return JSON with keys topic_slug, objectives, subqueries, needs_followup, and followup_questions. topic_slug must be 1-3 lowercase ASCII words joined by hyphens.',
+            content: [
+              'You are planning a deep, long-form research report.',
+              'Return JSON with keys: topic_slug, objectives, sections, subqueries, needs_followup, followup_questions.',
+              '- topic_slug: 1-3 lowercase ASCII words joined by hyphens.',
+              '- objectives: 3-6 concrete research goals.',
+              '- sections: 5-8 report sections. Each section has {title, angle, key_questions}. `angle` is a 1-2 sentence thesis for what this section argues or explores. `key_questions` is 2-4 questions the section should answer.',
+              '- subqueries: 8-15 diverse web search queries. Mix broad framing, specific entities, counter-arguments, and recent developments.',
+              '- needs_followup: only true if the prompt is genuinely ambiguous. Prefer false.',
+              'Aim for richness: favor more sections over fewer, and queries that will surface contrasting viewpoints.',
+            ].join('\n'),
           },
           {
             role: 'user',
             content: `Research request:\n${progress.prompt}\n\nExisting follow-up answers:\n${followupContext || 'None'}`,
           },
         ],
-        { maxTokens: 1200, temperature: 0.2 },
+        { maxTokens: this.planBudget(), temperature: 0.3 },
       );
+      const sections: ResearchSection[] = Array.isArray(result.sections)
+        ? result.sections
+            .map((raw) => {
+              const section = raw as Partial<ResearchSection>;
+              return {
+                title: String(section.title || '').trim(),
+                angle: String(section.angle || '').trim(),
+                key_questions: Array.isArray(section.key_questions)
+                  ? section.key_questions.map(String).filter(Boolean)
+                  : [],
+              };
+            })
+            .filter((section) => section.title)
+        : [];
       return {
         topic_slug: ensureTopicSlug(result.topic_slug || '', progress.prompt),
         objectives: Array.isArray(result.objectives)
           ? result.objectives.map(String).filter(Boolean)
           : [],
+        sections:
+          sections.length > 0 ? sections : this.defaultSections(progress.prompt),
         subqueries: Array.isArray(result.subqueries)
           ? result.subqueries.map(String).filter(Boolean)
           : [progress.prompt],
@@ -681,6 +757,7 @@ export class DeepResearchExecutor {
       return {
         topic_slug: deterministicTopicSlug(progress.prompt),
         objectives: [progress.prompt],
+        sections: this.defaultSections(progress.prompt),
         subqueries: [progress.prompt],
         needs_followup: false,
         followup_questions: [],
@@ -688,66 +765,293 @@ export class DeepResearchExecutor {
     }
   }
 
-  private async buildReport(
-    progress: ResearchProgress,
-    sources: ResearchFetchResult[],
-  ): Promise<{ summary_bullets: string[]; report_markdown: string }> {
-    const serializedSources = sources
-      .slice(0, 8)
-      .map(
-        (source, index) =>
-          `Source ${index + 1}: ${source.title}\nURL: ${source.url}\nFetched: ${source.fetchedAt}\n${source.textContent}`,
-      )
-      .join('\n\n');
+  private defaultSections(prompt: string): ResearchSection[] {
+    return [
+      {
+        title: 'Background & Context',
+        angle: `Establish what ${prompt} is and why it matters.`,
+        key_questions: ['What is the origin?', 'Who are the key actors?'],
+      },
+      {
+        title: 'Current State',
+        angle: 'Summarize the present landscape and most recent developments.',
+        key_questions: [
+          'What is happening right now?',
+          'What has changed recently?',
+        ],
+      },
+      {
+        title: 'Key Debates & Tradeoffs',
+        angle: 'Surface disagreements, open questions, and competing views.',
+        key_questions: [
+          'Where do experts disagree?',
+          'What are the main tradeoffs?',
+        ],
+      },
+      {
+        title: 'Implications & Outlook',
+        angle: 'Discuss what is likely next and who is affected.',
+        key_questions: ['What comes next?', 'Who wins and who loses?'],
+      },
+    ];
+  }
 
+  private async summarizeSource(
+    progress: ResearchProgress,
+    source: ResearchFetchResult,
+    index: number,
+  ): Promise<SourceSummary> {
+    const truncated = this.truncateForPrompt(source.textContent, 12000);
     try {
       const result = await callJsonChatCompletion<{
-        summary_bullets: string[];
-        report_markdown: string;
+        key_points: string[];
+        notable_quotes: string[];
+        relevance_notes: string;
       }>(
         [
           {
             role: 'system',
-            content:
-              'Write a research report as JSON with keys summary_bullets and report_markdown. summary_bullets must contain 3 concise bullets. report_markdown should include only sections that have content.',
+            content: [
+              'Extract research notes from a single source. Return JSON with keys key_points, notable_quotes, relevance_notes.',
+              '- key_points: 4-8 specific factual bullets (numbers, dates, names when present). No fluff.',
+              '- notable_quotes: 0-3 short direct quotes worth citing verbatim (under 40 words each).',
+              '- relevance_notes: 1-2 sentences on how this source applies to the research topic.',
+            ].join('\n'),
           },
           {
             role: 'user',
-            content:
-              `Research request:\n${progress.prompt}\n\n` +
-              `Objectives:\n${(progress.plan?.objectives || []).join('\n')}\n\n` +
-              `Sources:\n${serializedSources}`,
+            content: [
+              `Research topic: ${progress.prompt}`,
+              `Source title: ${source.title}`,
+              `Source URL: ${source.url}`,
+              '',
+              'Source content:',
+              truncated,
+            ].join('\n'),
           },
         ],
-        { maxTokens: 3200, temperature: 0.2 },
+        { maxTokens: this.smallBudget(), temperature: 0.2 },
       );
       return {
-        summary_bullets: Array.isArray(result.summary_bullets)
-          ? result.summary_bullets.map(String).filter(Boolean).slice(0, 3)
-          : ['Research completed.', 'Sources reviewed.', 'Report generated.'],
-        report_markdown: String(result.report_markdown || '').trim(),
+        index,
+        url: source.url,
+        title: source.title,
+        key_points: Array.isArray(result.key_points)
+          ? result.key_points.map(String).filter(Boolean)
+          : [],
+        notable_quotes: Array.isArray(result.notable_quotes)
+          ? result.notable_quotes.map(String).filter(Boolean)
+          : [],
+        relevance_notes: String(result.relevance_notes || '').trim(),
       };
     } catch {
-      const fallbackMarkdown = [
-        `# ${progress.prompt}`,
-        '',
-        '## Findings',
-        '',
-        ...sources.slice(0, 5).map((source) => `- ${source.title}: ${source.url}`),
-        '',
-        '## Methodology',
-        '',
-        `- Reviewed ${sources.length} sources`,
-      ].join('\n');
+      const snippet = truncated.slice(0, 600).replace(/\s+/g, ' ').trim();
       return {
-        summary_bullets: [
-          'Research completed',
-          `Reviewed ${sources.length} sources`,
-          'Report generated successfully',
-        ],
-        report_markdown: fallbackMarkdown,
+        index,
+        url: source.url,
+        title: source.title,
+        key_points: snippet ? [snippet] : [],
+        notable_quotes: [],
+        relevance_notes: '',
       };
     }
+  }
+
+  private formatSummariesForPrompt(summaries: SourceSummary[]): string {
+    return summaries
+      .map((summary) => {
+        const lines = [
+          `[${summary.index}] ${summary.title} — ${summary.url}`,
+          ...summary.key_points.map((point) => `  - ${point}`),
+        ];
+        if (summary.notable_quotes.length) {
+          lines.push('  Quotes:');
+          for (const quote of summary.notable_quotes) {
+            lines.push(`    • "${quote}"`);
+          }
+        }
+        if (summary.relevance_notes) {
+          lines.push(`  Relevance: ${summary.relevance_notes}`);
+        }
+        return lines.join('\n');
+      })
+      .join('\n\n');
+  }
+
+  private async draftSection(
+    progress: ResearchProgress,
+    section: ResearchSection,
+    summaries: SourceSummary[],
+  ): Promise<string> {
+    const serializedSummaries = this.formatSummariesForPrompt(summaries);
+    try {
+      const result = await callJsonChatCompletion<{
+        section_markdown: string;
+      }>(
+        [
+          {
+            role: 'system',
+            content: [
+              'Write one section of a long-form research report as JSON with key section_markdown.',
+              'Requirements:',
+              '- Begin with "## <section title>" exactly as given.',
+              '- 600-1200 words. Multiple paragraphs. Use ### subheadings where it helps structure, and bullets where enumeration is natural.',
+              '- Ground every non-obvious claim in the provided sources. Cite inline using [n] where n is the source number. You may cite multiple sources per claim, e.g. [1][3].',
+              '- Do not fabricate facts that are not in the source summaries. If the sources are thin on this section, say so briefly and focus on what can be supported.',
+              '- Do not include a "Sources" list in this section — that appears elsewhere in the report.',
+              '- Avoid hedging throat-clearing like "In this section we will...". Get to substance immediately.',
+            ].join('\n'),
+          },
+          {
+            role: 'user',
+            content: [
+              `Overall research topic: ${progress.prompt}`,
+              '',
+              `Section title: ${section.title}`,
+              `Section angle: ${section.angle}`,
+              `Key questions to address:\n${section.key_questions.map((q) => `- ${q}`).join('\n')}`,
+              '',
+              'Source summaries (cite by number):',
+              serializedSummaries || '(no sources available)',
+            ].join('\n'),
+          },
+        ],
+        { maxTokens: this.sectionBudget(), temperature: 0.3 },
+      );
+      const markdown = String(result.section_markdown || '').trim();
+      if (!markdown) throw new Error('empty section');
+      return markdown;
+    } catch {
+      const bulletized = summaries
+        .flatMap((summary) =>
+          summary.key_points.slice(0, 3).map((point) => `- ${point} [${summary.index}]`),
+        )
+        .slice(0, 12);
+      return [
+        `## ${section.title}`,
+        '',
+        section.angle || '',
+        '',
+        ...bulletized,
+      ]
+        .filter(Boolean)
+        .join('\n');
+    }
+  }
+
+  private async writeExecutiveSummary(
+    progress: ResearchProgress,
+    sectionsMarkdown: string,
+  ): Promise<string[]> {
+    try {
+      const result = await callJsonChatCompletion<{
+        summary_bullets: string[];
+      }>(
+        [
+          {
+            role: 'system',
+            content: [
+              'You are writing the executive summary for a long-form research report.',
+              'Return JSON with key summary_bullets: 5-7 bullets, each 1-2 sentences.',
+              'The bullets should capture the report\'s main findings and tensions, not restate the prompt. Specific, quantitative where possible.',
+            ].join('\n'),
+          },
+          {
+            role: 'user',
+            content: [
+              `Research topic: ${progress.prompt}`,
+              '',
+              'Full report body:',
+              this.truncateForPrompt(sectionsMarkdown, 16000),
+            ].join('\n'),
+          },
+        ],
+        { maxTokens: this.smallBudget(), temperature: 0.2 },
+      );
+      const bullets = Array.isArray(result.summary_bullets)
+        ? result.summary_bullets.map(String).filter(Boolean)
+        : [];
+      return bullets.length > 0
+        ? bullets.slice(0, 7)
+        : ['Research completed.', 'See full report below for findings.'];
+    } catch {
+      return ['Research completed.', 'See full report below for findings.'];
+    }
+  }
+
+  private async buildReport(
+    progress: ResearchProgress,
+    sources: ResearchFetchResult[],
+    checkpoint: () => number,
+  ): Promise<{ summary_bullets: string[]; report_markdown: string }> {
+    const plan = progress.plan;
+    if (!plan) {
+      throw new Error('Cannot build report without a research plan');
+    }
+
+    // 1. Per-source summarization (bounded by fetch count; each call is small).
+    const perSourceBudget = Math.min(sources.length, 16);
+    const summaries: SourceSummary[] = [];
+    for (let index = 0; index < perSourceBudget; index++) {
+      checkpoint();
+      const summary = await this.summarizeSource(
+        progress,
+        sources[index],
+        index + 1,
+      );
+      summaries.push(summary);
+    }
+
+    // 2. Draft each section with all source summaries in context.
+    const sectionMarkdowns: string[] = [];
+    for (const section of plan.sections) {
+      checkpoint();
+      const drafted = await this.draftSection(progress, section, summaries);
+      sectionMarkdowns.push(drafted);
+    }
+    const sectionsJoined = sectionMarkdowns.join('\n\n');
+
+    // 3. Executive summary written last, seeing the full body.
+    checkpoint();
+    const summaryBullets = await this.writeExecutiveSummary(
+      progress,
+      sectionsJoined,
+    );
+
+    // 4. Assemble final markdown.
+    const sourcesList = summaries.length
+      ? [
+          '## Sources',
+          '',
+          ...summaries.map(
+            (summary) => `${summary.index}. [${summary.title}](${summary.url})`,
+          ),
+        ].join('\n')
+      : '';
+    const objectivesBlock = plan.objectives.length
+      ? ['## Research Objectives', '', ...plan.objectives.map((o) => `- ${o}`)].join('\n')
+      : '';
+
+    const report = [
+      `# ${progress.prompt}`,
+      '',
+      '## Executive Summary',
+      '',
+      ...summaryBullets.map((bullet) => `- ${bullet}`),
+      '',
+      objectivesBlock,
+      objectivesBlock ? '' : null,
+      sectionsJoined,
+      '',
+      sourcesList,
+    ]
+      .filter((line) => line !== null)
+      .join('\n');
+
+    return {
+      summary_bullets: summaryBullets.slice(0, 3),
+      report_markdown: report.trim(),
+    };
   }
 }
 
@@ -878,9 +1182,14 @@ export class DeepResearchService {
       senderId &&
       progress.requestedBySender !== senderId
     ) {
-      throw new Error('This deep research follow-up must come from the original sender');
+      throw new Error(
+        'This deep research follow-up must come from the original sender',
+      );
     }
-    const followupAnswers = [...(progress.followupAnswers || []), answer.trim()];
+    const followupAnswers = [
+      ...(progress.followupAnswers || []),
+      answer.trim(),
+    ];
     progress.followupAnswers = followupAnswers;
     updateActionRecordStatus(actionId, 'queued');
     updateActionResearchState(actionId, {
@@ -953,7 +1262,9 @@ export class DeepResearchService {
 
 let deepResearchService: DeepResearchService | null = null;
 
-export function initializeDeepResearchService(runtime: DeepResearchRuntime): DeepResearchService {
+export function initializeDeepResearchService(
+  runtime: DeepResearchRuntime,
+): DeepResearchService {
   deepResearchService = new DeepResearchService(runtime);
   return deepResearchService;
 }

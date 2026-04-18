@@ -152,21 +152,17 @@ export function buildSilentTurnFallback(
     const toolName = message.name || '';
     const status = parseSendStatus(message.content);
     return (
-      /\.send_message$/.test(toolName) &&
+      (/\.send_message$/.test(toolName) || /\.reply$/.test(toolName)) &&
       (status === 'sent' || status === 'duplicate')
     );
   });
   if (successfulSend) {
-    const recipient = parseSendRecipient(successfulSend.content);
-    const status = parseSendStatus(successfulSend.content);
-    if (status === 'duplicate') {
-      return recipient
-        ? `Done - that message had already been sent to ${recipient} recently, so I skipped sending it again.`
-        : 'Done - that message had already been sent recently, so I skipped sending it again.';
-    }
-    return recipient
-      ? `Done - I sent the requested message to ${recipient}.`
-      : 'Done - I sent the requested message.';
+    // The send/reply tool IS the user-visible message. Returning ANY text
+    // here would produce a duplicate (one message from the tool, one from
+    // this fallback). The agent's prompt now explicitly instructs it to
+    // stay silent after send/reply, so an empty final text is the correct
+    // outcome. The host treats empty text as "no final reply needed".
+    return '';
   }
 
   const lastUsefulToolError = [...toolMessages]

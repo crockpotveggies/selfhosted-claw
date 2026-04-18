@@ -106,9 +106,28 @@ describe('deep research service', () => {
       {
         topic_slug: 'canada-life',
         objectives: ['Understand daily life in Canada'],
+        sections: [
+          {
+            title: 'Findings',
+            angle: 'Summarize life in Canada.',
+            key_questions: ['What is notable?'],
+          },
+        ],
         subqueries: ['life in canada'],
         needs_followup: false,
         followup_questions: [],
+      },
+      {
+        key_points: ['Public services are strong.'],
+        notable_quotes: [],
+        relevance_notes: 'Directly relevant.',
+      },
+      {
+        section_markdown: [
+          '## Findings',
+          '',
+          'Public services are strong [1].',
+        ].join('\n'),
       },
       {
         summary_bullets: [
@@ -116,18 +135,6 @@ describe('deep research service', () => {
           'Public healthcare is a major factor',
           'Housing costs vary sharply by region',
         ],
-        report_markdown: [
-          '# Life in Canada',
-          '',
-          '## Findings',
-          '',
-          '- Public services are strong.',
-          '- Housing affordability varies widely.',
-          '',
-          '## Sources',
-          '',
-          '- https://example.com/canada-life',
-        ].join('\n'),
       },
     );
 
@@ -166,7 +173,9 @@ describe('deep research service', () => {
     });
 
     await vi.waitFor(() => {
-      expect(service.getStatus(result.actionId).action.status).toBe('succeeded');
+      expect(service.getStatus(result.actionId).action.status).toBe(
+        'succeeded',
+      );
     });
 
     const reportDir = path.join(
@@ -185,16 +194,18 @@ describe('deep research service', () => {
     expect(fs.existsSync(path.join(reportDir, 'canada-life-report.html'))).toBe(
       true,
     );
-    expect(fs.existsSync(path.join(reportDir, 'canada-life-sources.json'))).toBe(
-      true,
-    );
+    expect(
+      fs.existsSync(path.join(reportDir, 'canada-life-sources.json')),
+    ).toBe(true);
     expect(sentAttachments).toHaveLength(1);
     expect(sentAttachments[0]).toMatchObject({
       mimeType: 'application/pdf',
       filePath: path.join(reportDir, 'canada-life-report.pdf'),
     });
     expect(sentMessages.some((message) => message.includes('.md'))).toBe(false);
-    expect(sentMessages.some((message) => message.includes('.json'))).toBe(false);
+    expect(sentMessages.some((message) => message.includes('.json'))).toBe(
+      false,
+    );
   });
 
   it('stages deep research through the shared RunSpec dispatcher before execution', async () => {
@@ -218,13 +229,27 @@ describe('deep research service', () => {
       {
         topic_slug: 'canada-life',
         objectives: ['Understand daily life in Canada'],
+        sections: [
+          {
+            title: 'Findings',
+            angle: 'Summarize life in Canada.',
+            key_questions: ['What is notable?'],
+          },
+        ],
         subqueries: ['life in canada'],
         needs_followup: false,
         followup_questions: [],
       },
       {
+        key_points: ['Point one'],
+        notable_quotes: [],
+        relevance_notes: '',
+      },
+      {
+        section_markdown: '## Findings\n\nBody [1].',
+      },
+      {
         summary_bullets: ['One', 'Two', 'Three'],
-        report_markdown: '# Life in Canada',
       },
     );
 
@@ -264,7 +289,9 @@ describe('deep research service', () => {
     });
 
     await vi.waitFor(() => {
-      expect(service.getStatus(result.actionId).action.status).toBe('succeeded');
+      expect(service.getStatus(result.actionId).action.status).toBe(
+        'succeeded',
+      );
     });
     expect(stage).toHaveBeenCalledWith(result.actionId);
   });
@@ -290,13 +317,27 @@ describe('deep research service', () => {
       {
         topic_slug: 'canada-life',
         objectives: ['Understand daily life in Canada'],
+        sections: [
+          {
+            title: 'Findings',
+            angle: 'Summarize life in Canada.',
+            key_questions: ['What is notable?'],
+          },
+        ],
         subqueries: ['life in canada'],
         needs_followup: false,
         followup_questions: [],
       },
       {
+        key_points: ['Point one'],
+        notable_quotes: [],
+        relevance_notes: '',
+      },
+      {
+        section_markdown: '## Findings\n\nBody [1].',
+      },
+      {
         summary_bullets: ['Summary one', 'Summary two', 'Summary three'],
-        report_markdown: '# Life in Canada',
       },
     );
 
@@ -327,7 +368,9 @@ describe('deep research service', () => {
     });
 
     await vi.waitFor(() => {
-      expect(service.getStatus(result.actionId).action.status).toBe('succeeded');
+      expect(service.getStatus(result.actionId).action.status).toBe(
+        'succeeded',
+      );
     });
 
     expect(sendAttachment).not.toHaveBeenCalled();
@@ -359,6 +402,7 @@ describe('deep research service', () => {
       {
         topic_slug: 'canada-life',
         objectives: ['Clarify the audience'],
+        sections: [],
         subqueries: ['life in canada'],
         needs_followup: true,
         followup_questions: ['Should this focus on newcomers or retirees?'],
@@ -366,13 +410,27 @@ describe('deep research service', () => {
       {
         topic_slug: 'canada-life',
         objectives: ['Focus on newcomers'],
+        sections: [
+          {
+            title: 'Findings',
+            angle: 'Newcomer perspective.',
+            key_questions: ['What matters most to newcomers?'],
+          },
+        ],
         subqueries: ['life in canada for newcomers'],
         needs_followup: false,
         followup_questions: [],
       },
       {
+        key_points: ['Point one'],
+        notable_quotes: [],
+        relevance_notes: '',
+      },
+      {
+        section_markdown: '## Findings\n\nBody [1].',
+      },
+      {
         summary_bullets: ['Summary one', 'Summary two', 'Summary three'],
-        report_markdown: '# Life in Canada for Newcomers',
       },
     );
 
@@ -394,9 +452,9 @@ describe('deep research service', () => {
         'waiting_for_user',
       );
     });
-    expect(
-      db.getChatPendingFollowupActionId('signal:user:+15550001111'),
-    ).toBe(result.actionId);
+    expect(db.getChatPendingFollowupActionId('signal:user:+15550001111')).toBe(
+      result.actionId,
+    );
 
     const restartedService = initializeDeepResearchService({
       sendMessage: async () => {},

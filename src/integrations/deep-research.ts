@@ -175,7 +175,7 @@ const deepResearchIntegration: IntegrationDefinition = {
     {
       name: 'deep_research_start',
       description:
-        'Start a background deep research report for broad, comparative, source-heavy, or explicitly comprehensive requests. Do not use this for simple factual lookups.',
+        'Start a background deep research report for broad, comparative, source-heavy, or explicitly comprehensive requests. Do not use this for simple factual lookups. The tool result includes an "ack_text" field — after calling this tool, your final reply to the user MUST be exactly that ack_text with no additions, no emoji, no task IDs, and no rephrasing. Progress updates and the final PDF are delivered automatically; do not repeat or summarise them.',
       parameters: {
         type: 'object',
         properties: {
@@ -188,14 +188,21 @@ const deepResearchIntegration: IntegrationDefinition = {
       execute: async (args, ctx) => {
         if (!ctx.chatJid) throw new Error('Chat context not available');
         const sender = getLatestInboundSender(ctx.chatJid);
+        const prompt = String(args.prompt || '').trim();
         const result = await getDeepResearchService().start({
-          prompt: String(args.prompt || '').trim(),
+          prompt,
           groupFolder: ctx.sourceGroup,
           chatJid: ctx.chatJid,
           senderId: sender.senderId,
           senderName: sender.senderName,
         });
-        return JSON.stringify(result);
+        const ackText = `Starting deep research on "${prompt}". I'll send the PDF report when it's ready.`;
+        return JSON.stringify({
+          ...result,
+          ack_text: ackText,
+          agent_instruction:
+            'Reply to the user with ack_text verbatim. Do not add commentary, do not include task or run IDs, do not add emoji, do not rephrase.',
+        });
       },
     },
     {
@@ -218,7 +225,9 @@ const deepResearchIntegration: IntegrationDefinition = {
       execute: async (args, ctx) => {
         const actionId =
           String(args.action_id || '').trim() ||
-          (ctx.chatJid ? getChatPendingFollowupActionId(ctx.chatJid) || '' : '');
+          (ctx.chatJid
+            ? getChatPendingFollowupActionId(ctx.chatJid) || ''
+            : '');
         if (!actionId) {
           throw new Error('No pending deep research follow-up for this chat');
         }
@@ -247,7 +256,8 @@ const deepResearchIntegration: IntegrationDefinition = {
         const actionId =
           String(args.action_id || '').trim() ||
           (ctx.chatJid
-            ? getDeepResearchService().getLatestJobForChat(ctx.chatJid)?.id || ''
+            ? getDeepResearchService().getLatestJobForChat(ctx.chatJid)?.id ||
+              ''
             : '');
         if (!actionId) {
           throw new Error('No deep research job found for this chat');

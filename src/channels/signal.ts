@@ -300,7 +300,9 @@ export class SignalChannel implements Channel {
       'sendAttachment',
     );
     if (response.status !== 201) {
-      throw new Error(`Signal RPC attachment send failed with ${response.status}`);
+      throw new Error(
+        `Signal RPC attachment send failed with ${response.status}`,
+      );
     }
   }
 

@@ -942,7 +942,9 @@ export function startAdminServer(
           action,
           task,
           principal,
-          progress: action.progress_json ? JSON.parse(action.progress_json) : null,
+          progress: action.progress_json
+            ? JSON.parse(action.progress_json)
+            : null,
           spend: action.spend_json ? JSON.parse(action.spend_json) : null,
           artifacts: listArtifactsForAction(actionId),
         });

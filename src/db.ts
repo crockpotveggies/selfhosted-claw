@@ -586,9 +586,7 @@ export function getAllChats(): ChatInfo[] {
     .all() as ChatInfo[];
 }
 
-export function getChatPendingFollowupActionId(
-  chatJid: string,
-): string | null {
+export function getChatPendingFollowupActionId(chatJid: string): string | null {
   const row = db
     .prepare(
       `SELECT pending_followup_action_id
@@ -1501,17 +1499,17 @@ export function updateActionResearchState(
   `,
   ).run(
     updates.researchSubstate === undefined
-      ? existing.research_substate ?? null
-      : updates.researchSubstate ?? null,
+      ? (existing.research_substate ?? null)
+      : (updates.researchSubstate ?? null),
     updates.progressJson === undefined
-      ? existing.progress_json ?? null
+      ? (existing.progress_json ?? null)
       : updates.progressJson,
     updates.artifactPathsJson === undefined
-      ? existing.artifact_paths_json ?? null
+      ? (existing.artifact_paths_json ?? null)
       : updates.artifactPathsJson,
     updates.followupCount ?? existing.followup_count ?? 0,
     updates.spendJson === undefined
-      ? existing.spend_json ?? null
+      ? (existing.spend_json ?? null)
       : updates.spendJson,
     updates.updatedAt ?? new Date().toISOString(),
     id,

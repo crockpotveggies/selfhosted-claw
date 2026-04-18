@@ -80,12 +80,14 @@ export class RunSpecDispatcher {
         this.artifactStore.readArtifact(artifact);
     }
 
-    const progress = action.progress_json ? JSON.parse(action.progress_json) as {
-      prompt?: string;
-      topicSlug?: string;
-      groupFolder?: string;
-      chatJid?: string;
-    } : null;
+    const progress = action.progress_json
+      ? (JSON.parse(action.progress_json) as {
+          prompt?: string;
+          topicSlug?: string;
+          groupFolder?: string;
+          chatJid?: string;
+        })
+      : null;
     const isDeepResearch = action.type === 'deep_research';
     return {
       run_id: runId ?? randomUUID(),
@@ -106,7 +108,9 @@ export class RunSpecDispatcher {
         metadata: {
           task_id: task.id,
           principal_id: principal.id,
-          ...(progress?.groupFolder ? { group_folder: progress.groupFolder } : {}),
+          ...(progress?.groupFolder
+            ? { group_folder: progress.groupFolder }
+            : {}),
           ...(progress?.chatJid ? { chat_jid: progress.chatJid } : {}),
         },
       },

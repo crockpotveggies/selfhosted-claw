@@ -74,23 +74,23 @@ describe('research provider helpers', () => {
     await expect(
       provider.search('canada', { maxResults: 5 }),
     ).resolves.toHaveLength(1);
-    await expect(provider.fetch('https://example.com/life')).resolves.toMatchObject({
+    await expect(
+      provider.fetch('https://example.com/life'),
+    ).resolves.toMatchObject({
       title: 'Life',
     });
   });
 
   it('revalidates redirects before following a new host', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        status: 302,
-        headers: {
-          get: (name: string) =>
-            name.toLowerCase() === 'location'
-              ? 'http://blocked.test/private'
-              : null,
-        },
-      } as Partial<Response> as Response);
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      status: 302,
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'location'
+            ? 'http://blocked.test/private'
+            : null,
+      },
+    } as Partial<Response> as Response);
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(safeFetchUrl('https://example.com/start')).rejects.toThrow(

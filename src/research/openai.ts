@@ -1,8 +1,4 @@
-import {
-  OPENAI_API_KEY,
-  OPENAI_BASE_URL,
-  OPENAI_MODEL,
-} from '../config.js';
+import { OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL } from '../config.js';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';

@@ -62,7 +62,9 @@ class DeepResearchTemplate implements TemplateExecutor {
 
   async execute(context: TemplateExecutionContext) {
     const prompt = String(context.spec.template_args.prompt ?? '').trim();
-    const slug = String(context.spec.template_args.topic_slug ?? 'research-report').trim();
+    const slug = String(
+      context.spec.template_args.topic_slug ?? 'research-report',
+    ).trim();
     const plan = JSON.stringify(
       {
         topic_slug: slug,

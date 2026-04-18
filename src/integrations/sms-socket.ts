@@ -764,7 +764,8 @@ const smsSocketIntegration: IntegrationDefinition = {
   tools: [
     {
       name: 'sms_socket.send_message',
-      description: 'Send an SMS message to a phone number.',
+      description:
+        'Send an SMS message to a phone number. This tool IS the user-visible message — do not also produce a text reply summarising what you sent. After calling this tool, return an empty text response to end your turn.',
       parameters: {
         type: 'object',
         properties: {
@@ -803,7 +804,8 @@ const smsSocketIntegration: IntegrationDefinition = {
     },
     {
       name: 'sms_socket.reply',
-      description: 'Reply in the current SMS conversation.',
+      description:
+        'Reply in the current SMS conversation. This tool IS the user-visible reply — do not also produce a text response summarising what you replied. After calling this tool, return an empty text response to end your turn.',
       parameters: {
         type: 'object',
         properties: {

@@ -340,7 +340,8 @@ const signalIntegration: IntegrationDefinition = {
   tools: [
     {
       name: 'signal.send_message',
-      description: 'Send a Signal message to a person or group.',
+      description:
+        'Send a Signal message to a person or group. This tool IS the user-visible message — do not also produce a text reply summarising what you sent. After calling this tool, return an empty text response to end your turn.',
       parameters: {
         type: 'object',
         properties: {
@@ -369,7 +370,8 @@ const signalIntegration: IntegrationDefinition = {
     },
     {
       name: 'signal.reply',
-      description: 'Reply in the current Signal conversation.',
+      description:
+        'Reply in the current Signal conversation. This tool IS the user-visible reply — do not also produce a text response summarising what you replied. After calling this tool, return an empty text response to end your turn.',
       parameters: {
         type: 'object',
         properties: {
@@ -389,7 +391,8 @@ const signalIntegration: IntegrationDefinition = {
     },
     {
       name: 'signal.create_group',
-      description: 'Create a new Signal group with the specified members.',
+      description:
+        'Create a new Signal group with the specified members. The tool result includes an "ack_text" field — your final reply to the user MUST be exactly that ack_text with no additions, no emoji, and no rephrasing.',
       parameters: {
         type: 'object',
         properties: {
@@ -413,12 +416,18 @@ const signalIntegration: IntegrationDefinition = {
           members: args.members as string[],
           message: args.message as string | undefined,
         });
-        return JSON.stringify(result);
+        return JSON.stringify({
+          ...result,
+          ack_text: `Created Signal group "${result?.title ?? (args.title as string)}".`,
+          agent_instruction:
+            'Reply to the user with ack_text verbatim. No commentary, no emoji, no rephrasing.',
+        });
       },
     },
     {
       name: 'signal.add_group_members',
-      description: 'Add members to an existing Signal group.',
+      description:
+        'Add members to an existing Signal group. The tool result includes an "ack_text" field — your final reply to the user MUST be exactly that ack_text with no additions, no emoji, and no rephrasing.',
       parameters: {
         type: 'object',
         properties: {
@@ -443,8 +452,15 @@ const signalIntegration: IntegrationDefinition = {
         const group = await ch.findGroupByName(args.groupName as string);
         if (!group)
           throw new Error(`Signal group "${args.groupName}" not found`);
-        await ch.addMembers(group.id, args.members as string[]);
-        return JSON.stringify({ status: 'members_added', group: group.name });
+        const members = args.members as string[];
+        await ch.addMembers(group.id, members);
+        return JSON.stringify({
+          status: 'members_added',
+          group: group.name,
+          ack_text: `Added ${members.length} member(s) to Signal group "${group.name}".`,
+          agent_instruction:
+            'Reply to the user with ack_text verbatim. No commentary, no emoji, no rephrasing.',
+        });
       },
     },
     {
@@ -462,7 +478,8 @@ const signalIntegration: IntegrationDefinition = {
     },
     {
       name: 'signal.leave_group',
-      description: 'Leave an existing Signal group.',
+      description:
+        'Leave an existing Signal group. The tool result includes an "ack_text" field — your final reply to the user MUST be exactly that ack_text with no additions, no emoji, and no rephrasing.',
       parameters: {
         type: 'object',
         properties: {
@@ -483,7 +500,13 @@ const signalIntegration: IntegrationDefinition = {
         if (!group)
           throw new Error(`Signal group "${args.groupName}" not found`);
         await ch.leaveGroup(group.id);
-        return JSON.stringify({ status: 'left_group', group: group.name });
+        return JSON.stringify({
+          status: 'left_group',
+          group: group.name,
+          ack_text: `Left Signal group "${group.name}".`,
+          agent_instruction:
+            'Reply to the user with ack_text verbatim. No commentary, no emoji, no rephrasing.',
+        });
       },
     },
   ],

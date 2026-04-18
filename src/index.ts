@@ -285,7 +285,9 @@ export function _getPendingResearchFollowupReply(
   const progress = JSON.parse(action.progress_json) as {
     requestedBySender?: string | null;
   };
-  const uniqueSenders = [...new Set(normalized.map((message) => message.sender))];
+  const uniqueSenders = [
+    ...new Set(normalized.map((message) => message.sender)),
+  ];
   if (uniqueSenders.length !== 1) return null;
   if (
     progress.requestedBySender &&

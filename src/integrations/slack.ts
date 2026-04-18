@@ -405,9 +405,7 @@ class SlackChannel implements Channel {
       body: fileBuffer,
     });
     if (!uploadResponse.ok) {
-      throw new Error(
-        `Slack file upload failed with ${uploadResponse.status}`,
-      );
+      throw new Error(`Slack file upload failed with ${uploadResponse.status}`);
     }
 
     await callSlackApi('files.completeUploadExternal', this.botToken, {
@@ -957,7 +955,7 @@ const slackIntegration: IntegrationDefinition = {
     {
       name: 'slack.send_message',
       description:
-        'Send a Slack message to a Slack channel or conversation. Accepts a channel name like #general or tests, or a Slack JID like slack:C12345678.',
+        'Send a Slack message to a Slack channel or conversation. Accepts a channel name like #general or tests, or a Slack JID like slack:C12345678. This tool IS the user-visible message — do not also produce a text reply summarising what you sent. After calling this tool, return an empty text response to end your turn.',
       parameters: {
         type: 'object',
         properties: {
@@ -1022,7 +1020,8 @@ const slackIntegration: IntegrationDefinition = {
     },
     {
       name: 'slack.reply',
-      description: 'Reply in the current Slack conversation.',
+      description:
+        'Reply in the current Slack conversation. This tool IS the user-visible reply — do not also produce a text response summarising what you replied. After calling this tool, return an empty text response to end your turn.',
       parameters: {
         type: 'object',
         properties: {

@@ -32,7 +32,10 @@ export interface ResearchProvider {
     query: string,
     options: ResearchSearchOptions,
   ): Promise<ResearchSearchResult[]>;
-  fetch(url: string, options?: ResearchFetchOptions): Promise<ResearchFetchResult>;
+  fetch(
+    url: string,
+    options?: ResearchFetchOptions,
+  ): Promise<ResearchFetchResult>;
 }
 
 export interface FixtureProviderFixture {
@@ -40,13 +43,7 @@ export interface FixtureProviderFixture {
   fetches: Record<string, Omit<ResearchFetchResult, 'contentHash'>>;
 }
 
-const BLOCKED_IPV4_PREFIXES = [
-  '0.',
-  '10.',
-  '127.',
-  '169.254.',
-  '192.168.',
-];
+const BLOCKED_IPV4_PREFIXES = ['0.', '10.', '127.', '169.254.', '192.168.'];
 const ALLOWED_FETCH_CONTENT_TYPES = new Set([
   'text/html',
   'text/plain',
@@ -75,7 +72,9 @@ async function validateResolvedHost(hostname: string): Promise<void> {
   const addresses = await dnsResolve(hostname);
   for (const address of addresses) {
     if (isBlockedIpAddress(address)) {
-      throw new Error(`Blocked fetch target: ${hostname} resolved to ${address}`);
+      throw new Error(
+        `Blocked fetch target: ${hostname} resolved to ${address}`,
+      );
     }
   }
 }
@@ -152,7 +151,9 @@ export async function safeFetchUrl(
         .trim()
         .toLowerCase();
       if (!ALLOWED_FETCH_CONTENT_TYPES.has(contentType)) {
-        throw new Error(`Unsupported content type for research fetch: ${contentType}`);
+        throw new Error(
+          `Unsupported content type for research fetch: ${contentType}`,
+        );
       }
 
       const arrayBuffer = await response.arrayBuffer();
@@ -168,7 +169,11 @@ export async function safeFetchUrl(
           : contentType === 'text/html'
             ? htmlToText(buffer.toString('utf-8'))
             : buffer.toString('utf-8');
-      const framed = frameFetchedContent(currentUrl.toString(), fetchedAt, rawText);
+      const framed = frameFetchedContent(
+        currentUrl.toString(),
+        fetchedAt,
+        rawText,
+      );
       return {
         url: currentUrl.toString(),
         title: currentUrl.hostname,
@@ -243,8 +248,7 @@ export class BraveProvider implements ResearchProvider {
         try {
           const hostname = new URL(result.url).hostname.toLowerCase();
           return ![...exclude].some(
-            (domain) =>
-              hostname === domain || hostname.endsWith(`.${domain}`),
+            (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
           );
         } catch {
           return false;
@@ -277,9 +281,7 @@ export class FixtureProvider implements ResearchProvider {
     }
     return {
       ...match,
-      contentHash: createHash('sha256')
-        .update(match.textContent)
-        .digest('hex'),
+      contentHash: createHash('sha256').update(match.textContent).digest('hex'),
     };
   }
 }

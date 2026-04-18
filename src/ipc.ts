@@ -793,582 +793,114 @@ export async function processTaskIpc(
       break;
 
     case 'signal_add_group_members':
-      if (!data.groupName || !data.members || data.members.length === 0) {
-        logger.warn(
-          { data },
-          'Invalid signal_add_group_members request - missing groupName or members',
-        );
-        break;
-      }
-      if (!deps.signalFindGroup || !deps.signalAddMembers) {
-        logger.warn(
-          { sourceGroup },
-          'signal_add_group_members: Signal channel not available',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            'Signal is not configured — cannot add group members.',
-          );
-        }
-        break;
-      }
-      try {
-        const group = await deps.signalFindGroup(data.groupName);
-        if (!group) {
-          logger.warn(
-            { groupName: data.groupName },
-            'signal_add_group_members: group not found',
-          );
-          if (data.chatJid) {
-            await deps.sendMessage(
-              data.chatJid,
-              `No Signal group found matching "${data.groupName}".`,
-            );
-          }
-          break;
-        }
-        const resolvedAddMembers = await resolveMembers(
-          'signal',
-          data.members,
-          deps.resolveRecipientForChannel ||
-            (async (_channel, name) => deps.resolveRecipient(name)),
-        );
-        if (resolvedAddMembers.length === 0) {
-          logger.warn(
-            { members: data.members },
-            'signal_add_group_members: no members resolved',
-          );
-          if (data.chatJid) {
-            await deps.sendMessage(
-              data.chatJid,
-              `Could not resolve any of the specified members.`,
-            );
-          }
-          break;
-        }
-        await deps.signalAddMembers(group.id, resolvedAddMembers);
-        logger.info(
-          { groupName: group.name, groupId: group.id, members: data.members },
-          'Members added to Signal group via IPC',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Added ${data.members.length} member(s) to Signal group "${group.name}".`,
-          );
-        }
-      } catch (err) {
-        logger.error(
-          { err, groupName: data.groupName },
-          'Failed to add members to Signal group',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Failed to add members to group "${data.groupName}": ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
+      // Legacy pre-integration_tool handler. The modern path is the
+      // signal.add_group_members integration tool, which returns a JSON
+      // result via requestId and does NOT race the agent's final-text
+      // reply. This branch previously called deps.sendMessage(chatJid, …)
+      // during the same turn, producing duplicate user-facing messages.
+      // No current caller posts this message type; we keep the case label
+      // for telemetry only and log any unexpected hit.
+      logger.warn(
+        { sourceGroup, groupName: data.groupName },
+        'Legacy signal_add_group_members IPC ignored — use integration_tool dispatch',
+      );
       break;
 
     case 'signal_list_groups':
-      if (!deps.signalListGroups) {
-        if (data.requestId) {
-          writeIpcResponse(sourceGroup, data.requestId, {
-            error: 'Signal is not configured.',
-          });
-          break;
-        }
+      // requestId-only path (response written to a file for the agent to
+      // read back). The legacy non-requestId path used to auto-send a
+      // "Signal groups: …" line to chatJid during the tool turn, racing
+      // the agent's final-text reply.
+      if (!data.requestId) {
         logger.warn(
           { sourceGroup },
-          'signal_list_groups: Signal channel not available',
+          'Legacy signal_list_groups IPC without requestId ignored',
         );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            'Signal is not configured — cannot list groups.',
-          );
-        }
+        break;
+      }
+      if (!deps.signalListGroups) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'Signal is not configured.',
+        });
         break;
       }
       try {
         const groups = await deps.signalListGroups();
-        if (data.requestId) {
-          writeIpcResponse(sourceGroup, data.requestId, { groups });
-          break;
-        }
-        const summary =
-          groups.length === 0
-            ? 'No Signal groups found.'
-            : groups
-                .map(
-                  (g) =>
-                    `• ${g.name} (${g.members.length} members: ${g.members.join(', ')})`,
-                )
-                .join('\n');
-        if (data.chatJid) {
-          await deps.sendMessage(data.chatJid, `Signal groups:\n${summary}`);
-        }
+        writeIpcResponse(sourceGroup, data.requestId, { groups });
       } catch (err) {
         logger.error({ err }, 'Failed to list Signal groups');
-        if (data.requestId) {
-          writeIpcResponse(sourceGroup, data.requestId, {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          break;
-        }
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Failed to list groups: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       break;
 
     case 'signal_leave_group': {
-      const groupName = String(data.groupName || '').trim();
-      if (!groupName) {
-        logger.warn(
-          { data },
-          'Invalid signal_leave_group request - missing groupName',
-        );
-        break;
-      }
-      if (!deps.signalFindGroup || !deps.signalLeaveGroup) {
-        logger.warn(
-          { sourceGroup },
-          'signal_leave_group: Signal channel not available',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            'Signal is not configured — cannot leave group.',
-          );
-        }
-        break;
-      }
-      try {
-        const group = await deps.signalFindGroup(groupName);
-        if (!group) {
-          logger.warn({ groupName }, 'signal_leave_group: group not found');
-          if (data.chatJid) {
-            await deps.sendMessage(
-              data.chatJid,
-              `No Signal group found matching "${groupName}".`,
-            );
-          }
-          break;
-        }
-        await deps.signalLeaveGroup(group.id);
-        markIpcSideEffect(sourceGroup);
-        logger.info(
-          { groupName: group.name, groupId: group.id },
-          'Left Signal group via IPC',
-        );
-
-        // Unregister the group so NanoClaw stops polling for messages
-        const groupJid = `signal:group:${group.id}`;
-        if (deps.unregisterGroup) {
-          deps.unregisterGroup(groupJid);
-          logger.info({ jid: groupJid }, 'Unregistered group after leaving');
-        }
-
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Left Signal group "${group.name}".`,
-          );
-        }
-      } catch (err) {
-        logger.error({ err, groupName }, 'Failed to leave Signal group');
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Failed to leave group "${groupName}": ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
+      // Legacy pre-integration_tool handler. See signal_add_group_members.
+      logger.warn(
+        { sourceGroup, groupName: data.groupName },
+        'Legacy signal_leave_group IPC ignored — use integration_tool dispatch',
+      );
       break;
     }
 
     case 'signal_create_group':
-      if (!data.title || !data.members || data.members.length === 0) {
-        logger.warn(
-          { data },
-          'Invalid signal_create_group request - missing title or members',
-        );
-        break;
-      }
-      if (!deps.signalCreateGroup) {
-        logger.warn(
-          { sourceGroup },
-          'signal_create_group: Signal channel not available',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            'Signal is not configured — cannot create group.',
-          );
-        }
-        break;
-      }
-      try {
-        const resolvedCreateMembers = await resolveMembers(
-          'signal',
-          data.members,
-          deps.resolveRecipientForChannel ||
-            (async (_channel, name) => deps.resolveRecipient(name)),
-        );
-        if (resolvedCreateMembers.length === 0) {
-          logger.warn(
-            { members: data.members },
-            'signal_create_group: no members resolved',
-          );
-          if (data.chatJid) {
-            await deps.sendMessage(
-              data.chatJid,
-              `Could not resolve any of the specified members for group "${data.title}".`,
-            );
-          }
-          break;
-        }
-        const result = await deps.signalCreateGroup({
-          title: data.title,
-          members: resolvedCreateMembers,
-          message: data.message,
-        });
-        markIpcSideEffect(sourceGroup);
-        logger.info(
-          { title: result.title, jid: result.jid, members: data.members },
-          'Signal group created via IPC',
-        );
-
-        // Auto-register the new group so inbound messages get routed to the agent.
-        // Derive an isolated folder from the group title — do NOT reuse the
-        // source group's folder, otherwise messages would land in the wrong context.
-        const groupJid = result.jid.startsWith('signal:group:')
-          ? result.jid
-          : `signal:group:${result.jid}`;
-        const newGroupFolder = deriveGroupFolder(result.title);
-        deps.registerGroup(groupJid, {
-          name: result.title,
-          folder: newGroupFolder,
-          trigger: '',
-          added_at: new Date().toISOString(),
-          requiresTrigger: false,
-        });
-        logger.info(
-          { jid: groupJid, folder: newGroupFolder },
-          'Auto-registered Signal group created via IPC',
-        );
-
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Created Signal group "${result.title}".`,
-          );
-        }
-      } catch (err) {
-        logger.error(
-          { err, title: data.title },
-          'Failed to create Signal group',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Failed to create group "${data.title}": ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
+      // Legacy pre-integration_tool handler. See signal_add_group_members.
+      logger.warn(
+        { sourceGroup, title: data.title },
+        'Legacy signal_create_group IPC ignored — use integration_tool dispatch',
+      );
       break;
 
     case 'whatsapp_add_group_members':
-      if (!data.groupName || !data.members || data.members.length === 0) {
-        logger.warn(
-          { data },
-          'Invalid whatsapp_add_group_members request - missing groupName or members',
-        );
-        break;
-      }
-      if (
-        !deps.whatsappFindGroup ||
-        !deps.whatsappAddMembers ||
-        !deps.resolveRecipientForChannel
-      ) {
-        logger.warn(
-          { sourceGroup },
-          'whatsapp_add_group_members: WhatsApp channel not available',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            'WhatsApp is not configured — cannot add group members.',
-          );
-        }
-        break;
-      }
-      try {
-        const group = await deps.whatsappFindGroup(data.groupName);
-        if (!group) {
-          logger.warn(
-            { groupName: data.groupName },
-            'whatsapp_add_group_members: group not found',
-          );
-          if (data.chatJid) {
-            await deps.sendMessage(
-              data.chatJid,
-              `No WhatsApp group found matching "${data.groupName}".`,
-            );
-          }
-          break;
-        }
-        const resolvedAddMembers = await resolveMembers(
-          'whatsapp',
-          data.members,
-          deps.resolveRecipientForChannel,
-        );
-        if (resolvedAddMembers.length === 0) {
-          logger.warn(
-            { members: data.members },
-            'whatsapp_add_group_members: no members resolved',
-          );
-          if (data.chatJid) {
-            await deps.sendMessage(
-              data.chatJid,
-              'Could not resolve any of the specified members.',
-            );
-          }
-          break;
-        }
-        await deps.whatsappAddMembers(group.id, resolvedAddMembers);
-        logger.info(
-          { groupName: group.name, groupId: group.id, members: data.members },
-          'Members added to WhatsApp group via IPC',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Added ${data.members.length} member(s) to WhatsApp group "${group.name}".`,
-          );
-        }
-      } catch (err) {
-        logger.error(
-          { err, groupName: data.groupName },
-          'Failed to add members to WhatsApp group',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Failed to add members to group "${data.groupName}": ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
+      // Legacy pre-integration_tool handler. See signal_add_group_members.
+      logger.warn(
+        { sourceGroup, groupName: data.groupName },
+        'Legacy whatsapp_add_group_members IPC ignored — use integration_tool dispatch',
+      );
       break;
 
     case 'whatsapp_list_groups':
-      if (!deps.whatsappListGroups) {
-        if (data.requestId) {
-          writeIpcResponse(sourceGroup, data.requestId, {
-            error: 'WhatsApp is not configured.',
-          });
-          break;
-        }
+      // requestId-only path. See signal_list_groups.
+      if (!data.requestId) {
         logger.warn(
           { sourceGroup },
-          'whatsapp_list_groups: WhatsApp channel not available',
+          'Legacy whatsapp_list_groups IPC without requestId ignored',
         );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            'WhatsApp is not configured — cannot list groups.',
-          );
-        }
+        break;
+      }
+      if (!deps.whatsappListGroups) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'WhatsApp is not configured.',
+        });
         break;
       }
       try {
         const groups = await deps.whatsappListGroups();
-        if (data.requestId) {
-          writeIpcResponse(sourceGroup, data.requestId, { groups });
-          break;
-        }
-        const summary =
-          groups.length === 0
-            ? 'No WhatsApp groups found.'
-            : groups
-                .map(
-                  (g) =>
-                    `• ${g.name} (${g.members.length} members: ${g.members.join(', ')})`,
-                )
-                .join('\n');
-        if (data.chatJid) {
-          await deps.sendMessage(data.chatJid, `WhatsApp groups:\n${summary}`);
-        }
+        writeIpcResponse(sourceGroup, data.requestId, { groups });
       } catch (err) {
         logger.error({ err }, 'Failed to list WhatsApp groups');
-        if (data.requestId) {
-          writeIpcResponse(sourceGroup, data.requestId, {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          break;
-        }
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Failed to list groups: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       break;
 
     case 'whatsapp_leave_group': {
-      const groupName = String(data.groupName || '').trim();
-      if (!groupName) {
-        logger.warn(
-          { data },
-          'Invalid whatsapp_leave_group request - missing groupName',
-        );
-        break;
-      }
-      if (!deps.whatsappFindGroup || !deps.whatsappLeaveGroup) {
-        logger.warn(
-          { sourceGroup },
-          'whatsapp_leave_group: WhatsApp channel not available',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            'WhatsApp is not configured — cannot leave group.',
-          );
-        }
-        break;
-      }
-      try {
-        const group = await deps.whatsappFindGroup(groupName);
-        if (!group) {
-          logger.warn({ groupName }, 'whatsapp_leave_group: group not found');
-          if (data.chatJid) {
-            await deps.sendMessage(
-              data.chatJid,
-              `No WhatsApp group found matching "${groupName}".`,
-            );
-          }
-          break;
-        }
-        await deps.whatsappLeaveGroup(group.id);
-        markIpcSideEffect(sourceGroup);
-        logger.info(
-          { groupName: group.name, groupId: group.id },
-          'Left WhatsApp group via IPC',
-        );
-        if (deps.unregisterGroup) {
-          deps.unregisterGroup(group.id);
-          logger.info(
-            { jid: group.id },
-            'Unregistered WhatsApp group after leaving',
-          );
-        }
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Left WhatsApp group "${group.name}".`,
-          );
-        }
-      } catch (err) {
-        logger.error({ err, groupName }, 'Failed to leave WhatsApp group');
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Failed to leave group "${groupName}": ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
+      // Legacy pre-integration_tool handler. See signal_add_group_members.
+      logger.warn(
+        { sourceGroup, groupName: data.groupName },
+        'Legacy whatsapp_leave_group IPC ignored — use integration_tool dispatch',
+      );
       break;
     }
 
     case 'whatsapp_create_group':
-      if (!data.title || !data.members || data.members.length === 0) {
-        logger.warn(
-          { data },
-          'Invalid whatsapp_create_group request - missing title or members',
-        );
-        break;
-      }
-      if (!deps.whatsappCreateGroup || !deps.resolveRecipientForChannel) {
-        logger.warn(
-          { sourceGroup },
-          'whatsapp_create_group: WhatsApp channel not available',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            'WhatsApp is not configured — cannot create group.',
-          );
-        }
-        break;
-      }
-      try {
-        const resolvedCreateMembers = await resolveMembers(
-          'whatsapp',
-          data.members,
-          deps.resolveRecipientForChannel,
-        );
-        if (resolvedCreateMembers.length === 0) {
-          logger.warn(
-            { members: data.members },
-            'whatsapp_create_group: no members resolved',
-          );
-          if (data.chatJid) {
-            await deps.sendMessage(
-              data.chatJid,
-              `Could not resolve any of the specified members for group "${data.title}".`,
-            );
-          }
-          break;
-        }
-        const result = await deps.whatsappCreateGroup({
-          title: data.title,
-          members: resolvedCreateMembers,
-          message: data.message,
-        });
-        markIpcSideEffect(sourceGroup);
-        logger.info(
-          { title: result.title, jid: result.jid, members: data.members },
-          'WhatsApp group created via IPC',
-        );
-
-        const newGroupFolder = deriveGroupFolder(result.title);
-        deps.registerGroup(result.jid, {
-          name: result.title,
-          folder: newGroupFolder,
-          trigger: '',
-          added_at: new Date().toISOString(),
-          requiresTrigger: false,
-        });
-        logger.info(
-          { jid: result.jid, folder: newGroupFolder },
-          'Auto-registered WhatsApp group created via IPC',
-        );
-
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Created WhatsApp group "${result.title}".`,
-          );
-        }
-      } catch (err) {
-        logger.error(
-          { err, title: data.title },
-          'Failed to create WhatsApp group',
-        );
-        if (data.chatJid) {
-          await deps.sendMessage(
-            data.chatJid,
-            `Failed to create group "${data.title}": ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
+      // Legacy pre-integration_tool handler. See signal_add_group_members.
+      logger.warn(
+        { sourceGroup, title: data.title },
+        'Legacy whatsapp_create_group IPC ignored — use integration_tool dispatch',
+      );
       break;
 
     // ── Google Calendar tools (request-response IPC) ──────────────
