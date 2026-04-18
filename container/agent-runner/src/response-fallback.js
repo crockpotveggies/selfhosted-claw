@@ -1,10 +1,14 @@
-function getCurrentTurnMessages(history) {
+function getCurrentTurnStartIndex(history) {
     for (let i = history.length - 1; i >= 0; i--) {
         if (history[i]?.role === 'user') {
-            return history.slice(i + 1);
+            return i;
         }
     }
-    return history;
+    return 0;
+}
+function getCurrentTurnMessages(history, options = {}) {
+    const startIndex = getCurrentTurnStartIndex(history);
+    return history.slice(options.includeUser ? startIndex : startIndex + 1);
 }
 function parseSendRecipient(content) {
     if (!content)
@@ -56,6 +60,52 @@ function summariseToolError(toolName, error) {
     }
     return `I couldn't complete that request because ${error}`;
 }
+function formatRecoveryContent(content) {
+    if (!content)
+        return '(empty)';
+    return content.length <= 1200 ? content : `${content.slice(0, 1200)}...`;
+}
+export function buildSilentTurnRecoveryMessages(history) {
+    const currentTurn = getCurrentTurnMessages(history, { includeUser: true });
+    if (currentTurn.length === 0)
+        return null;
+    const lastUserMessage = [...currentTurn]
+        .reverse()
+        .find((message) => message.role === 'user');
+    if (!lastUserMessage?.content?.trim())
+        return null;
+    const toolMessages = currentTurn
+        .filter((message) => message.role === 'tool')
+        .slice(-8);
+    const assistantToolPlans = currentTurn
+        .filter((message) => message.role === 'assistant' && message.content && message.content.trim())
+        .slice(-3);
+    const transcript = [
+        `Original user request:\n${formatRecoveryContent(lastUserMessage.content)}`,
+        assistantToolPlans.length > 0
+            ? `Assistant partial replies this turn:\n${assistantToolPlans
+                .map((message) => `- ${formatRecoveryContent(message.content)}`)
+                .join('\n')}`
+            : '',
+        toolMessages.length > 0
+            ? `Tool results this turn:\n${toolMessages
+                .map((message) => `- ${message.name || 'tool'}: ${formatRecoveryContent(message.content)}`)
+                .join('\n')}`
+            : '',
+    ]
+        .filter(Boolean)
+        .join('\n\n');
+    return [
+        {
+            role: 'system',
+            content: 'Write the final user-facing reply for this NanoClaw turn. Tools have already run. Do not call tools. Do not mention internal model behavior, fallbacks, or that a normal reply was missing. If a send_message tool succeeded, confirm it naturally and concisely. If a tool failed, explain that plainly. Return only the final reply text.',
+        },
+        {
+            role: 'user',
+            content: `${transcript}\n\nNow write the final reply that should be sent to the user.`,
+        },
+    ];
+}
 export function buildSilentTurnFallback(history) {
     const currentTurn = getCurrentTurnMessages(history);
     const toolMessages = currentTurn.filter((message) => message.role === 'tool' && typeof message.name === 'string');
@@ -70,12 +120,12 @@ export function buildSilentTurnFallback(history) {
         const status = parseSendStatus(successfulSend.content);
         if (status === 'duplicate') {
             return recipient
-                ? `Done — that message had already been sent to ${recipient} recently, so I skipped sending it again.`
-                : `Done — that message had already been sent recently, so I skipped sending it again.`;
+                ? `Done - that message had already been sent to ${recipient} recently, so I skipped sending it again.`
+                : 'Done - that message had already been sent recently, so I skipped sending it again.';
         }
         return recipient
-            ? `Done — I sent the requested message to ${recipient}, but I didn't generate a normal confirmation reply.`
-            : `Done — I sent the requested message, but I didn't generate a normal confirmation reply.`;
+            ? `Done - I sent the requested message to ${recipient}.`
+            : 'Done - I sent the requested message.';
     }
     const lastUsefulToolError = [...toolMessages]
         .reverse()

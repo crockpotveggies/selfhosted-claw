@@ -95,11 +95,34 @@ export function getRunnerImageBuildCommand(): ControlPlaneServiceCommand {
   };
 }
 
+export function getRunnerListCommand(): ControlPlaneServiceCommand {
+  return {
+    command: 'docker',
+    args: [
+      'ps',
+      '--filter',
+      `name=${RUNNER_CONTAINER_PREFIX}`,
+      '--format',
+      '{{.Names}}',
+    ],
+  };
+}
+
 export function parseRunnerContainerNames(output: string): string[] {
   return output
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.startsWith(RUNNER_CONTAINER_PREFIX));
+}
+
+export function getRunnerStopCommand(
+  containerNames: string[],
+): ControlPlaneServiceCommand | null {
+  if (containerNames.length === 0) return null;
+  return {
+    command: 'docker',
+    args: ['stop', ...containerNames],
+  };
 }
 
 export function getRunnerLogCommand(
@@ -135,22 +158,24 @@ function pipePrefixedStream(
 }
 
 function listRunnerContainers(): string[] {
-  const output = execFileSync(
-    'docker',
-    [
-      'ps',
-      '--filter',
-      `name=${RUNNER_CONTAINER_PREFIX}`,
-      '--format',
-      '{{.Names}}',
-    ],
-    {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    },
-  );
+  const listCommand = getRunnerListCommand();
+  const output = execFileSync(listCommand.command, listCommand.args, {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true,
+  });
   return parseRunnerContainerNames(output);
+}
+
+function stopRunnerContainers(): void {
+  const runnerNames = listRunnerContainers();
+  const stopCommand = getRunnerStopCommand(runnerNames);
+  if (!stopCommand) return;
+
+  execFileSync(stopCommand.command, stopCommand.args, {
+    stdio: 'inherit',
+    windowsHide: true,
+  });
 }
 
 function followLogs(): void {
@@ -255,6 +280,10 @@ export function runControlPlaneServiceAction(
     stdio: 'inherit',
     windowsHide: true,
   });
+
+  if (action === 'stop') {
+    stopRunnerContainers();
+  }
 }
 
 function main(): void {

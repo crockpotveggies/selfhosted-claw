@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildSilentTurnFallback } from '../container/agent-runner/src/response-fallback.js';
+import {
+  buildSilentTurnFallback,
+  buildSilentTurnRecoveryMessages,
+} from '../container/agent-runner/src/response-fallback.js';
 
 describe('buildSilentTurnFallback', () => {
   it('asks for clearer contact details after lookup dead ends', () => {
@@ -34,6 +37,7 @@ describe('buildSilentTurnFallback', () => {
 
     expect(result).toContain('Done');
     expect(result).toContain('sms:+17788366073');
+    expect(result).not.toContain("didn't generate a normal confirmation reply");
   });
 
   it('acknowledges skipped duplicate sends without pretending to send again', () => {
@@ -64,11 +68,36 @@ describe('buildSilentTurnFallback', () => {
         role: 'tool',
         name: 'notify_controller',
         content:
-          'Already in the controller DM — put the message in your normal text response rather than calling notify_controller.',
+          'Already in the controller DM - put the message in your normal text response rather than calling notify_controller.',
       },
     ]);
 
     expect(result).toContain("couldn't access your calendar");
     expect(result).toContain('reconnect the calendar integration');
+  });
+});
+
+describe('buildSilentTurnRecoveryMessages', () => {
+  it('builds a recovery prompt from the current turn after a successful send', () => {
+    const messages = buildSilentTurnRecoveryMessages([
+      { role: 'user', content: 'Send Nikola the GitHub link' },
+      {
+        role: 'assistant',
+        content: 'I found Nikola in contacts and I am sending it now.',
+      },
+      {
+        role: 'tool',
+        name: 'sms_socket.send_message',
+        content:
+          '{"status":"sent","to":"sms:+16047228402","message":"Here is the link"}',
+      },
+      { role: 'assistant', content: null },
+    ]);
+
+    expect(messages).not.toBeNull();
+    expect(messages?.[0]?.content).toContain('Write the final user-facing reply');
+    expect(messages?.[1]?.content).toContain('Original user request');
+    expect(messages?.[1]?.content).toContain('sms_socket.send_message');
+    expect(messages?.[1]?.content).toContain('sms:+16047228402');
   });
 });

@@ -9,7 +9,10 @@ import { CronExpressionParser } from 'cron-parser';
 import { resolve as dnsResolve } from 'dns/promises';
 import fs from 'fs';
 import path from 'path';
-import { buildSilentTurnFallback } from './response-fallback.js';
+import {
+  buildSilentTurnFallback,
+  buildSilentTurnRecoveryMessages,
+} from './response-fallback.js';
 import { shouldForcePreflightCompaction } from './startup-utils.js';
 import { hasControllerAccess } from './tool-access.js';
 
@@ -997,6 +1000,27 @@ async function createPlainCompletion(
     }>;
   };
   return payload.choices?.[0]?.message?.content || '';
+}
+
+async function recoverSilentTurnReply(
+  history: OpenAIMessage[],
+): Promise<string | null> {
+  const recoveryMessages = buildSilentTurnRecoveryMessages(history);
+  if (!recoveryMessages) return null;
+
+  try {
+    const recovered = await createPlainCompletion(
+      recoveryMessages,
+      Math.min(OPENAI_MAX_TOKENS, 384),
+    );
+    const trimmed = recovered.trim();
+    return trimmed || null;
+  } catch (err) {
+    log(
+      `Silent-turn recovery failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
 }
 
 function writeIpcFile(dir: string, data: object): string {
@@ -2082,10 +2106,20 @@ async function runConversationTurn(
 
     if (response.toolCalls.length === 0) {
       const terminalText = response.content?.trim() || null;
-      const finalText = terminalText || buildSilentTurnFallback(workingHistory);
+      const recoveredText = terminalText
+        ? null
+        : await recoverSilentTurnReply(workingHistory);
+      const finalText =
+        terminalText ||
+        recoveredText ||
+        buildSilentTurnFallback(workingHistory);
       if (!terminalText) {
         assistantMessage.content = finalText;
-        log('Model returned an empty final response; synthesized a fallback reply');
+        log(
+          recoveredText
+            ? 'Model returned an empty final response; recovered a normal final reply'
+            : 'Model returned an empty final response; synthesized a fallback reply',
+        );
       }
       saveHistory(workingHistory);
       await archiveAndCompactHistory(systemPrompt);

@@ -8,7 +8,9 @@ import {
   ensureControlPlaneEnvFile,
   getControlPlaneServiceCommand,
   getRunnerImageBuildCommand,
+  getRunnerListCommand,
   getRunnerLogCommand,
+  getRunnerStopCommand,
   parseRunnerContainerNames,
 } from './control-plane-service.js';
 import { getControlPlaneStatePaths } from './control-plane-state.js';
@@ -96,6 +98,13 @@ describe('control plane compose service commands', () => {
     });
   });
 
+  it('lists active runner containers by prefix', () => {
+    expect(getRunnerListCommand()).toEqual({
+      command: 'docker',
+      args: ['ps', '--filter', 'name=nanoclaw-', '--format', '{{.Names}}'],
+    });
+  });
+
   it('extracts active runner container names from docker ps output', () => {
     expect(
       parseRunnerContainerNames(
@@ -107,6 +116,22 @@ describe('control plane compose service commands', () => {
         ].join('\n'),
       ),
     ).toEqual(['nanoclaw-main-123', 'nanoclaw-sms18337750707-456']);
+  });
+
+  it('builds a runner stop command when hot runners are active', () => {
+    expect(
+      getRunnerStopCommand([
+        'nanoclaw-main-123',
+        'nanoclaw-sms18337750707-456',
+      ]),
+    ).toEqual({
+      command: 'docker',
+      args: ['stop', 'nanoclaw-main-123', 'nanoclaw-sms18337750707-456'],
+    });
+  });
+
+  it('skips the runner stop command when no hot runners are active', () => {
+    expect(getRunnerStopCommand([])).toBeNull();
   });
 
   it('exposes a cleanup-state utility action', () => {
