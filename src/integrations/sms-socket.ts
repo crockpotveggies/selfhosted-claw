@@ -26,8 +26,11 @@ const API_KEY_SETTING = 'SMS_SOCKET_API_KEY';
 const DEFAULT_GATEWAY_URL = 'ws://127.0.0.1:8787/';
 const DEFAULT_REHYDRATE_LIMIT = 200;
 const REQUEST_TIMEOUT_MS = 10_000;
+const AGENT_SMS_DEDUP_WINDOW_MS = 30_000;
+const RECONNECT_DELAY_MS = 3_000;
 
 const log = createChildLogger({ integration: INTEGRATION_NAME });
+const recentAgentSmsSends = new Map<string, number>();
 
 interface SmsSocketEnvelope {
   id?: string;
@@ -120,6 +123,27 @@ function messageKeyFor(
   const body = String(payload.body || '').trim();
   const messageId = String(payload.messageId || payload.id || '').trim();
   return [type, messageId || address, timestamp, body].join('|');
+}
+
+function consumeRecentAgentSmsSend(
+  jid: string,
+  text: string,
+): 'fresh' | 'duplicate' {
+  const now = Date.now();
+  const key = `${jid}\0${text}`;
+  const previous = recentAgentSmsSends.get(key);
+  if (previous && now - previous < AGENT_SMS_DEDUP_WINDOW_MS) {
+    return 'duplicate';
+  }
+  recentAgentSmsSends.set(key, now);
+  if (recentAgentSmsSends.size > 512) {
+    for (const [candidate, ts] of recentAgentSmsSends) {
+      if (now - ts > AGENT_SMS_DEDUP_WINDOW_MS) {
+        recentAgentSmsSends.delete(candidate);
+      }
+    }
+  }
+  return 'fresh';
 }
 
 export class SmsSocketChannel implements Channel {
@@ -244,13 +268,17 @@ export class SmsSocketChannel implements Channel {
 
     this.stopped = false;
     const generation = this.connectionGeneration;
-    const promise = this.openSocket(generation).finally(() => {
-      if (this.connectPromise === promise) {
+    const attempt = this.openSocket(generation);
+    void attempt.catch(() => {
+      // Ensure background reconnect attempts never surface as unhandled rejections.
+    });
+    const trackedPromise = attempt.finally(() => {
+      if (this.connectPromise === trackedPromise) {
         this.connectPromise = null;
       }
     });
-    this.connectPromise = promise;
-    await promise;
+    this.connectPromise = trackedPromise;
+    await trackedPromise;
   }
 
   private async openSocket(generation: number): Promise<void> {
@@ -263,6 +291,7 @@ export class SmsSocketChannel implements Channel {
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
+      let ready = false;
       const socket = new WebSocket(wsUrl);
       this.socket = socket;
 
@@ -291,6 +320,7 @@ export class SmsSocketChannel implements Channel {
           };
           this.connected = true;
           await this.rehydrateHistory(socket);
+          ready = true;
           settled = true;
           resolve();
         } catch (error) {
@@ -332,7 +362,11 @@ export class SmsSocketChannel implements Channel {
             ),
           );
         }
-        if (!this.stopped && generation === this.connectionGeneration) {
+        if (
+          ready &&
+          !this.stopped &&
+          generation === this.connectionGeneration
+        ) {
           this.scheduleReconnect();
         }
       };
@@ -347,7 +381,7 @@ export class SmsSocketChannel implements Channel {
         log.warn({ err: String(error) }, 'SMS Socket reconnect failed');
         this.scheduleReconnect();
       });
-    }, 3000);
+    }, RECONNECT_DELAY_MS);
   }
 
   private async rehydrateHistory(socket: WebSocket): Promise<void> {
@@ -755,6 +789,10 @@ const smsSocketIntegration: IntegrationDefinition = {
         const jid = to.startsWith('sms:')
           ? to
           : await channel.resolveRecipient(to);
+        if (consumeRecentAgentSmsSend(jid, text) === 'duplicate') {
+          log.warn({ jid }, 'Suppressed duplicate agent SMS send');
+          return JSON.stringify({ status: 'duplicate', to: jid });
+        }
         await channel.sendMessage(jid, text);
         return JSON.stringify({ status: 'sent', to: jid });
       },
@@ -784,6 +822,10 @@ const smsSocketIntegration: IntegrationDefinition = {
         );
         if (!channel?.sendMessage) {
           throw new Error('SMS Socket channel is not connected');
+        }
+        if (consumeRecentAgentSmsSend(ctx.chatJid, text) === 'duplicate') {
+          log.warn({ jid: ctx.chatJid }, 'Suppressed duplicate agent SMS reply');
+          return JSON.stringify({ status: 'duplicate', to: ctx.chatJid });
         }
         await channel.sendMessage(ctx.chatJid, text);
         return JSON.stringify({ status: 'sent', to: ctx.chatJid });

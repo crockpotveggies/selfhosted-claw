@@ -80,9 +80,22 @@ export interface CalendarAvailabilitySettings {
   updatedAt: string;
 }
 
+export interface ToolAccessRule {
+  enabled?: boolean;
+  controllerOnly?: boolean;
+}
+
+export interface ToolAccessPolicy {
+  internalToolsEnabled: boolean;
+  externalToolsEnabled: boolean;
+  tools: Record<string, ToolAccessRule>;
+  updatedAt: string;
+}
+
 export interface ControlPolicy {
   pausedProviders: string[];
   calendarAvailability?: CalendarAvailabilitySettings;
+  toolAccess?: ToolAccessPolicy;
   updatedAt: string;
 }
 

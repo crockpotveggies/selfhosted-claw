@@ -9,6 +9,7 @@ import { CronExpressionParser } from 'cron-parser';
 import { resolve as dnsResolve } from 'dns/promises';
 import fs from 'fs';
 import path from 'path';
+import { buildSilentTurnFallback } from './response-fallback.js';
 import { shouldForcePreflightCompaction } from './startup-utils.js';
 import { hasControllerAccess } from './tool-access.js';
 
@@ -290,39 +291,6 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
-/**
- * Strip private details from calendar_list_events results, keeping only
- * start/end times and a "busy" marker.  Used when external people can see
- * the agent's response to prevent leaking event titles, descriptions,
- * attendees, and locations.
- */
-function stripCalendarEventDetails(result: unknown): unknown {
-  if (!result || typeof result !== 'object') return result;
-  const obj = result as Record<string, unknown>;
-  // Google Calendar API returns { items: [...] }
-  if (Array.isArray(obj.items)) {
-    return {
-      ...obj,
-      items: (obj.items as Record<string, unknown>[]).map((event) => ({
-        start: event.start,
-        end: event.end,
-        status: event.status || 'confirmed',
-        summary: '(busy)',
-      })),
-    };
-  }
-  // If it's a flat array of events
-  if (Array.isArray(result)) {
-    return (result as Record<string, unknown>[]).map((event) => ({
-      start: event.start,
-      end: event.end,
-      status: event.status || 'confirmed',
-      summary: '(busy)',
-    }));
-  }
-  return result;
-}
-
 function truncate(text: string, maxChars: number = MAX_TOOL_OUTPUT_CHARS): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} chars]`;
@@ -359,31 +327,6 @@ function htmlToText(html: string): string {
     .replace(/\n[ \t]+/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-}
-
-/** Normalize a value that should be a string array but may arrive as a
- *  JSON-encoded string (common with local models that stringify arrays
- *  inside tool call arguments). Returns undefined if the value is falsy. */
-function normalizeStringArray(value: unknown): string[] | undefined {
-  if (!value) return undefined;
-  if (Array.isArray(value)) return value.map((e: unknown) => String(e));
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (trimmed.startsWith('[')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (Array.isArray(parsed)) return parsed.map((e: unknown) => String(e));
-      } catch {
-        // Not valid JSON array — treat as single-element value
-      }
-    }
-    // Single email or comma-separated list
-    if (trimmed.includes(',')) {
-      return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
-    }
-    if (trimmed.includes('@')) return [trimmed];
-  }
-  return undefined;
 }
 
 async function readStdin(): Promise<string> {
@@ -1832,550 +1775,7 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
       return `Group "${String(args.name)}" registration requested.`;
     },
   },
-  signal_add_group_members: {
-    controllerOnly: true,
-    description:
-      'Add one or more people to an existing Signal group. Members can be phone numbers (e.g. +15551234567) or Signal UUIDs.',
-    parameters: {
-      type: 'object',
-      properties: {
-        group_name: {
-          type: 'string',
-          description: 'The name of the Signal group to add members to.',
-        },
-        members: {
-          type: 'array',
-          items: { type: 'string' },
-          description:
-            'List of members to add. Each can be a phone number (with country code, e.g. +15551234567) or a Signal UUID.',
-        },
-      },
-      required: ['group_name', 'members'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const groupName = String(args.group_name || '').trim();
-      if (!groupName) throw new Error('group_name is required');
-      const members = Array.isArray(args.members) ? args.members : [];
-      if (members.length === 0) throw new Error('At least one member is required');
-      writeIpcFile(TASKS_DIR, {
-        type: 'signal_add_group_members',
-        groupName,
-        members: members.map((m: unknown) => String(m).trim()),
-        chatJid: ctx.containerInput.chatJid,
-        groupFolder: ctx.containerInput.groupFolder,
-        isMain: ctx.containerInput.isMain,
-        timestamp: new Date().toISOString(),
-      });
-      return `Request to add ${members.length} member(s) to Signal group "${groupName}" submitted. The host will resolve the group and add the members.`;
-    },
-  },
-  signal_leave_group: {
-    controllerOnly: true,
-    description:
-      'Leave a Signal group. The agent will no longer receive or respond to messages in that group.',
-    parameters: {
-      type: 'object',
-      properties: {
-        group_name: {
-          type: 'string',
-          description: 'The name of the Signal group to leave.',
-        },
-      },
-      required: ['group_name'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const groupName = String(args.group_name || '').trim();
-      if (!groupName) throw new Error('group_name is required');
-      writeIpcFile(TASKS_DIR, {
-        type: 'signal_leave_group',
-        groupName,
-        chatJid: ctx.containerInput.chatJid,
-        groupFolder: ctx.containerInput.groupFolder,
-        timestamp: new Date().toISOString(),
-      });
-      return `Request to leave Signal group "${groupName}" submitted.`;
-    },
-  },
-  signal_list_groups: {
-    controllerOnly: true,
-    description:
-      'List all Signal groups with their names and members. Use this to discover existing groups before sending messages or adding members.',
-    parameters: {
-      type: 'object',
-      properties: {},
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      writeIpcFile(TASKS_DIR, {
-        type: 'signal_list_groups',
-        chatJid: ctx.containerInput.chatJid,
-        groupFolder: ctx.containerInput.groupFolder,
-        timestamp: new Date().toISOString(),
-      });
-      return 'Group list requested. Results will be sent to the chat.';
-    },
-  },
-  signal_create_group: {
-    controllerOnly: true,
-    description:
-      'Create a new Signal group with the specified members and send an initial message.',
-    parameters: {
-      type: 'object',
-      properties: {
-        title: {
-          type: 'string',
-          description:
-            'A short, descriptive name for the group (e.g. "Monday Lunch with Elyssa"). Required — never leave blank.',
-        },
-        members: {
-          type: 'array',
-          items: { type: 'string' },
-          description:
-            'List of members to add. Each can be a phone number (with country code, e.g. +15551234567) or a person\'s name.',
-        },
-        message: {
-          type: 'string',
-          description: 'The first message to send to the group after creation.',
-        },
-      },
-      required: ['title', 'members'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const title = String(args.title || '').trim();
-      if (!title) throw new Error('A descriptive group title is required');
-      const members = Array.isArray(args.members) ? args.members : [];
-      if (members.length === 0) throw new Error('At least one member is required');
-      writeIpcFile(TASKS_DIR, {
-        type: 'signal_create_group',
-        title,
-        members: members.map((m: unknown) => String(m).trim()),
-        message: typeof args.message === 'string' ? String(args.message).trim() : undefined,
-        chatJid: ctx.containerInput.chatJid,
-        groupFolder: ctx.containerInput.groupFolder,
-        timestamp: new Date().toISOString(),
-      });
-      return `Request to create Signal group "${title}" submitted.`;
-    },
-  },
-  whatsapp_add_group_members: {
-    controllerOnly: true,
-    description:
-      'Add one or more people to an existing WhatsApp group. Members can be phone numbers or WhatsApp JIDs.',
-    parameters: {
-      type: 'object',
-      properties: {
-        group_name: {
-          type: 'string',
-          description: 'The name of the WhatsApp group to add members to.',
-        },
-        members: {
-          type: 'array',
-          items: { type: 'string' },
-          description:
-            'People to add, as names, phone numbers, or WhatsApp JIDs.',
-        },
-      },
-      required: ['group_name', 'members'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const groupName = String(args.group_name || '').trim();
-      if (!groupName) throw new Error('group_name is required');
-      const members = Array.isArray(args.members) ? args.members : [];
-      if (members.length === 0) throw new Error('At least one member is required');
-      writeIpcFile(TASKS_DIR, {
-        type: 'whatsapp_add_group_members',
-        groupName,
-        members: members.map((m: unknown) => String(m).trim()),
-        chatJid: ctx.containerInput.chatJid,
-        groupFolder: ctx.containerInput.groupFolder,
-        isMain: ctx.containerInput.isMain,
-        timestamp: new Date().toISOString(),
-      });
-      return `Request to add ${members.length} member(s) to WhatsApp group "${groupName}" submitted.`;
-    },
-  },
-  whatsapp_leave_group: {
-    controllerOnly: true,
-    description:
-      'Leave a WhatsApp group. The agent will no longer receive or respond to messages in that group.',
-    parameters: {
-      type: 'object',
-      properties: {
-        group_name: {
-          type: 'string',
-          description: 'The name of the WhatsApp group to leave.',
-        },
-      },
-      required: ['group_name'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const groupName = String(args.group_name || '').trim();
-      if (!groupName) throw new Error('group_name is required');
-      writeIpcFile(TASKS_DIR, {
-        type: 'whatsapp_leave_group',
-        groupName,
-        chatJid: ctx.containerInput.chatJid,
-        groupFolder: ctx.containerInput.groupFolder,
-        timestamp: new Date().toISOString(),
-      });
-      return `Request to leave WhatsApp group "${groupName}" submitted.`;
-    },
-  },
-  whatsapp_list_groups: {
-    controllerOnly: true,
-    description:
-      'List all WhatsApp groups with their exact group IDs/JIDs, names, and members. Use this before messaging or modifying a WhatsApp group.',
-    parameters: {
-      type: 'object',
-      properties: {},
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const requestId = `wa-groups-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const result = await writeIpcTaskAndWaitForResponse(
-        {
-          type: 'whatsapp_list_groups',
-          chatJid: ctx.containerInput.chatJid,
-          groupFolder: ctx.containerInput.groupFolder,
-          timestamp: new Date().toISOString(),
-        },
-        requestId,
-      );
-      return truncate(JSON.stringify(result, null, 2));
-    },
-  },
-  whatsapp_create_group: {
-    controllerOnly: true,
-    description:
-      'Create a new WhatsApp group with the specified members and optionally send an initial message.',
-    parameters: {
-      type: 'object',
-      properties: {
-        title: {
-          type: 'string',
-          description:
-            'A short, descriptive name for the group. Required — never leave blank.',
-        },
-        members: {
-          type: 'array',
-          items: { type: 'string' },
-          description:
-            'People to add to the group, as names, phone numbers, or WhatsApp JIDs.',
-        },
-        message: {
-          type: 'string',
-          description:
-            'Optional first message to post in the group after it is created.',
-        },
-      },
-      required: ['title', 'members'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const title = String(args.title || '').trim();
-      if (!title) throw new Error('A descriptive group title is required');
-      const members = Array.isArray(args.members) ? args.members : [];
-      if (members.length === 0) throw new Error('At least one member is required');
-      writeIpcFile(TASKS_DIR, {
-        type: 'whatsapp_create_group',
-        title,
-        members: members.map((m: unknown) => String(m).trim()),
-        message: typeof args.message === 'string' ? String(args.message).trim() : undefined,
-        chatJid: ctx.containerInput.chatJid,
-        groupFolder: ctx.containerInput.groupFolder,
-        timestamp: new Date().toISOString(),
-      });
-      return `Request to create WhatsApp group "${title}" submitted.`;
-    },
-  },
   // ── Google Calendar tools (request-response IPC) ─────────────────
-  calendar_list_events: {
-    controllerOnly: true,
-    description:
-      'List Google Calendar events in a time range. Returns event summaries, times, and attendees.',
-    parameters: {
-      type: 'object',
-      properties: {
-        time_min: {
-          type: 'string',
-          description: 'Start of time range (ISO 8601, e.g. "2026-04-07T09:00:00-04:00")',
-        },
-        time_max: {
-          type: 'string',
-          description: 'End of time range (ISO 8601)',
-        },
-        calendar_id: {
-          type: 'string',
-          description: 'Calendar ID (default: "primary")',
-        },
-        max_results: {
-          type: 'integer',
-          description: 'Maximum number of events to return (default: 25)',
-        },
-        query: {
-          type: 'string',
-          description: 'Free-text search filter',
-        },
-      },
-      required: ['time_min', 'time_max'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const result = await writeIpcTaskAndWaitForResponse(
-        {
-          type: 'calendar_list_events',
-          calendarId: String(args.calendar_id || 'primary'),
-          timeMin: String(args.time_min),
-          timeMax: String(args.time_max),
-          maxResults: Number(args.max_results) || 25,
-          query: args.query ? String(args.query) : undefined,
-          groupFolder: ctx.containerInput.groupFolder,
-        },
-        requestId,
-      );
-      // When external people can see the response, strip event details
-      // (titles, descriptions, attendees, locations) so the LLM can only
-      // share free/busy time blocks.  The controller gets full details.
-      if (!ctx.containerInput.isMain) {
-        const stripped = stripCalendarEventDetails(result);
-        return truncate(JSON.stringify(stripped, null, 2));
-      }
-      return truncate(JSON.stringify(result, null, 2));
-    },
-  },
-  calendar_check_availability: {
-    description:
-      'Check free/busy availability on one or more Google Calendars for a time range. Returns busy time blocks (no event details).',
-    parameters: {
-      type: 'object',
-      properties: {
-        time_min: {
-          type: 'string',
-          description: 'Start of time range (ISO 8601)',
-        },
-        time_max: {
-          type: 'string',
-          description: 'End of time range (ISO 8601)',
-        },
-        calendar_ids: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Calendar IDs to check (default: ["primary"])',
-        },
-      },
-      required: ['time_min', 'time_max'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const result = await writeIpcTaskAndWaitForResponse(
-        {
-          type: 'calendar_check_availability',
-          timeMin: String(args.time_min),
-          timeMax: String(args.time_max),
-          calendarIds: Array.isArray(args.calendar_ids)
-            ? args.calendar_ids.map((id: unknown) => String(id))
-            : ['primary'],
-          groupFolder: ctx.containerInput.groupFolder,
-        },
-        requestId,
-      );
-      return truncate(JSON.stringify(result, null, 2));
-    },
-  },
-  calendar_get_event: {
-    controllerOnly: true,
-    description: 'Get details of a specific Google Calendar event by its ID.',
-    parameters: {
-      type: 'object',
-      properties: {
-        event_id: {
-          type: 'string',
-          description: 'The event ID',
-        },
-        calendar_id: {
-          type: 'string',
-          description: 'Calendar ID (default: "primary")',
-        },
-      },
-      required: ['event_id'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const result = await writeIpcTaskAndWaitForResponse(
-        {
-          type: 'calendar_get_event',
-          calendarId: String(args.calendar_id || 'primary'),
-          eventId: String(args.event_id),
-          groupFolder: ctx.containerInput.groupFolder,
-        },
-        requestId,
-      );
-      return truncate(JSON.stringify(result, null, 2));
-    },
-  },
-  calendar_create_event: {
-    controllerOnly: true,
-    description:
-      'Create a Google Calendar event. Attendees receive email invites automatically.',
-    parameters: {
-      type: 'object',
-      properties: {
-        summary: {
-          type: 'string',
-          description: 'Event title (e.g. "Lunch with Elyssa")',
-        },
-        start: {
-          type: 'string',
-          description: 'Start time (ISO 8601, e.g. "2026-04-07T12:30:00-04:00")',
-        },
-        end: {
-          type: 'string',
-          description: 'End time (ISO 8601)',
-        },
-        description: {
-          type: 'string',
-          description: 'Event description / notes',
-        },
-        location: {
-          type: 'string',
-          description: 'Event location',
-        },
-        attendees: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Email addresses of attendees',
-        },
-        calendar_id: {
-          type: 'string',
-          description: 'Calendar ID (default: "primary")',
-        },
-      },
-      required: ['summary', 'start', 'end'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const result = await writeIpcTaskAndWaitForResponse(
-        {
-          type: 'calendar_create_event',
-          calendarId: String(args.calendar_id || 'primary'),
-          summary: String(args.summary),
-          start: String(args.start),
-          end: String(args.end),
-          description: args.description ? String(args.description) : undefined,
-          location: args.location ? String(args.location) : undefined,
-          attendees: normalizeStringArray(args.attendees),
-          groupFolder: ctx.containerInput.groupFolder,
-        },
-        requestId,
-      );
-      return truncate(JSON.stringify(result, null, 2));
-    },
-  },
-  calendar_update_event: {
-    controllerOnly: true,
-    description:
-      'Update an existing Google Calendar event. Only specify fields you want to change.',
-    parameters: {
-      type: 'object',
-      properties: {
-        event_id: {
-          type: 'string',
-          description: 'The event ID to update',
-        },
-        summary: {
-          type: 'string',
-          description: 'New event title',
-        },
-        start: {
-          type: 'string',
-          description: 'New start time (ISO 8601)',
-        },
-        end: {
-          type: 'string',
-          description: 'New end time (ISO 8601)',
-        },
-        description: {
-          type: 'string',
-          description: 'New event description',
-        },
-        location: {
-          type: 'string',
-          description: 'New event location',
-        },
-        attendees: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Updated list of attendee email addresses (replaces existing list)',
-        },
-        calendar_id: {
-          type: 'string',
-          description: 'Calendar ID (default: "primary")',
-        },
-      },
-      required: ['event_id'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const result = await writeIpcTaskAndWaitForResponse(
-        {
-          type: 'calendar_update_event',
-          calendarId: String(args.calendar_id || 'primary'),
-          eventId: String(args.event_id),
-          summary: args.summary ? String(args.summary) : undefined,
-          start: args.start ? String(args.start) : undefined,
-          end: args.end ? String(args.end) : undefined,
-          description: args.description !== undefined ? String(args.description) : undefined,
-          location: args.location !== undefined ? String(args.location) : undefined,
-          attendees: normalizeStringArray(args.attendees),
-          groupFolder: ctx.containerInput.groupFolder,
-        },
-        requestId,
-      );
-      return truncate(JSON.stringify(result, null, 2));
-    },
-  },
-  calendar_delete_event: {
-    controllerOnly: true,
-    description: 'Delete (cancel) a Google Calendar event.',
-    parameters: {
-      type: 'object',
-      properties: {
-        event_id: {
-          type: 'string',
-          description: 'The event ID to delete',
-        },
-        calendar_id: {
-          type: 'string',
-          description: 'Calendar ID (default: "primary")',
-        },
-      },
-      required: ['event_id'],
-      additionalProperties: false,
-    },
-    execute: async (args, ctx) => {
-      const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const result = await writeIpcTaskAndWaitForResponse(
-        {
-          type: 'calendar_delete_event',
-          calendarId: String(args.calendar_id || 'primary'),
-          eventId: String(args.event_id),
-          groupFolder: ctx.containerInput.groupFolder,
-        },
-        requestId,
-      );
-      return truncate(JSON.stringify(result, null, 2));
-    },
-  },
   delegate_task: {
     description:
       'Run a focused nested model call for a bounded research or drafting subtask.',
@@ -2417,6 +1817,31 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
 // ---------------------------------------------------------------------------
 
 let loadedIntegrationManifestSignature: string | null = null;
+let allowedToolNames: Set<string> | null = null;
+
+function loadAllowedToolNames(): void {
+  const policyPath = path.join(IPC_DIR, 'allowed_tools.json');
+  if (!fs.existsSync(policyPath)) {
+    allowedToolNames = null;
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(policyPath, 'utf-8')) as {
+      allowedToolNames?: unknown;
+    };
+    allowedToolNames = new Set(
+      Array.isArray(parsed.allowedToolNames)
+        ? parsed.allowedToolNames
+            .map((name) => String(name))
+            .filter(Boolean)
+        : [],
+    );
+  } catch (err) {
+    log(`Failed to load allowed tools policy: ${err}`);
+    allowedToolNames = null;
+  }
+}
 
 function loadIntegrationTools(): void {
   const manifestPath = path.join(IPC_DIR, 'integration_tools.json');
@@ -2483,9 +1908,14 @@ function loadIntegrationTools(): void {
 function buildOpenAITools(
   controllerAccess: boolean,
 ): Array<Record<string, unknown>> {
+  if (allowedToolNames === null) {
+    loadAllowedToolNames();
+  }
   return Object.entries(TOOL_REGISTRY)
     .filter(
-      ([, spec]) => !spec.controllerOnly || controllerAccess,
+      ([name, spec]) =>
+        (!spec.controllerOnly || controllerAccess) &&
+        (!allowedToolNames || allowedToolNames.has(name)),
     )
     .map(([name, spec]) => ({
       type: 'function',
@@ -2522,6 +1952,14 @@ async function executeToolCall(
       name: toolName,
       tool_call_id: call.id,
       content: 'This tool is not available in the current context.',
+    };
+  }
+  if (allowedToolNames && !allowedToolNames.has(toolName)) {
+    return {
+      role: 'tool',
+      name: toolName,
+      tool_call_id: call.id,
+      content: 'This tool is disabled in the current context.',
     };
   }
 
@@ -2583,6 +2021,7 @@ async function runConversationTurn(
   systemPrompt: string,
 ): Promise<string | null> {
   loadIntegrationTools();
+  loadAllowedToolNames();
   const history = loadHistory();
   const workingHistory: OpenAIMessage[] = [...history, { role: 'user', content: prompt }];
   const ctx: ToolContext = { containerInput };
@@ -2642,9 +2081,15 @@ async function runConversationTurn(
     workingHistory.push(assistantMessage);
 
     if (response.toolCalls.length === 0) {
+      const terminalText = response.content?.trim() || null;
+      const finalText = terminalText || buildSilentTurnFallback(workingHistory);
+      if (!terminalText) {
+        assistantMessage.content = finalText;
+        log('Model returned an empty final response; synthesized a fallback reply');
+      }
       saveHistory(workingHistory);
       await archiveAndCompactHistory(systemPrompt);
-      return response.content?.trim() || null;
+      return finalText;
     }
 
     for (const toolCall of response.toolCalls) {
@@ -2738,7 +2183,16 @@ async function main(): Promise<void> {
   let prompt = containerInput.prompt;
 
   if (containerInput.isScheduledTask) {
-    prompt = `[SCHEDULED TASK]\n\n${prompt}`;
+    prompt = [
+      '[SCHEDULED TASK]',
+      '',
+      `This task is already bound to the current conversation destination: ${containerInput.chatJid}.`,
+      'Your normal final response will be delivered to that exact chat automatically.',
+      'Do NOT use channel-specific send_message tools just to deliver the task result to the intended recipient.',
+      'Only use an outbound send tool if the task explicitly requires sending an additional separate message to someone else beyond the bound task destination.',
+      '',
+      prompt,
+    ].join('\n');
   }
 
   // Guard: if history is too large to fit in the context window, force-compact

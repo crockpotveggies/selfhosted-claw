@@ -4,6 +4,8 @@ import {
   buildSetupChecks,
   buildSignalReachabilityProbeUrl,
   isAllowedAdminRemoteAddress,
+  normalizeToolAccessPolicyUpdate,
+  normalizeTaskPromptUpdate,
   requiresAdminAuth,
 } from './admin-server.js';
 
@@ -63,5 +65,33 @@ describe('isAllowedAdminRemoteAddress', () => {
     expect(url.toString()).toBe(
       'http://host.docker.internal:8073/v1/groups/%2B12369995414',
     );
+  });
+
+  it('accepts non-empty task prompt updates and rejects blank ones', () => {
+    expect(normalizeTaskPromptUpdate({ prompt: '  update this task  ' })).toBe(
+      'update this task',
+    );
+    expect(normalizeTaskPromptUpdate({ prompt: '   ' })).toBeNull();
+    expect(normalizeTaskPromptUpdate({})).toBeNull();
+    expect(normalizeTaskPromptUpdate(null)).toBeNull();
+  });
+
+  it('normalizes tool access policy updates with sane defaults', () => {
+    expect(
+      normalizeToolAccessPolicyUpdate({
+        internalToolsEnabled: false,
+        tools: {
+          web_search: { enabled: false },
+          schedule_task: { controllerOnly: true },
+        },
+      }),
+    ).toMatchObject({
+      internalToolsEnabled: false,
+      externalToolsEnabled: true,
+      tools: {
+        web_search: { enabled: false },
+        schedule_task: { controllerOnly: true },
+      },
+    });
   });
 });

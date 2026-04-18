@@ -75,6 +75,9 @@ describe('task scheduler runtime permissions', () => {
       'calendar-group',
       false,
       true,
+      {
+        scheduledTaskMode: true,
+      },
     );
     expect(runContainerAgent).toHaveBeenCalledWith(
       group,

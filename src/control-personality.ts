@@ -38,14 +38,42 @@ export function resolveProfile(
   scope: PersonalityScope,
   profiles: Record<string, PersonalityProfile>,
 ): PersonalityProfile {
+  const globalProfile = profiles.global || getDefaultProfile('global');
   if (scope.startsWith('group:')) {
     const groupProfile = profiles[scope];
-    if (groupProfile) return groupProfile;
+    return groupProfile
+      ? {
+          ...globalProfile,
+          ...groupProfile,
+          scope,
+        }
+      : {
+          ...globalProfile,
+          scope,
+        };
   }
   if (scope === 'main') {
-    return profiles.main || getDefaultProfile('main');
+    const mainDefaults = getDefaultProfile('main');
+    const explicitMain = profiles.main || {};
+    const {
+      role: explicitRole,
+      initiative: explicitInitiative,
+      ...explicitMainRest
+    } = explicitMain;
+    return {
+      ...getDefaultProfile('global'),
+      ...globalProfile,
+      ...explicitMainRest,
+      role: explicitRole || mainDefaults.role,
+      initiative: explicitInitiative || mainDefaults.initiative,
+      scope: 'main',
+    };
   }
-  return profiles.global || getDefaultProfile('global');
+  return {
+    ...getDefaultProfile('global'),
+    ...globalProfile,
+    scope: 'global',
+  };
 }
 
 export function renderManagedPersonality(profile: PersonalityProfile): string {
@@ -137,6 +165,28 @@ export function writePersonalityProfile(profile: PersonalityProfile): string {
   const next = applyManagedPersonality(existing, profile);
   fs.writeFileSync(targetPath, next);
   return targetPath;
+}
+
+export function syncPersonalityFiles(
+  profiles: Record<string, PersonalityProfile>,
+  changedScope: PersonalityScope,
+): string[] {
+  const scopes = new Set<PersonalityScope>(['global', 'main']);
+  scopes.add(changedScope);
+
+  if (changedScope === 'global') {
+    for (const scope of Object.keys(profiles)) {
+      const normalized = scope as PersonalityScope;
+      if (normalized !== 'global') scopes.add(normalized);
+    }
+  }
+
+  const written: string[] = [];
+  for (const scope of scopes) {
+    const resolved = resolveProfile(scope, profiles);
+    written.push(writePersonalityProfile(resolved));
+  }
+  return written;
 }
 
 export function previewPersonalityProfile(

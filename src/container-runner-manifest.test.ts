@@ -1,8 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'path';
 
 const { mkdirSync, writeFileSync } = vi.hoisted(() => ({
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
+}));
+
+const { buildSessionToolRegistrySnapshot } = vi.hoisted(() => ({
+  buildSessionToolRegistrySnapshot: vi.fn(),
 }));
 
 vi.mock('fs', async () => {
@@ -23,32 +28,8 @@ vi.mock('./group-folder.js', () => ({
   resolveGroupFolderPath: (groupFolder: string) => `/tmp/groups/${groupFolder}`,
 }));
 
-vi.mock('./integrations/settings-store.js', () => ({
-  isIntegrationEnabled: vi.fn(() => true),
-}));
-
-vi.mock('./integrations/registry.js', () => ({
-  getRegisteredIntegrations: vi.fn(() => [
-    {
-      name: 'google-calendar',
-      tools: [
-        {
-          name: 'calendar_list_events',
-          description: 'List calendar events',
-          parameters: { type: 'object', properties: {} },
-          controllerOnly: true,
-          location: 'host',
-        },
-        {
-          name: 'calendar_check_availability',
-          description: 'Check free busy',
-          parameters: { type: 'object', properties: {} },
-          controllerOnly: false,
-          location: 'host',
-        },
-      ],
-    },
-  ]),
+vi.mock('./tool-registry.js', () => ({
+  buildSessionToolRegistrySnapshot,
 }));
 
 import { writeIntegrationToolsManifest } from './container-runner.js';
@@ -56,21 +37,56 @@ import { writeIntegrationToolsManifest } from './container-runner.js';
 describe('writeIntegrationToolsManifest', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    buildSessionToolRegistrySnapshot.mockReturnValue({
+      tools: [],
+      allowedToolNames: ['web_search', 'signal.reply'],
+      integrationManifest: [
+        {
+          name: 'signal.reply',
+          description: 'Reply in thread',
+          parameters: { type: 'object', properties: {} },
+          integration: 'signal',
+          controllerOnly: false,
+        },
+      ],
+    });
   });
 
-  it('includes controller-only host tools for controller-triggered non-main sessions', () => {
-    writeIntegrationToolsManifest('calendar-group', false, true);
+  it('writes both the integration manifest and the allowed tool list', () => {
+    writeIntegrationToolsManifest('calendar-group', false, true, {
+      scheduledTaskMode: true,
+    });
 
+    expect(buildSessionToolRegistrySnapshot).toHaveBeenCalledWith({
+      groupFolder: 'calendar-group',
+      isMain: false,
+      controllerTriggered: true,
+      scheduledTaskMode: true,
+    });
     expect(mkdirSync).toHaveBeenCalledWith('/tmp/ipc/calendar-group', {
       recursive: true,
     });
-    expect(writeFileSync).toHaveBeenCalledTimes(1);
+    expect(writeFileSync).toHaveBeenCalledTimes(2);
 
-    const [, rawManifest] = writeFileSync.mock.calls[0];
-    const manifest = JSON.parse(String(rawManifest)) as Array<{ name: string }>;
-    expect(manifest.map((tool) => tool.name)).toEqual([
-      'calendar_list_events',
-      'calendar_check_availability',
+    expect(writeFileSync.mock.calls[0][0]).toBe(
+      path.join('/tmp/ipc/calendar-group', 'integration_tools.json'),
+    );
+    expect(JSON.parse(String(writeFileSync.mock.calls[0][1]))).toEqual([
+      {
+        name: 'signal.reply',
+        description: 'Reply in thread',
+        parameters: { type: 'object', properties: {} },
+        integration: 'signal',
+        controllerOnly: false,
+      },
     ]);
+
+    expect(writeFileSync.mock.calls[1][0]).toBe(
+      path.join('/tmp/ipc/calendar-group', 'allowed_tools.json'),
+    );
+    expect(JSON.parse(String(writeFileSync.mock.calls[1][1]))).toEqual({
+      internal: true,
+      allowedToolNames: ['web_search', 'signal.reply'],
+    });
   });
 });

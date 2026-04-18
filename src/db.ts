@@ -606,6 +606,53 @@ export function storeMessage(msg: NewMessage): void {
 }
 
 /**
+ * Store a message only if we have not already seen it. This protects the
+ * agent loop from double-processing the same inbound message when a channel
+ * delivers it through multiple receive paths (for example websocket + poll
+ * fallback) with either the same id or the same semantic payload.
+ */
+export function storeMessageIfNew(msg: NewMessage): boolean {
+  const exact = db
+    .prepare(
+      `SELECT 1
+       FROM messages
+       WHERE id = ? AND chat_jid = ?
+       LIMIT 1`,
+    )
+    .get(msg.id, msg.chat_jid) as { 1: number } | undefined;
+  if (exact) return false;
+
+  const semantic = db
+    .prepare(
+      `SELECT 1
+       FROM messages
+       WHERE chat_jid = ?
+         AND sender = ?
+         AND content = ?
+         AND timestamp = ?
+         AND is_from_me = ?
+         AND is_bot_message = ?
+         AND COALESCE(thread_id, '') = COALESCE(?, '')
+         AND COALESCE(reply_to_message_id, '') = COALESCE(?, '')
+       LIMIT 1`,
+    )
+    .get(
+      msg.chat_jid,
+      msg.sender,
+      msg.content,
+      msg.timestamp,
+      msg.is_from_me ? 1 : 0,
+      msg.is_bot_message ? 1 : 0,
+      msg.thread_id ?? null,
+      msg.reply_to_message_id ?? null,
+    ) as { 1: number } | undefined;
+  if (semantic) return false;
+
+  storeMessage(msg);
+  return true;
+}
+
+/**
  * Store a message directly.
  */
 export function storeMessageDirect(msg: {

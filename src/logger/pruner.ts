@@ -20,6 +20,10 @@ const SETTINGS_PATH = path.join(ADMIN_CONFIG_DIR, 'log-settings.json');
 
 let pruneInterval: ReturnType<typeof setInterval> | null = null;
 
+function isContainerRuntime(): boolean {
+  return fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
+}
+
 // ---------------------------------------------------------------------------
 // Settings persistence
 // ---------------------------------------------------------------------------
@@ -130,6 +134,11 @@ function runPrune(): void {
 
 export function startLogPruner(): void {
   if (pruneInterval) return;
+
+  if (isContainerRuntime()) {
+    logger.info('Log pruner disabled inside container runtime');
+    return;
+  }
 
   const settings = getLogSettings();
   const intervalMs = settings.pruneIntervalMinutes * 60 * 1000;

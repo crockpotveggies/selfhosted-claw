@@ -1,6 +1,7 @@
 import fs from 'fs';
 import http from 'http';
 import net from 'net';
+import os from 'os';
 import path from 'path';
 
 import Database from 'better-sqlite3';
@@ -15,7 +16,14 @@ import {
   STORE_DIR,
 } from './config.js';
 import { ControlActionService } from './control-actions.js';
-import { getAllChats, getAllRegisteredGroups, getAllTasks } from './db.js';
+import {
+  deleteTask,
+  getAllChats,
+  getAllRegisteredGroups,
+  getAllTasks,
+  getTaskById,
+  updateTask,
+} from './db.js';
 import {
   getRegisteredIntegrations,
   getIntegration,
@@ -26,6 +34,12 @@ import {
   isIntegrationEnabled,
   setIntegrationEnabled,
 } from './integrations/settings-store.js';
+import {
+  applyIntegrationRuntimeFaultToStatus,
+  buildIntegrationRuntimeFaultNotification,
+  clearIntegrationRuntimeFault,
+  getIntegrationRuntimeFault,
+} from './integrations/runtime-health.js';
 import {
   getServiceStatus,
   startService,
@@ -42,9 +56,22 @@ import {
   registerSetupRoutes,
 } from './integrations/setup-router.js';
 import { getLogSettings, saveLogSettings } from './logger/pruner.js';
-import { logger } from './logger.js';
+import {
+  filterLogRows,
+  paginateLogRows,
+  readJsonlLogRows,
+  sortLogRowsDesc,
+  summarizeLogRows,
+  type LogQueryFilters,
+  type PersistedLogRow,
+} from './logger/jsonl-stream.js';
+import { getLogPersistenceInfo, logger } from './logger.js';
 import { resolveSignalRpcUrl } from './signal-rpc-url.js';
 import { runTaskNow } from './task-scheduler.js';
+import {
+  buildEffectiveToolRegistry,
+  getNormalizedToolAccessPolicy,
+} from './tool-registry.js';
 
 interface StartAdminServerOptions {
   service: ControlActionService;
@@ -159,6 +186,51 @@ export function buildSignalReachabilityProbeUrl(
   );
 }
 
+export function normalizeTaskPromptUpdate(input: unknown): string | null {
+  if (!input || typeof input !== 'object') return null;
+  const prompt = (input as { prompt?: unknown }).prompt;
+  if (typeof prompt !== 'string') return null;
+  const trimmed = prompt.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function normalizeToolAccessPolicyUpdate(input: unknown) {
+  const body =
+    input && typeof input === 'object'
+      ? (input as Record<string, unknown>)
+      : {};
+  const toolsInput =
+    body.tools && typeof body.tools === 'object'
+      ? (body.tools as Record<string, unknown>)
+      : {};
+  const tools = Object.fromEntries(
+    Object.entries(toolsInput).map(([name, value]) => {
+      const record =
+        value && typeof value === 'object'
+          ? (value as Record<string, unknown>)
+          : {};
+      return [
+        name,
+        {
+          ...(record.enabled === undefined
+            ? {}
+            : { enabled: record.enabled === true }),
+          ...(record.controllerOnly === undefined
+            ? {}
+            : { controllerOnly: record.controllerOnly === true }),
+        },
+      ];
+    }),
+  );
+
+  return getNormalizedToolAccessPolicy({
+    internalToolsEnabled: body.internalToolsEnabled !== false,
+    externalToolsEnabled: body.externalToolsEnabled !== false,
+    tools,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
 function sendJson(
   res: http.ServerResponse,
   statusCode: number,
@@ -173,6 +245,174 @@ function sendJson(
     'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
   });
   res.end(JSON.stringify(payload));
+}
+
+function withLogDatabaseSnapshot<T>(
+  logDbPath: string,
+  callback: (db: Database.Database) => T,
+): T {
+  const snapshotDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'nanoclaw-log-snapshot-'),
+  );
+  const snapshotBase = path.join(snapshotDir, 'logs.db');
+  const siblingSuffixes = ['', '-wal', '-shm'];
+
+  try {
+    for (const suffix of siblingSuffixes) {
+      const source = `${logDbPath}${suffix}`;
+      if (fs.existsSync(source)) {
+        fs.copyFileSync(source, `${snapshotBase}${suffix}`);
+      }
+    }
+
+    const db = new Database(snapshotBase, { readonly: true });
+    try {
+      return callback(db);
+    } finally {
+      db.close();
+    }
+  } finally {
+    fs.rmSync(snapshotDir, { recursive: true, force: true });
+  }
+}
+
+function getMinLogLevelNumber(level: string | null): number | undefined {
+  if (!level) return undefined;
+  const levelMap: Record<string, number> = {
+    debug: 20,
+    info: 30,
+    warn: 40,
+    error: 50,
+    fatal: 60,
+  };
+  return levelMap[level];
+}
+
+function buildLogQueryFilters(url: URL): LogQueryFilters {
+  return {
+    integration: url.searchParams.get('integration') || undefined,
+    group: url.searchParams.get('group') || undefined,
+    minLevel: getMinLogLevelNumber(url.searchParams.get('level')),
+    since: url.searchParams.get('since') || undefined,
+    until: url.searchParams.get('until') || undefined,
+    entity: url.searchParams.get('entity') || undefined,
+    runId: url.searchParams.get('runId') || undefined,
+    q: url.searchParams.get('q') || undefined,
+  };
+}
+
+function querySqliteLogRows(
+  logDbPath: string,
+  filters: LogQueryFilters,
+  limitHint: number,
+): PersistedLogRow[] {
+  if (!fs.existsSync(logDbPath)) {
+    return [];
+  }
+
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (filters.integration) {
+    conditions.push('integration = ?');
+    params.push(filters.integration);
+  }
+  if (filters.group) {
+    conditions.push('group_folder = ?');
+    params.push(filters.group);
+  }
+  if (filters.minLevel) {
+    conditions.push('level >= ?');
+    params.push(filters.minLevel);
+  }
+  if (filters.since) {
+    conditions.push('time >= ?');
+    params.push(filters.since);
+  }
+  if (filters.until) {
+    conditions.push('time <= ?');
+    params.push(filters.until);
+  }
+  if (filters.entity) {
+    conditions.push('entity = ?');
+    params.push(filters.entity);
+  }
+  if (filters.runId) {
+    conditions.push('run_id = ?');
+    params.push(filters.runId);
+  }
+  if (filters.q) {
+    conditions.push('(msg LIKE ? OR data LIKE ?)');
+    params.push(`%${filters.q}%`, `%${filters.q}%`);
+  }
+
+  const where =
+    conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  return withLogDatabaseSnapshot(logDbPath, (logDb) =>
+    logDb
+      .prepare(
+        `SELECT id, time, level, level_label, msg, integration, channel, group_folder, entity, run_id, tool, data FROM logs ${where} ORDER BY time DESC LIMIT ?`,
+      )
+      .all(...params, limitHint) as PersistedLogRow[],
+  );
+}
+
+function queryJsonlFallbackRows(filters: LogQueryFilters): PersistedLogRow[] {
+  const persistence = getLogPersistenceInfo();
+  if (
+    persistence.mode !== 'jsonl-fallback' ||
+    !persistence.jsonlPath ||
+    !fs.existsSync(persistence.jsonlPath)
+  ) {
+    return [];
+  }
+
+  return sortLogRowsDesc(filterLogRows(readJsonlLogRows(persistence.jsonlPath), filters));
+}
+
+function querySqliteLogStats(logDbPath: string): {
+  total: number;
+  byLevel: Record<string, number>;
+  byIntegration: Record<string, number>;
+} {
+  if (!fs.existsSync(logDbPath)) {
+    return { total: 0, byLevel: {}, byIntegration: {} };
+  }
+
+  const total = withLogDatabaseSnapshot(
+    logDbPath,
+    (logDb) =>
+      (
+        logDb.prepare('SELECT count(*) as cnt FROM logs').get() as {
+          cnt: number;
+        }
+      ).cnt,
+  );
+  const byLevel = withLogDatabaseSnapshot(
+    logDbPath,
+    (logDb) =>
+      logDb
+        .prepare('SELECT level_label, count(*) as cnt FROM logs GROUP BY level_label')
+        .all() as Array<{ level_label: string; cnt: number }>,
+  );
+  const byIntegration = withLogDatabaseSnapshot(
+    logDbPath,
+    (logDb) =>
+      logDb
+        .prepare(
+          "SELECT COALESCE(integration, '_system') as name, count(*) as cnt FROM logs GROUP BY integration",
+        )
+        .all() as Array<{ name: string; cnt: number }>,
+  );
+
+  return {
+    total,
+    byLevel: Object.fromEntries(byLevel.map((row) => [row.level_label, row.cnt])),
+    byIntegration: Object.fromEntries(
+      byIntegration.map((row) => [row.name, row.cnt]),
+    ),
+  };
 }
 
 function refreshAllIntegrationToolManifests(): void {
@@ -424,6 +664,7 @@ export function startAdminServer(
         for (const def of integrations) {
           if (!isIntegrationEnabled(def.name)) continue;
           const settings = getIntegrationSettings(def.name);
+          const runtimeFault = getIntegrationRuntimeFault(def.name);
           const ctx = {
             settings,
             groupSettings: () => settings,
@@ -433,6 +674,7 @@ export function startAdminServer(
                 options.service.getSetupEnvironment()[key] ||
                 settings[key],
               ),
+            runtimeFault,
           };
 
           if (def.adminPage?.getNotifications) {
@@ -446,10 +688,22 @@ export function startAdminServer(
 
           try {
             if (!def.adminPage?.getStatus) continue;
-            const status = await def.adminPage.getStatus(ctx);
+            const status = applyIntegrationRuntimeFaultToStatus(
+              await def.adminPage.getStatus(ctx),
+              runtimeFault,
+            );
             const hasIntegrationNotification = notifications.some(
               (item) => item.integration === def.name,
             );
+            if (!hasIntegrationNotification && runtimeFault) {
+              notifications.push(
+                buildIntegrationRuntimeFaultNotification(
+                  def.name,
+                  runtimeFault,
+                ),
+              );
+              continue;
+            }
             if (!hasIntegrationNotification && status.state === 'degraded') {
               notifications.push({
                 id: `${def.name}:status-degraded`,
@@ -501,6 +755,44 @@ export function startAdminServer(
       if (req.method === 'GET' && url.pathname === '/api/admin/tasks') {
         const tasks = getAllTasks();
         sendJson(res, 200, tasks);
+        return;
+      }
+
+      const taskPromptMatch =
+        url.pathname.match(/^\/api\/admin\/tasks\/([^/]+)$/);
+      if (req.method === 'PATCH' && taskPromptMatch) {
+        const taskId = decodeURIComponent(taskPromptMatch[1]);
+        const task = getTaskById(taskId);
+        if (!task) {
+          sendJson(res, 404, { error: 'task_not_found' });
+          return;
+        }
+        const prompt = normalizeTaskPromptUpdate(
+          JSON.parse((await readBody(req)) || '{}'),
+        );
+        if (!prompt) {
+          sendJson(res, 400, { error: 'invalid_task_prompt' });
+          return;
+        }
+        updateTask(taskId, { prompt });
+        sendJson(res, 200, {
+          ok: true,
+          task: getTaskById(taskId),
+        });
+        return;
+      }
+      if (req.method === 'DELETE' && taskPromptMatch) {
+        const taskId = decodeURIComponent(taskPromptMatch[1]);
+        const task = getTaskById(taskId);
+        if (!task) {
+          sendJson(res, 404, { error: 'task_not_found' });
+          return;
+        }
+        deleteTask(taskId);
+        sendJson(res, 200, {
+          ok: true,
+          message: `Deleted task ${taskId}.`,
+        });
         return;
       }
 
@@ -859,6 +1151,34 @@ export function startAdminServer(
         return;
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/admin/tool-registry') {
+        sendJson(res, 200, {
+          tools: buildEffectiveToolRegistry({ service: options.service }),
+          policy: getNormalizedToolAccessPolicy(
+            options.service.getToolAccessPolicy(),
+          ),
+        });
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname === '/api/admin/tool-registry/policy'
+      ) {
+        const policy = normalizeToolAccessPolicyUpdate(
+          JSON.parse((await readBody(req)) || '{}'),
+        );
+        options.service.saveToolAccessPolicy(policy);
+        refreshAllIntegrationToolManifests();
+        sendJson(res, 200, {
+          policy: getNormalizedToolAccessPolicy(
+            options.service.getToolAccessPolicy(),
+          ),
+          tools: buildEffectiveToolRegistry({ service: options.service }),
+        });
+        return;
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/admin/audit') {
         const limit = Number(url.searchParams.get('limit') || '100');
         const identity = url.searchParams.get('identity') || undefined;
@@ -1076,16 +1396,21 @@ export function startAdminServer(
             if (def.adminPage?.getStatus) {
               try {
                 const settings = getIntegrationSettings(def.name);
-                status = await def.adminPage.getStatus({
-                  settings,
-                  groupSettings: () => settings,
-                  hasCredential: (key) =>
-                    Boolean(
-                      process.env[key] ||
-                      options.service.getSetupEnvironment()[key] ||
-                      settings[key],
-                    ),
-                });
+                const runtimeFault = getIntegrationRuntimeFault(def.name);
+                status = applyIntegrationRuntimeFaultToStatus(
+                  await def.adminPage.getStatus({
+                    settings,
+                    groupSettings: () => settings,
+                    hasCredential: (key) =>
+                      Boolean(
+                        process.env[key] ||
+                          options.service.getSetupEnvironment()[key] ||
+                          settings[key],
+                      ),
+                    runtimeFault,
+                  }),
+                  runtimeFault,
+                );
               } catch {
                 status = {
                   state: 'offline',
@@ -1093,6 +1418,7 @@ export function startAdminServer(
                 };
               }
             }
+            const runtimeFault = getIntegrationRuntimeFault(def.name);
             const svcStatus = def.service
               ? getServiceStatus(def.name)
               : undefined;
@@ -1106,6 +1432,7 @@ export function startAdminServer(
               icon: def.adminPage?.icon || 'cilPuzzle',
               enabled,
               status,
+              runtimeFault,
               service: svcStatus
                 ? {
                     running: svcStatus.running,
@@ -1146,19 +1473,24 @@ export function startAdminServer(
         }
         const settings = getIntegrationSettings(name);
         const svcStatus = def.service ? getServiceStatus(name) : undefined;
+        const runtimeFault = getIntegrationRuntimeFault(name);
         let status;
         try {
           status = def.adminPage?.getStatus
-            ? await def.adminPage.getStatus({
-                settings,
-                groupSettings: () => settings,
-                hasCredential: (key) =>
-                  Boolean(
-                    process.env[key] ||
-                    options.service.getSetupEnvironment()[key] ||
-                    settings[key],
-                  ),
-              })
+            ? applyIntegrationRuntimeFaultToStatus(
+                await def.adminPage.getStatus({
+                  settings,
+                  groupSettings: () => settings,
+                  hasCredential: (key) =>
+                    Boolean(
+                      process.env[key] ||
+                        options.service.getSetupEnvironment()[key] ||
+                        settings[key],
+                    ),
+                  runtimeFault,
+                }),
+                runtimeFault,
+              )
             : { state: 'unconfigured', message: '' };
         } catch {
           status = { state: 'offline', message: 'Status check failed' };
@@ -1173,6 +1505,7 @@ export function startAdminServer(
           icon: def.adminPage?.icon || 'cilPuzzle',
           enabled: isIntegrationEnabled(name),
           status,
+          runtimeFault,
           service: svcStatus,
           settings: {
             schema: def.settings?.schema || null,
@@ -1244,6 +1577,7 @@ export function startAdminServer(
             saveIntegrationSettings(name, prev);
             throw err;
           }
+          clearIntegrationRuntimeFault(name);
           refreshAllIntegrationToolManifests();
           sendJson(res, 200, { ok: true });
         } catch (err) {
@@ -1282,6 +1616,7 @@ export function startAdminServer(
               if (def?.channel) {
                 await activateRegisteredChannel(name);
               }
+              clearIntegrationRuntimeFault(name);
             } else if (!enabled && wasEnabled && def?.lifecycle?.onDisable) {
               await def.lifecycle.onDisable();
               if (def?.channel) {
@@ -1345,6 +1680,7 @@ export function startAdminServer(
             return;
           }
 
+          clearIntegrationRuntimeFault(name);
           sendJson(res, 200, { ok: true });
         } catch (err) {
           sendJson(res, 500, {
@@ -1490,141 +1826,66 @@ export function startAdminServer(
 
       if (req.method === 'GET' && url.pathname === '/api/admin/logs') {
         const logDbPath = path.join(STORE_DIR, 'logs.db');
-        if (!fs.existsSync(logDbPath)) {
-          sendJson(res, 200, []);
-          return;
-        }
-        let logDb: Database.Database | null = null;
         try {
-          logDb = new Database(logDbPath, { readonly: true });
-          const conditions: string[] = [];
-          const params: unknown[] = [];
-
-          const integration = url.searchParams.get('integration');
-          if (integration) {
-            conditions.push('integration = ?');
-            params.push(integration);
-          }
-          const group = url.searchParams.get('group');
-          if (group) {
-            conditions.push('group_folder = ?');
-            params.push(group);
-          }
-          const level = url.searchParams.get('level');
-          if (level) {
-            const levelMap: Record<string, number> = {
-              debug: 20,
-              info: 30,
-              warn: 40,
-              error: 50,
-              fatal: 60,
-            };
-            const levelNum = levelMap[level];
-            if (levelNum) {
-              conditions.push('level >= ?');
-              params.push(levelNum);
-            }
-          }
-          const since = url.searchParams.get('since');
-          if (since) {
-            conditions.push('time >= ?');
-            params.push(since);
-          }
-          const until = url.searchParams.get('until');
-          if (until) {
-            conditions.push('time <= ?');
-            params.push(until);
-          }
-          const entity = url.searchParams.get('entity');
-          if (entity) {
-            conditions.push('entity = ?');
-            params.push(entity);
-          }
-          const runId = url.searchParams.get('runId');
-          if (runId) {
-            conditions.push('run_id = ?');
-            params.push(runId);
-          }
-          const q = url.searchParams.get('q');
-          if (q) {
-            conditions.push('(msg LIKE ? OR data LIKE ?)');
-            params.push(`%${q}%`, `%${q}%`);
-          }
-
-          const where =
-            conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+          const filters = buildLogQueryFilters(url);
           const limit = Math.min(
             parseInt(url.searchParams.get('limit') || '100', 10) || 100,
             500,
           );
           const offset =
             parseInt(url.searchParams.get('offset') || '0', 10) || 0;
-
-          const rows = logDb
-            .prepare(
-              `SELECT id, time, level, level_label, msg, integration, channel, group_folder, entity, run_id, tool, data FROM logs ${where} ORDER BY time DESC LIMIT ? OFFSET ?`,
-            )
-            .all(...params, limit, offset);
+          const dbRows = querySqliteLogRows(logDbPath, filters, limit + offset + 500);
+          const fallbackRows = queryJsonlFallbackRows(filters);
+          const rows = paginateLogRows(
+            sortLogRowsDesc([...dbRows, ...fallbackRows]),
+            limit,
+            offset,
+          );
 
           sendJson(res, 200, rows);
         } catch (err) {
           sendJson(res, 500, {
             error: err instanceof Error ? err.message : 'log_query_failed',
           });
-        } finally {
-          try {
-            logDb?.close();
-          } catch {
-            /* already closed */
-          }
         }
         return;
       }
 
       if (req.method === 'GET' && url.pathname === '/api/admin/logs/stats') {
         const logDbPath = path.join(STORE_DIR, 'logs.db');
-        if (!fs.existsSync(logDbPath)) {
-          sendJson(res, 200, { total: 0, byLevel: {}, byIntegration: {} });
-          return;
-        }
-        let logDb: Database.Database | null = null;
         try {
-          logDb = new Database(logDbPath, { readonly: true });
-          const total = (
-            logDb.prepare('SELECT count(*) as cnt FROM logs').get() as {
-              cnt: number;
-            }
-          ).cnt;
-          const byLevel = logDb
-            .prepare(
-              'SELECT level_label, count(*) as cnt FROM logs GROUP BY level_label',
-            )
-            .all() as Array<{ level_label: string; cnt: number }>;
-          const byIntegration = logDb
-            .prepare(
-              "SELECT COALESCE(integration, '_system') as name, count(*) as cnt FROM logs GROUP BY integration",
-            )
-            .all() as Array<{ name: string; cnt: number }>;
-
+          const dbStats = querySqliteLogStats(logDbPath);
+          const fallbackStats = summarizeLogRows(queryJsonlFallbackRows({}));
           sendJson(res, 200, {
-            total,
+            total: dbStats.total + fallbackStats.total,
             byLevel: Object.fromEntries(
-              byLevel.map((r) => [r.level_label, r.cnt]),
+              Array.from(
+                new Set([
+                  ...Object.keys(dbStats.byLevel),
+                  ...Object.keys(fallbackStats.byLevel),
+                ]),
+              ).map((key) => [
+                key,
+                (dbStats.byLevel[key] || 0) + (fallbackStats.byLevel[key] || 0),
+              ]),
             ),
             byIntegration: Object.fromEntries(
-              byIntegration.map((r) => [r.name, r.cnt]),
+              Array.from(
+                new Set([
+                  ...Object.keys(dbStats.byIntegration),
+                  ...Object.keys(fallbackStats.byIntegration),
+                ]),
+              ).map((key) => [
+                key,
+                (dbStats.byIntegration[key] || 0) +
+                  (fallbackStats.byIntegration[key] || 0),
+              ]),
             ),
           });
         } catch (err) {
           sendJson(res, 500, {
             error: err instanceof Error ? err.message : 'stats_failed',
           });
-        } finally {
-          try {
-            logDb?.close();
-          } catch {
-            /* already closed */
-          }
         }
         return;
       }

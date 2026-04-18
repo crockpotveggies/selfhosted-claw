@@ -1,23 +1,34 @@
 /**
  * Google Calendar integration — installable, not core.
  *
- * Declares 6 calendar tools that map to existing IPC handlers in src/ipc.ts.
- * In Phase 4, these are metadata declarations — execution still goes through
- * the existing hardcoded IPC switch-case. In the future, the generic
- * integration_tool IPC handler will dispatch to these.
+ * The integration owns the agent-facing calendar tools directly. Runtime
+ * visibility still comes from the tool registry, while host-side execute
+ * handlers preserve the existing control-chat auth and privacy rules.
  */
 
 import fs from 'fs';
 import path from 'path';
 
 import { ADMIN_BIND_HOST, ADMIN_CONFIG_DIR, ADMIN_PORT } from '../config.js';
-import { readEnvFile } from '../env.js';
+import {
+  assertCalendarMutationAllowed,
+  assertCalendarReadDetailAllowed,
+  calendarCheckAvailabilityApi,
+  calendarCreateEventApi,
+  calendarDeleteEventApi,
+  calendarGetEventApi,
+  calendarListEventsApi,
+  calendarUpdateEventApi,
+  sanitizeCalendarListResult,
+} from './calendar-runtime.js';
+import { getGoogleOAuthClientCredentials } from './google-oauth-client.js';
 
 import { registerIntegration } from './registry.js';
 import {
   getIntegrationSettings,
   saveIntegrationSettings,
 } from './settings-store.js';
+import { clearIntegrationRuntimeFault } from './runtime-health.js';
 import type {
   IntegrationDefinition,
   IntegrationNotification,
@@ -70,8 +81,8 @@ async function tryRefreshLegacyOAuthState(
 ): Promise<LegacyOAuthState | null> {
   if (!state.refreshToken) return null;
 
-  const env = readEnvFile(['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']);
-  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+  const { clientId, clientSecret } = getGoogleOAuthClientCredentials();
+  if (!clientId || !clientSecret) {
     return null;
   }
 
@@ -81,8 +92,8 @@ async function tryRefreshLegacyOAuthState(
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams({
-      client_id: env.GOOGLE_CLIENT_ID,
-      client_secret: env.GOOGLE_CLIENT_SECRET,
+      client_id: clientId,
+      client_secret: clientSecret,
       refresh_token: state.refreshToken,
       grant_type: 'refresh_token',
     }),
@@ -124,19 +135,19 @@ const calendarTools: IntegrationTool[] = [
     parameters: {
       type: 'object',
       properties: {
-        calendarId: {
+        calendar_id: {
           type: 'string',
           description: 'Calendar ID (default: "primary")',
         },
-        timeMin: {
+        time_min: {
           type: 'string',
           description: 'Start of time range (ISO 8601)',
         },
-        timeMax: {
+        time_max: {
           type: 'string',
           description: 'End of time range (ISO 8601)',
         },
-        maxResults: {
+        max_results: {
           type: 'integer',
           description: 'Maximum events to return (default: 25)',
         },
@@ -148,6 +159,27 @@ const calendarTools: IntegrationTool[] = [
     },
     controllerOnly: true,
     location: 'host',
+    sideEffecting: false,
+    execute: async (args, ctx) => {
+      const result = await calendarListEventsApi(
+        {
+          readLegacyOAuthState,
+          writeLegacyOAuthState,
+        },
+        {
+          calendarId: String(args.calendar_id || 'primary'),
+          timeMin: String(args.time_min || ''),
+          timeMax: String(args.time_max || ''),
+          maxResults: Number(args.max_results || 25),
+          query: args.query ? String(args.query) : undefined,
+        },
+      );
+      return JSON.stringify(
+        sanitizeCalendarListResult(result, {
+          calendarAccess: ctx.calendarAccess,
+        }),
+      );
+    },
   },
   {
     name: 'calendar_check_availability',
@@ -155,24 +187,41 @@ const calendarTools: IntegrationTool[] = [
     parameters: {
       type: 'object',
       properties: {
-        timeMin: {
+        time_min: {
           type: 'string',
           description: 'Start of time range (ISO 8601)',
         },
-        timeMax: {
+        time_max: {
           type: 'string',
           description: 'End of time range (ISO 8601)',
         },
-        calendarIds: {
+        calendar_ids: {
           type: 'array',
           items: { type: 'string' },
           description: 'Calendar IDs to check (default: ["primary"])',
         },
       },
-      required: ['timeMin', 'timeMax'],
+      required: ['time_min', 'time_max'],
     },
     controllerOnly: false,
     location: 'host',
+    sideEffecting: false,
+    execute: async (args) => {
+      const result = await calendarCheckAvailabilityApi(
+        {
+          readLegacyOAuthState,
+          writeLegacyOAuthState,
+        },
+        {
+          timeMin: String(args.time_min || ''),
+          timeMax: String(args.time_max || ''),
+          calendarIds: Array.isArray(args.calendar_ids)
+            ? args.calendar_ids.map((id) => String(id))
+            : ['primary'],
+        },
+      );
+      return JSON.stringify(result);
+    },
   },
   {
     name: 'calendar_get_event',
@@ -180,13 +229,28 @@ const calendarTools: IntegrationTool[] = [
     parameters: {
       type: 'object',
       properties: {
-        calendarId: { type: 'string' },
-        eventId: { type: 'string', description: 'The event ID' },
+        calendar_id: { type: 'string' },
+        event_id: { type: 'string', description: 'The event ID' },
       },
-      required: ['eventId'],
+      required: ['event_id'],
     },
     controllerOnly: true,
     location: 'host',
+    sideEffecting: false,
+    execute: async (args, ctx) => {
+      assertCalendarReadDetailAllowed({ calendarAccess: ctx.calendarAccess });
+      const result = await calendarGetEventApi(
+        {
+          readLegacyOAuthState,
+          writeLegacyOAuthState,
+        },
+        {
+          calendarId: String(args.calendar_id || 'primary'),
+          eventId: String(args.event_id || ''),
+        },
+      );
+      return JSON.stringify(result);
+    },
   },
   {
     name: 'calendar_create_event',
@@ -195,7 +259,7 @@ const calendarTools: IntegrationTool[] = [
     parameters: {
       type: 'object',
       properties: {
-        calendarId: { type: 'string' },
+        calendar_id: { type: 'string' },
         summary: { type: 'string', description: 'Event title' },
         start: { type: 'string', description: 'Start time (ISO 8601)' },
         end: { type: 'string', description: 'End time (ISO 8601)' },
@@ -211,6 +275,28 @@ const calendarTools: IntegrationTool[] = [
     },
     controllerOnly: true,
     location: 'host',
+    sideEffecting: true,
+    execute: async (args, ctx) => {
+      assertCalendarMutationAllowed({ calendarAccess: ctx.calendarAccess });
+      const result = await calendarCreateEventApi(
+        {
+          readLegacyOAuthState,
+          writeLegacyOAuthState,
+        },
+        {
+          calendarId: String(args.calendar_id || 'primary'),
+          summary: String(args.summary || ''),
+          start: String(args.start || ''),
+          end: String(args.end || ''),
+          description: args.description ? String(args.description) : undefined,
+          location: args.location ? String(args.location) : undefined,
+          attendees: Array.isArray(args.attendees)
+            ? args.attendees.map((email) => String(email))
+            : undefined,
+        },
+      );
+      return JSON.stringify(result);
+    },
   },
   {
     name: 'calendar_update_event',
@@ -218,8 +304,8 @@ const calendarTools: IntegrationTool[] = [
     parameters: {
       type: 'object',
       properties: {
-        calendarId: { type: 'string' },
-        eventId: { type: 'string' },
+        calendar_id: { type: 'string' },
+        event_id: { type: 'string' },
         summary: { type: 'string' },
         start: { type: 'string' },
         end: { type: 'string' },
@@ -227,10 +313,36 @@ const calendarTools: IntegrationTool[] = [
         location: { type: 'string' },
         attendees: { type: 'array', items: { type: 'string' } },
       },
-      required: ['eventId'],
+      required: ['event_id'],
     },
     controllerOnly: true,
     location: 'host',
+    sideEffecting: true,
+    execute: async (args, ctx) => {
+      assertCalendarMutationAllowed({ calendarAccess: ctx.calendarAccess });
+      const result = await calendarUpdateEventApi(
+        {
+          readLegacyOAuthState,
+          writeLegacyOAuthState,
+        },
+        {
+          calendarId: String(args.calendar_id || 'primary'),
+          eventId: String(args.event_id || ''),
+          summary: args.summary !== undefined ? String(args.summary) : undefined,
+          start: args.start !== undefined ? String(args.start) : undefined,
+          end: args.end !== undefined ? String(args.end) : undefined,
+          description:
+            args.description !== undefined ? String(args.description) : undefined,
+          location: args.location !== undefined ? String(args.location) : undefined,
+          attendees: Array.isArray(args.attendees)
+            ? args.attendees.map((email) => String(email))
+            : args.attendees !== undefined
+              ? []
+              : undefined,
+        },
+      );
+      return JSON.stringify(result);
+    },
   },
   {
     name: 'calendar_delete_event',
@@ -238,13 +350,28 @@ const calendarTools: IntegrationTool[] = [
     parameters: {
       type: 'object',
       properties: {
-        calendarId: { type: 'string' },
-        eventId: { type: 'string' },
+        calendar_id: { type: 'string' },
+        event_id: { type: 'string' },
       },
-      required: ['eventId'],
+      required: ['event_id'],
     },
     controllerOnly: true,
     location: 'host',
+    sideEffecting: true,
+    execute: async (args, ctx) => {
+      assertCalendarMutationAllowed({ calendarAccess: ctx.calendarAccess });
+      const result = await calendarDeleteEventApi(
+        {
+          readLegacyOAuthState,
+          writeLegacyOAuthState,
+        },
+        {
+          calendarId: String(args.calendar_id || 'primary'),
+          eventId: String(args.event_id || ''),
+        },
+      );
+      return JSON.stringify(result);
+    },
   },
 ];
 
@@ -344,8 +471,8 @@ const calendarIntegration: IntegrationDefinition = {
       }
 
       // Check env-level credentials
-      const hasClientId = ctx.hasCredential('GOOGLE_CLIENT_ID');
-      if (!hasClientId) {
+      const { clientId, clientSecret } = getGoogleOAuthClientCredentials();
+      if (!clientId || !clientSecret) {
         return {
           state: 'unconfigured',
           message: 'No Google OAuth connection — connect via admin UI',
@@ -419,18 +546,7 @@ const calendarIntegration: IntegrationDefinition = {
         callbackPath,
         helpUrl: 'https://console.cloud.google.com/apis/credentials',
         startAuth: async (origin) => {
-          // Delegate to existing Google OAuth mechanism
-          // This will be wired to ControlActionService.startGoogleContactsOAuth
-          // or a new calendar-specific OAuth flow
-          const settings = getIntegrationSettings('google-calendar');
-          // Read from .env via readEnvFile (process.env doesn't contain .env values)
-          const { readEnvFile } = await import('../env.js');
-          const envVars = readEnvFile(['GOOGLE_CLIENT_ID']);
-          const clientId =
-            process.env.GOOGLE_CLIENT_ID ||
-            envVars.GOOGLE_CLIENT_ID ||
-            (settings.googleClientId as string) ||
-            '';
+          const { clientId } = getGoogleOAuthClientCredentials();
           if (!clientId) {
             throw new Error(
               'GOOGLE_CLIENT_ID not configured. Set it in .env or integration settings.',
@@ -447,17 +563,12 @@ const calendarIntegration: IntegrationDefinition = {
         },
         completeAuth: async ({ code, state, origin }) => {
           // Exchange authorization code for access + refresh tokens
-          const { readEnvFile } = await import('../env.js');
-          const envVars = readEnvFile([
-            'GOOGLE_CLIENT_ID',
-            'GOOGLE_CLIENT_SECRET',
-          ]);
-          const clientId =
-            process.env.GOOGLE_CLIENT_ID || envVars.GOOGLE_CLIENT_ID || '';
-          const clientSecret =
-            process.env.GOOGLE_CLIENT_SECRET ||
-            envVars.GOOGLE_CLIENT_SECRET ||
-            '';
+          const { clientId, clientSecret } = getGoogleOAuthClientCredentials();
+          if (!clientId || !clientSecret) {
+            throw new Error(
+              'Google OAuth client settings are missing. Save the client ID and secret first.',
+            );
+          }
           const redirectUri = `${origin}${callbackPath}`;
 
           const tokenResponse = await fetch(
@@ -542,6 +653,8 @@ const calendarIntegration: IntegrationDefinition = {
             oauthState: state,
             oauthConnectedAt: now.toISOString(),
           });
+          clearIntegrationRuntimeFault('google-calendar');
+          clearIntegrationRuntimeFault('google-contacts');
         },
         isComplete: async () => {
           // Check legacy OAuth (shared with Google Contacts)

@@ -941,6 +941,33 @@ const whatsappIntegration: IntegrationDefinition = {
         return JSON.stringify(groups);
       },
     },
+    {
+      name: 'whatsapp.leave_group',
+      description: 'Leave an existing WhatsApp group.',
+      parameters: {
+        type: 'object',
+        properties: {
+          groupName: {
+            type: 'string',
+            description: 'Group name to search for',
+          },
+        },
+        required: ['groupName'],
+      },
+      location: 'host' as const,
+      controllerOnly: true,
+      execute: async (args) => {
+        if (!channelInstance?.isConnected())
+          throw new Error('WhatsApp not connected');
+        const group = await channelInstance.findGroupByName(
+          args.groupName as string,
+        );
+        if (!group)
+          throw new Error(`WhatsApp group "${args.groupName}" not found`);
+        await channelInstance.leaveGroup(group.id);
+        return JSON.stringify({ status: 'left_group', group: group.name });
+      },
+    },
   ],
 
   memory: {

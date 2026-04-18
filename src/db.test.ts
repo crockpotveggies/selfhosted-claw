@@ -14,6 +14,7 @@ import {
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
+  storeMessageIfNew,
   updateTask,
 } from './db.js';
 import { formatMessages } from './router.js';
@@ -140,6 +141,40 @@ describe('storeMessage', () => {
     );
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toBe('updated');
+  });
+
+  it('suppresses semantic duplicates with different ids', () => {
+    storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
+
+    const firstStored = storeMessageIfNew({
+      id: 'msg-semantic-1',
+      chat_jid: 'group@g.us',
+      sender: '123@s.whatsapp.net',
+      sender_name: 'Alice',
+      content: 'same payload',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      is_from_me: false,
+    });
+    const secondStored = storeMessageIfNew({
+      id: 'msg-semantic-2',
+      chat_jid: 'group@g.us',
+      sender: '123@s.whatsapp.net',
+      sender_name: 'Alice',
+      content: 'same payload',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      is_from_me: false,
+    });
+
+    expect(firstStored).toBe(true);
+    expect(secondStored).toBe(false);
+
+    const messages = getMessagesSince(
+      'group@g.us',
+      '2024-01-01T00:00:00.000Z',
+      'Andy',
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0].id).toBe('msg-semantic-1');
   });
 });
 

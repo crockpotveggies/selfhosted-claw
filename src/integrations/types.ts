@@ -1,4 +1,5 @@
 import type http from 'http';
+import type { IntegrationRuntimeFault } from './runtime-health.js';
 
 import type {
   Channel,
@@ -91,6 +92,8 @@ export interface IntegrationTool {
   parameters: Record<string, unknown>;
   controllerOnly?: boolean;
   rateLimit?: number;
+  /** Defaults to true for host-executed tools; set false for read-only queries. */
+  sideEffecting?: boolean;
 
   /**
    * Where the tool runs:
@@ -354,6 +357,7 @@ export interface IntegrationContext {
   settings: Record<string, unknown>;
   groupSettings: (folder: string) => Record<string, unknown>;
   hasCredential: (key: string) => boolean;
+  runtimeFault?: IntegrationRuntimeFault | null;
 }
 
 // ---------------------------------------------------------------------------

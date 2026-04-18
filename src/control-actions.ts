@@ -19,7 +19,7 @@ import { canonicalizeIdentity, displayIdentity } from './control-identities.js';
 import {
   previewPersonalityProfile,
   resolveProfile,
-  writePersonalityProfile,
+  syncPersonalityFiles,
 } from './control-personality.js';
 import { ControlStore } from './control-store.js';
 import {
@@ -38,6 +38,7 @@ import {
   PersonalityScope,
   SignalProfileSettings,
   ControlToolDefinitionSummary,
+  ToolAccessPolicy,
   VerifiedIdentity,
 } from './control-types.js';
 import {
@@ -570,7 +571,7 @@ export class ControlActionService {
         };
         profiles[scope] = next;
         this.store.savePersonalityProfiles(profiles);
-        writePersonalityProfile(next);
+        syncPersonalityFiles(profiles, scope);
         return {
           result: next,
           beforeState: stableStringify(before),
@@ -599,7 +600,7 @@ export class ControlActionService {
         };
         profiles[scope] = next;
         this.store.savePersonalityProfiles(profiles);
-        writePersonalityProfile(next);
+        syncPersonalityFiles(profiles, scope);
         return {
           result: next,
           beforeState: stableStringify(before),
@@ -631,7 +632,7 @@ export class ControlActionService {
         };
         profiles[scope] = next;
         this.store.savePersonalityProfiles(profiles);
-        writePersonalityProfile(next);
+        syncPersonalityFiles(profiles, scope);
         return {
           result: next,
           beforeState: stableStringify(before),
@@ -655,7 +656,7 @@ export class ControlActionService {
         delete profiles[scope];
         this.store.savePersonalityProfiles(profiles);
         const next = resolveProfile(scope, profiles);
-        writePersonalityProfile(next);
+        syncPersonalityFiles(profiles, scope);
         return {
           result: next,
           beforeState: stableStringify(before),
@@ -1169,6 +1170,17 @@ export class ControlActionService {
 
   saveCalendarAvailability(availability: CalendarAvailabilitySettings) {
     this.store.saveCalendarAvailability(availability);
+  }
+
+  getToolAccessPolicy(): ToolAccessPolicy | undefined {
+    return this.store.getPolicy().toolAccess;
+  }
+
+  saveToolAccessPolicy(toolAccess: ToolAccessPolicy): void {
+    const policy = this.store.getPolicy();
+    policy.toolAccess = toolAccess;
+    policy.updatedAt = nowIso();
+    this.store.savePolicy(policy);
   }
 
   isVerifiedIdentity(identity: string): boolean {

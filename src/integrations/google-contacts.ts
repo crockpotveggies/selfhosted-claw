@@ -3,16 +3,17 @@ import path from 'path';
 import { randomBytes } from 'crypto';
 
 import { ADMIN_BIND_HOST, ADMIN_CONFIG_DIR, ADMIN_PORT } from '../config.js';
-import { readEnvFile } from '../env.js';
 import { createChildLogger } from '../logger.js';
 import { resolveSignalTarget } from '../outbound-directives.js';
 import type { GoogleContactsOAuthState } from '../control-types.js';
 
+import { getGoogleOAuthClientCredentials } from './google-oauth-client.js';
 import { registerIntegration } from './registry.js';
 import {
   getIntegrationSettings,
   saveIntegrationSettings,
 } from './settings-store.js';
+import { clearIntegrationRuntimeFault } from './runtime-health.js';
 import type {
   IntegrationDefinition,
   IntegrationNotification,
@@ -79,12 +80,7 @@ function writeLegacyOAuthState(state: GoogleContactsOAuthState): void {
 }
 
 function getClientCredentials(): { clientId: string; clientSecret: string } {
-  const env = readEnvFile(['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']);
-  return {
-    clientId: env.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '',
-    clientSecret:
-      env.GOOGLE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '',
-  };
+  return getGoogleOAuthClientCredentials();
 }
 
 function normalizePhone(value: string): string {
@@ -443,6 +439,8 @@ async function completeAuth(input: {
     oauthState: '',
     oauthStateCreatedAt: '',
   });
+  clearIntegrationRuntimeFault('google-contacts');
+  clearIntegrationRuntimeFault('google-calendar');
 }
 
 const searchTool: IntegrationTool = {

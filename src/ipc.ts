@@ -22,6 +22,10 @@ import { deriveGroupFolder, isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { getIntegration } from './integrations/registry.js';
 import { getIntegrationSettings } from './integrations/settings-store.js';
+import {
+  clearIntegrationRuntimeFault,
+  recordIntegrationRuntimeFault,
+} from './integrations/runtime-health.js';
 import { RegisteredGroup } from './types.js';
 
 /**
@@ -1619,11 +1623,14 @@ export async function processTaskIpc(
           resolveRecipient: deps.resolveRecipient,
           channels: deps.channels?.() || [],
         });
+        clearIntegrationRuntimeFault(data.integration);
         writeIpcResponse(sourceGroup, data.requestId, {
           ok: true,
           result,
         });
-        markIpcSideEffect(sourceGroup);
+        if (toolDef.sideEffecting !== false) {
+          markIpcSideEffect(sourceGroup);
+        }
         logger.info(
           {
             integration: data.integration,
@@ -1642,6 +1649,10 @@ export async function processTaskIpc(
           },
           `Integration tool failed: ${data.tool}`,
         );
+        recordIntegrationRuntimeFault(data.integration, {
+          tool: data.tool,
+          message: err instanceof Error ? err.message : String(err),
+        });
         writeIpcResponse(sourceGroup, data.requestId, {
           error: err instanceof Error ? err.message : String(err),
         });

@@ -460,6 +460,32 @@ const signalIntegration: IntegrationDefinition = {
         return JSON.stringify(groups);
       },
     },
+    {
+      name: 'signal.leave_group',
+      description: 'Leave an existing Signal group.',
+      parameters: {
+        type: 'object',
+        properties: {
+          groupName: {
+            type: 'string',
+            description: 'Group name to search for',
+          },
+        },
+        required: ['groupName'],
+      },
+      location: 'host' as const,
+      controllerOnly: true,
+      execute: async (args, ctx) => {
+        const ch = ctx.channels?.find((c) => c.name === 'signal') as any;
+        if (!ch?.findGroupByName || !ch?.leaveGroup)
+          throw new Error('Signal channel not connected');
+        const group = await ch.findGroupByName(args.groupName as string);
+        if (!group)
+          throw new Error(`Signal group "${args.groupName}" not found`);
+        await ch.leaveGroup(group.id);
+        return JSON.stringify({ status: 'left_group', group: group.name });
+      },
+    },
   ],
 
   service: {

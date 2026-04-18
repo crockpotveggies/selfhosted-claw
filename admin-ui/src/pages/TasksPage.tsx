@@ -105,6 +105,11 @@ export function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editedPrompt, setEditedPrompt] = useState('');
+  const [savingTaskId, setSavingTaskId] = useState<string | null>(null);
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -122,6 +127,7 @@ export function TasksPage() {
   }, []);
 
   const runTaskNow = async (taskId: string) => {
+    setActionError('');
     setRunningTaskId(taskId);
     try {
       await apiFetch<{ ok: boolean; message: string }>(
@@ -129,8 +135,66 @@ export function TasksPage() {
         { method: 'POST' },
       );
       await load();
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'Failed to run task',
+      );
     } finally {
       setRunningTaskId(null);
+    }
+  };
+
+  const startEditing = (task: ScheduledTask) => {
+    setActionError('');
+    setEditingTaskId(task.id);
+    setEditedPrompt(task.prompt);
+  };
+
+  const cancelEditing = () => {
+    setEditingTaskId(null);
+    setEditedPrompt('');
+  };
+
+  const savePrompt = async (taskId: string) => {
+    setActionError('');
+    setSavingTaskId(taskId);
+    try {
+      await apiFetch<{ ok: boolean; task: ScheduledTask }>(
+        `/api/admin/tasks/${encodeURIComponent(taskId)}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ prompt: editedPrompt }),
+        },
+      );
+      cancelEditing();
+      await load();
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'Failed to save task prompt',
+      );
+    } finally {
+      setSavingTaskId(null);
+    }
+  };
+
+  const deletePromptTask = async (taskId: string) => {
+    if (!window.confirm('Delete this scheduled task?')) return;
+    setActionError('');
+    setDeletingTaskId(taskId);
+    try {
+      await apiFetch<{ ok: boolean; message: string }>(
+        `/api/admin/tasks/${encodeURIComponent(taskId)}`,
+        { method: 'DELETE' },
+      );
+      if (expandedId === taskId) setExpandedId(null);
+      if (editingTaskId === taskId) cancelEditing();
+      await load();
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'Failed to delete task',
+      );
+    } finally {
+      setDeletingTaskId(null);
     }
   };
 
@@ -170,6 +234,11 @@ export function TasksPage() {
         </CButton>
       </CCardHeader>
       <CCardBody className="p-0">
+        {actionError && (
+          <div className="px-3 py-2 text-danger small border-bottom">
+            {actionError}
+          </div>
+        )}
         <PaginatedTable
           items={tasks}
           renderTable={(pageItems) => (
@@ -291,18 +360,90 @@ export function TasksPage() {
                                     ? 'Queueing...'
                                     : 'Run now'}
                                 </CButton>
+                                <CButton
+                                  size="sm"
+                                  color="secondary"
+                                  variant="outline"
+                                  className="ms-2"
+                                  disabled={deletingTaskId === task.id}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    startEditing(task);
+                                  }}
+                                >
+                                  Edit prompt
+                                </CButton>
+                                <CButton
+                                  size="sm"
+                                  color="danger"
+                                  variant="outline"
+                                  className="ms-2"
+                                  disabled={deletingTaskId === task.id}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void deletePromptTask(task.id);
+                                  }}
+                                >
+                                  {deletingTaskId === task.id
+                                    ? 'Deleting...'
+                                    : 'Delete'}
+                                </CButton>
                               </div>
                               <div className="mb-2">
                                 <strong>Full prompt:</strong>
-                                <pre
-                                  className="mt-1 mb-0"
-                                  style={{
-                                    whiteSpace: 'pre-wrap',
-                                    fontSize: '0.8rem',
-                                  }}
-                                >
-                                  {task.prompt}
-                                </pre>
+                                {editingTaskId === task.id ? (
+                                  <>
+                                    <textarea
+                                      className="form-control mt-1"
+                                      rows={6}
+                                      value={editedPrompt}
+                                      onChange={(event) =>
+                                        setEditedPrompt(event.target.value)
+                                      }
+                                      onClick={(event) =>
+                                        event.stopPropagation()
+                                      }
+                                    />
+                                    <div className="mt-2">
+                                      <CButton
+                                        size="sm"
+                                        color="primary"
+                                        disabled={savingTaskId === task.id}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          void savePrompt(task.id);
+                                        }}
+                                      >
+                                        {savingTaskId === task.id
+                                          ? 'Saving...'
+                                          : 'Save prompt'}
+                                      </CButton>
+                                      <CButton
+                                        size="sm"
+                                        color="secondary"
+                                        variant="ghost"
+                                        className="ms-2"
+                                        disabled={savingTaskId === task.id}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          cancelEditing();
+                                        }}
+                                      >
+                                        Cancel
+                                      </CButton>
+                                    </div>
+                                  </>
+                                ) : (
+                                  <pre
+                                    className="mt-1 mb-0"
+                                    style={{
+                                      whiteSpace: 'pre-wrap',
+                                      fontSize: '0.8rem',
+                                    }}
+                                  >
+                                    {task.prompt}
+                                  </pre>
+                                )}
                               </div>
                               {task.script && (
                                 <div className="mb-2">

@@ -33,6 +33,7 @@ vi.mock('./settings-store.js', () => ({
   setIntegrationEnabled: vi.fn(),
 }));
 
+import { getIntegration } from './registry.js';
 import { SmsSocketChannel } from './sms-socket.js';
 
 class MockWebSocket {
@@ -142,6 +143,7 @@ describe('SmsSocketChannel', () => {
     registeredGroups.mockReset();
     registeredGroups.mockReturnValue({});
     MockWebSocket.instances = [];
+    vi.useRealTimers();
     vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
   });
 
@@ -230,6 +232,52 @@ describe('SmsSocketChannel', () => {
     await channel.disconnect();
   });
 
+  it('suppresses duplicate agent sms tool sends within the short replay window', async () => {
+    const channel = new SmsSocketChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
+    await channel.connect();
+
+    const tool = getIntegration('sms-socket')?.tools?.find(
+      (candidate) => candidate.name === 'sms_socket.send_message',
+    );
+    expect(tool?.execute).toBeTypeOf('function');
+
+    const first = await tool!.execute!(
+      { to: '+15557654321', text: 'hello from claw' },
+      {
+        settings: integrationSettings,
+        sourceGroup: 'main',
+        isMain: true,
+        calendarAccess: true,
+        chatJid: 'signal:user:+15550001111',
+        channels: [channel],
+      },
+    );
+    const second = await tool!.execute!(
+      { to: '+15557654321', text: 'hello from claw' },
+      {
+        settings: integrationSettings,
+        sourceGroup: 'main',
+        isMain: true,
+        calendarAccess: true,
+        chatJid: 'signal:user:+15550001111',
+        channels: [channel],
+      },
+    );
+
+    const sentMessages = MockWebSocket.instances[0]?.sentMessages || [];
+    const sendRequests = sentMessages.filter(
+      (message) => message.type === 'sendSms',
+    );
+    expect(sendRequests).toHaveLength(1);
+    expect(first).toContain('"status":"sent"');
+    expect(second).toContain('"status":"duplicate"');
+
+    await channel.disconnect();
+  });
+
   it('normalizes live inbound and outbound websocket events', async () => {
     const channel = new SmsSocketChannel(
       { onMessage, onChatMetadata, registeredGroups },
@@ -276,5 +324,31 @@ describe('SmsSocketChannel', () => {
     );
 
     await channel.disconnect();
+  });
+
+  it('does not schedule a background reconnect loop when the initial websocket connection fails', async () => {
+    vi.useFakeTimers();
+
+    class FailingWebSocket extends MockWebSocket {
+      constructor(url: string | URL) {
+        super(url);
+        queueMicrotask(() => this.onerror?.());
+        queueMicrotask(() => this.onclose?.());
+      }
+    }
+
+    vi.stubGlobal('WebSocket', FailingWebSocket as unknown as typeof WebSocket);
+
+    const channel = new SmsSocketChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
+
+    await expect(channel.connect()).rejects.toThrow(
+      'SMS Socket websocket failed',
+    );
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(FailingWebSocket.instances).toHaveLength(1);
   });
 });

@@ -11,6 +11,7 @@ import type {
   ContactView,
   ControlPolicy,
   ControlSettings,
+  EffectiveToolRegistryItem,
   GoogleContactsSetup,
   GoogleOAuthStartResponse,
   PendingControlAction,
@@ -24,6 +25,7 @@ import type {
   SignalProvisionMode,
   SkillDetailView,
   SkillView,
+  ToolAccessPolicy,
   ToastMessage,
   ToolRegistryItem,
   VerifiedIdentity,
@@ -156,6 +158,11 @@ export function useAdminDashboard() {
   );
   const toolsState = useJson('tools', () =>
     apiFetch<{ tools: ToolRegistryItem[] }>('/api/admin/tools'),
+  );
+  const effectiveToolRegistryState = useJson('effective-tools', () =>
+    apiFetch<{ tools: EffectiveToolRegistryItem[]; policy: ToolAccessPolicy }>(
+      '/api/admin/tool-registry',
+    ),
   );
   const signalProfileState = useJson('signal-profile', () =>
     apiFetch<{ profile: SignalProfileSettings }>('/api/admin/signal/profile'),
@@ -299,6 +306,13 @@ export function useAdminDashboard() {
   const policy = policyState.data?.policy || { pausedProviders: [] };
   const verifiedIdentities = verifiedState.data?.verifiedIdentities || [];
   const tools = toolsState.data?.tools || [];
+  const effectiveTools = effectiveToolRegistryState.data?.tools || [];
+  const toolAccessPolicy = effectiveToolRegistryState.data?.policy || {
+    internalToolsEnabled: true,
+    externalToolsEnabled: true,
+    tools: {},
+    updatedAt: '',
+  };
   const pendingActions = pendingState.data?.pending || [];
   const providers = providerState.data?.providers || {
     googleContactsAvailable: false,
@@ -353,6 +367,7 @@ export function useAdminDashboard() {
     verifiedState.error,
     settingsState.error,
     toolsState.error,
+    effectiveToolRegistryState.error,
     signalProfileState.error,
     googleContactsSetupState.error,
     providerState.error,
@@ -392,6 +407,7 @@ export function useAdminDashboard() {
       verifiedState.refresh(),
       settingsState.refresh(),
       toolsState.refresh(),
+      effectiveToolRegistryState.refresh(),
       signalProfileState.refresh(),
       googleContactsSetupState.refresh(),
       providerState.refresh(),
@@ -787,6 +803,9 @@ export function useAdminDashboard() {
     startSignalRegistration,
     tools,
     toolsState,
+    effectiveTools,
+    effectiveToolRegistryState,
+    toolAccessPolicy,
     toast,
     verifiedIdentities,
     verifiedIdentityInput,

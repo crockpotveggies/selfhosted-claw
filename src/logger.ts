@@ -9,9 +9,11 @@
  */
 
 import path from 'path';
-import { fileURLToPath } from 'url';
 
 import pino from 'pino';
+
+import { createJsonlLogStream } from './logger/jsonl-stream.js';
+import { createSqliteLogStream } from './logger/sqlite-stream.js';
 
 // ---------------------------------------------------------------------------
 // Resolve STORE_DIR without importing config.js (avoids circular import)
@@ -24,14 +26,24 @@ const STORE_DIR_RESOLVED = path.resolve(PROJECT_ROOT, 'store');
 // Pino instance
 // ---------------------------------------------------------------------------
 
-const isDev =
-  process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test';
 const isTest =
   process.env.NODE_ENV === 'test' ||
   typeof (globalThis as Record<string, unknown>).vi !== 'undefined';
 
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
 const LOG_DB_PATH = path.join(STORE_DIR_RESOLVED, 'logs.db');
+const LOG_JSONL_PATH = path.resolve(PROJECT_ROOT, 'logs', 'live.jsonl');
+
+type LogPersistenceMode = 'sqlite' | 'jsonl-fallback' | 'stdout-only';
+
+let logPersistenceInfo: {
+  mode: LogPersistenceMode;
+  sqlitePath: string;
+  jsonlPath?: string;
+} = {
+  mode: 'stdout-only',
+  sqlitePath: LOG_DB_PATH,
+};
 
 let pinoInstance: pino.Logger;
 
@@ -40,41 +52,11 @@ if (isTest) {
   pinoInstance = pino({ level: 'silent' });
 } else {
   try {
-    const __dirname = path.dirname(fileURLToPath(import.meta.url));
-    const sqliteTransportPath = path.join(
-      __dirname,
-      'logger',
-      'sqlite-transport.js',
-    );
-
-    const targets: pino.TransportTargetOptions[] = [];
-
-    if (isDev) {
-      targets.push({
-        target: 'pino-pretty',
-        options: {
-          colorize: true,
-          translateTime: 'HH:MM:ss.l',
-          ignore: 'pid,hostname',
-        },
-        level: LOG_LEVEL,
-      });
-    } else {
-      targets.push({
-        target: 'pino/file',
-        options: { destination: 1 },
-        level: LOG_LEVEL,
-      });
-    }
-
-    targets.push({
-      target: sqliteTransportPath,
-      options: {
-        dbPath: LOG_DB_PATH,
-        minLevel: process.env.LOG_SQLITE_MIN_LEVEL || 'info',
-      },
-      level: 'debug',
+    const sqliteStream = createSqliteLogStream({
+      dbPath: LOG_DB_PATH,
+      minLevel: process.env.LOG_SQLITE_MIN_LEVEL || 'info',
     });
+    const stdoutStream = pino.destination(1);
 
     pinoInstance = pino(
       {
@@ -93,10 +75,64 @@ if (isTest) {
           err: pino.stdSerializers.err,
         },
       },
-      pino.transport({ targets }),
+      pino.multistream([
+        { stream: stdoutStream },
+        { stream: sqliteStream },
+      ]),
     );
-  } catch {
-    pinoInstance = pino({ level: LOG_LEVEL });
+    logPersistenceInfo = {
+      mode: 'sqlite',
+      sqlitePath: LOG_DB_PATH,
+    };
+  } catch (err) {
+    process.stderr.write(
+      `[WARN] SQLite logger disabled: ${err instanceof Error ? err.message : err}\n`,
+    );
+    try {
+      const jsonlStream = createJsonlLogStream({
+        filePath: LOG_JSONL_PATH,
+      });
+      const stdoutStream = pino.destination(1);
+      pinoInstance = pino(
+        {
+          level: LOG_LEVEL === 'trace' ? 'trace' : 'debug',
+          redact: {
+            paths: [
+              '*.apiKey',
+              '*.token',
+              '*.secret',
+              '*.password',
+              '*.OPENAI_API_KEY',
+            ],
+            censor: '[REDACTED]',
+          },
+          serializers: {
+            err: pino.stdSerializers.err,
+          },
+        },
+        pino.multistream([
+          { stream: stdoutStream },
+          { stream: jsonlStream },
+        ]),
+      );
+      logPersistenceInfo = {
+        mode: 'jsonl-fallback',
+        sqlitePath: LOG_DB_PATH,
+        jsonlPath: LOG_JSONL_PATH,
+      };
+      process.stderr.write(
+        `[WARN] Falling back to JSONL log persistence at ${LOG_JSONL_PATH}\n`,
+      );
+    } catch (fallbackErr) {
+      process.stderr.write(
+        `[WARN] JSONL logger disabled: ${fallbackErr instanceof Error ? fallbackErr.message : fallbackErr}\n`,
+      );
+      pinoInstance = pino({ level: LOG_LEVEL });
+      logPersistenceInfo = {
+        mode: 'stdout-only',
+        sqlitePath: LOG_DB_PATH,
+      };
+    }
   }
 }
 
@@ -110,6 +146,14 @@ export function createChildLogger(
   bindings: Record<string, unknown>,
 ): pino.Logger {
   return pinoInstance.child(bindings);
+}
+
+export function getLogPersistenceInfo(): {
+  mode: LogPersistenceMode;
+  sqlitePath: string;
+  jsonlPath?: string;
+} {
+  return { ...logPersistenceInfo };
 }
 
 // ---------------------------------------------------------------------------

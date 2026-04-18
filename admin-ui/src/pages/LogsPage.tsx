@@ -85,8 +85,8 @@ export function LogsPage() {
           </CButton>
         </div>
         <p className="mutedNote">
-          Structured logs from all integrations, persisted in SQLite. Filter
-          by level, integration, group, or search text.
+          Structured logs from all integrations. Filter by level,
+          integration, group, or search text.
         </p>
       </section>
 

@@ -62,6 +62,18 @@ export interface ControlPolicy {
   pausedProviders: string[];
 }
 
+export interface ToolAccessRule {
+  enabled?: boolean;
+  controllerOnly?: boolean;
+}
+
+export interface ToolAccessPolicy {
+  internalToolsEnabled: boolean;
+  externalToolsEnabled: boolean;
+  tools: Record<string, ToolAccessRule>;
+  updatedAt: string;
+}
+
 export interface VerifiedIdentity {
   identity: string;
   label: string;
@@ -101,6 +113,24 @@ export interface ToolRegistryItem {
   previewable?: boolean;
   toolType?: string;
   iconKey?: string;
+}
+
+export interface EffectiveToolRegistryItem {
+  name: string;
+  description: string;
+  source: string;
+  sourceKind: 'core-runner' | 'integration' | 'control-action';
+  location: 'container' | 'host' | 'control-plane';
+  agentVisible: boolean;
+  controllerOnly: boolean;
+  commandableAction?: boolean;
+  interactiveView?: boolean;
+  previewable?: boolean;
+  toolType?: string;
+  iconKey?: string;
+  enabled: boolean;
+  internalEnabled: boolean;
+  externalEnabled: boolean;
 }
 
 export interface SetupStatusResponse {

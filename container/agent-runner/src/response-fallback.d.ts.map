@@ -1,0 +1,1 @@
+{"version":3,"file":"response-fallback.d.ts","sourceRoot":"","sources":["response-fallback.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,mBAAmB;IAClC,IAAI,EAAE,QAAQ,GAAG,MAAM,GAAG,WAAW,GAAG,MAAM,CAAC;IAC/C,OAAO,EAAE,MAAM,GAAG,IAAI,CAAC;IACvB,IAAI,CAAC,EAAE,MAAM,CAAC;CACf;AA4BD,wBAAgB,uBAAuB,CACrC,OAAO,EAAE,mBAAmB,EAAE,GAC7B,MAAM,CAgCR"}

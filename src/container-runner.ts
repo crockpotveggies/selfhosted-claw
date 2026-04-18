@@ -24,9 +24,8 @@ import {
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { resolveHostPath } from './host-paths.js';
-import { getRegisteredIntegrations } from './integrations/registry.js';
-import { isIntegrationEnabled } from './integrations/settings-store.js';
 import { logger } from './logger.js';
+import { buildSessionToolRegistrySnapshot } from './tool-registry.js';
 import {
   CONTAINER_RUNTIME_BIN,
   hostGatewayArgs,
@@ -478,9 +477,9 @@ export async function runContainerAgent(
     const debugEnabled =
       typeof (logger as { isLevelEnabled?: (l: string) => boolean })
         .isLevelEnabled === 'function'
-        ? (
-            logger as { isLevelEnabled: (l: string) => boolean }
-          ).isLevelEnabled('debug')
+        ? (logger as { isLevelEnabled: (l: string) => boolean }).isLevelEnabled(
+            'debug',
+          )
         : (logger as { level?: string }).level === 'debug' ||
           (logger as { level?: string }).level === 'trace';
 
@@ -847,39 +846,34 @@ export function writeIntegrationToolsManifest(
   groupFolder: string,
   isMain: boolean,
   controllerTriggered: boolean = false,
+  options?: {
+    scheduledTaskMode?: boolean;
+  },
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });
-
-  const integrations = getRegisteredIntegrations();
-  const tools: Array<{
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-    integration: string;
-    controllerOnly?: boolean;
-  }> = [];
-
-  for (const def of integrations) {
-    if (!isIntegrationEnabled(def.name)) continue;
-    if (!def.tools) continue;
-    for (const tool of def.tools) {
-      if (tool.location !== 'host') continue;
-      // Filter controller-only tools unless the session is acting with
-      // controller privileges (main chat or an explicitly controller-triggered run).
-      if (tool.controllerOnly && !(isMain || controllerTriggered)) continue;
-      tools.push({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters,
-        integration: def.name,
-        controllerOnly: tool.controllerOnly,
-      });
-    }
-  }
+  const snapshot = buildSessionToolRegistrySnapshot({
+    groupFolder,
+    isMain,
+    controllerTriggered,
+    scheduledTaskMode: options?.scheduledTaskMode,
+  });
 
   const manifestFile = path.join(groupIpcDir, 'integration_tools.json');
-  fs.writeFileSync(manifestFile, JSON.stringify(tools, null, 2));
+  fs.writeFileSync(manifestFile, JSON.stringify(snapshot.integrationManifest, null, 2));
+
+  const allowedToolsFile = path.join(groupIpcDir, 'allowed_tools.json');
+  fs.writeFileSync(
+    allowedToolsFile,
+    JSON.stringify(
+      {
+        internal: isMain || controllerTriggered,
+        allowedToolNames: snapshot.allowedToolNames,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 export function refreshIntegrationToolsManifests(

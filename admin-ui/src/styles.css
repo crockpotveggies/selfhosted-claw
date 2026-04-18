@@ -3,14 +3,6 @@
 }
 
 /* Fix Bootstrap checkbox visibility in dark mode */
-.form-check-input:checked {
-  background-color: var(--cui-primary);
-  border-color: var(--cui-primary);
-}
-.form-check-input:checked[type="checkbox"] {
-  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='m6 10 3 3 6-6'/%3e%3c/svg%3e");
-}
-
 html,
 body,
 #root {
@@ -681,4 +673,74 @@ pre {
   background: rgba(255, 80, 80, 0.14);
   border-color: rgba(255, 80, 80, 0.3);
   color: #ff8a8a;
+}
+
+.nc-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 40px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.nc-switch-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: rgba(140, 150, 167, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  transition: background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.nc-switch-thumb {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  margin-left: 3px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: transform 0.18s ease;
+}
+
+.nc-switch.is-on .nc-switch-track {
+  background: linear-gradient(180deg, #43a047, #2e7d32);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.nc-switch:not(.is-on) .nc-switch-track {
+  background: linear-gradient(180deg, #d84343, #b71c1c);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.nc-switch.is-disabled .nc-switch-track {
+  background: linear-gradient(180deg, #8c96a7, #6d7785);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.nc-switch.is-on .nc-switch-thumb {
+  transform: translateX(16px);
+}
+
+.nc-switch.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.tool-description {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-row-disabled {
+  opacity: 0.55;
 }

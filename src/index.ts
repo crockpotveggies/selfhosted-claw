@@ -59,6 +59,7 @@ import {
   setRouterState,
   storeChatMetadata,
   storeMessage,
+  storeMessageIfNew,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { ControlActionService } from './control-actions.js';
@@ -1310,6 +1311,7 @@ async function main(): Promise<void> {
     const isControllerMessage =
       msg.is_from_me || (!!controllerSender && msg.sender === controllerSender);
 
+    let stored = false;
     if (!isControllerMessage) {
       const sanitized = await sanitizeInboundMessage(msg);
       if (sanitized.blocked) {
@@ -1325,9 +1327,17 @@ async function main(): Promise<void> {
           'Inbound message sanitized by guard script',
         );
       }
-      storeMessage(sanitized.message);
+      stored = storeMessageIfNew(sanitized.message);
     } else {
-      storeMessage(msg);
+      stored = storeMessageIfNew(msg);
+    }
+
+    if (!stored) {
+      logger.info(
+        { chatJid, sender: msg.sender, messageId: msg.id },
+        'Suppressed duplicate inbound message before runner enqueue',
+      );
+      return;
     }
 
     // Trigger agent processing immediately for registered groups.
