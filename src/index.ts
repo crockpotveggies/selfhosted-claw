@@ -44,9 +44,11 @@ import {
 } from './container-runtime.js';
 import {
   deleteRegisteredGroup,
+  getActionRecord,
   getAllChats,
   getAllRegisteredGroups,
   getAllTasks,
+  getChatPendingFollowupActionId,
   getLastBotMessageTimestamp,
   getMessagesSince,
   hasMessageFromSender,
@@ -97,6 +99,10 @@ import {
 } from './sender-allowlist.js';
 import { startSessionCleanup } from './session-cleanup.js';
 import { startSchedulerLoop } from './task-scheduler.js';
+import {
+  getDeepResearchService,
+  initializeDeepResearchService,
+} from './research/service.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -261,6 +267,35 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
+export function _getPendingResearchFollowupReply(
+  action: { progress_json?: string | null; type?: string | null } | null,
+  messages: Array<Pick<NewMessage, 'sender' | 'content'>>,
+): string | null {
+  if (!action || action.type !== 'deep_research' || !action.progress_json) {
+    return null;
+  }
+  const normalized = messages
+    .map((message) => ({
+      sender: message.sender,
+      content: message.content.trim(),
+    }))
+    .filter((message) => message.content.length > 0);
+  if (normalized.length === 0) return null;
+
+  const progress = JSON.parse(action.progress_json) as {
+    requestedBySender?: string | null;
+  };
+  const uniqueSenders = [...new Set(normalized.map((message) => message.sender))];
+  if (uniqueSenders.length !== 1) return null;
+  if (
+    progress.requestedBySender &&
+    uniqueSenders[0] !== progress.requestedBySender
+  ) {
+    return null;
+  }
+  return normalized.map((message) => message.content).join('\n');
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -285,6 +320,74 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   );
 
   if (missedMessages.length === 0) return true;
+
+  const latestMessage = missedMessages[missedMessages.length - 1];
+  const latestContent = latestMessage.content.trim();
+  const pendingResearchActionId = getChatPendingFollowupActionId(chatJid);
+  if (pendingResearchActionId) {
+    const pendingAction = getActionRecord(pendingResearchActionId);
+    if (pendingAction?.type === 'deep_research') {
+      const followupReply = _getPendingResearchFollowupReply(
+        pendingAction,
+        missedMessages,
+      );
+      try {
+        if (followupReply) {
+          await getDeepResearchService().answerFollowup(
+            pendingResearchActionId,
+            followupReply,
+            latestMessage.sender,
+          );
+          lastAgentTimestamp[chatJid] = latestMessage.timestamp;
+          saveState();
+          logger.info(
+            { chatJid, actionId: pendingResearchActionId },
+            'Routed inbound message to pending deep research follow-up',
+          );
+          return true;
+        }
+      } catch (err) {
+        logger.warn(
+          { chatJid, err, actionId: pendingResearchActionId },
+          'Failed to route deep research follow-up; falling back to normal routing',
+        );
+      }
+    }
+  }
+
+  if (/^\/research(?:\s+.+)?$/i.test(latestContent)) {
+    if (!isMainGroup) {
+      await channel.sendMessage(
+        chatJid,
+        'Deep research can only be started from the controller chat by default.',
+        { threadId: latestMessage.thread_id || undefined },
+      );
+      lastAgentTimestamp[chatJid] = latestMessage.timestamp;
+      saveState();
+      return true;
+    }
+    const prompt = latestContent.replace(/^\/research\s*/i, '').trim();
+    if (!prompt) {
+      await channel.sendMessage(
+        chatJid,
+        'Usage: /research <topic>. Example: /research Life in Canada',
+        { threadId: latestMessage.thread_id || undefined },
+      );
+      lastAgentTimestamp[chatJid] = latestMessage.timestamp;
+      saveState();
+      return true;
+    }
+    await getDeepResearchService().start({
+      prompt,
+      groupFolder: group.folder,
+      chatJid,
+      senderId: latestMessage.sender,
+      senderName: latestMessage.sender_name,
+    });
+    lastAgentTimestamp[chatJid] = latestMessage.timestamp;
+    saveState();
+    return true;
+  }
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
@@ -951,6 +1054,12 @@ async function main(): Promise<void> {
       await channel.sendMessage(jid, text, { threadId: options?.threadId });
     }
   };
+  initializeDeepResearchService({
+    sendMessage: (jid, text) =>
+      sendHostMessage(jid, text, { bypassPause: true }),
+    channels: () => channels,
+    runSpecDispatcher,
+  });
   executeAgentDirective = async (
     directive: ReturnType<typeof parseAgentOutput>['directives'][number],
     sourceChatJid: string,

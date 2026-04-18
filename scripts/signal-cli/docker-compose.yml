@@ -16,3 +16,19 @@ services:
         target: /enable-read-receipts.sh
         read_only: true
     entrypoint: ["/bin/sh", "/enable-read-receipts.sh"]
+    networks:
+      - default
+
+# Pin the bridge network to a subnet that cannot collide with a LAN device.
+# Docker auto-allocates from 172.17.0.0/12 upward, and on this host it had
+# a tendency to land on 172.20.0.0/16 — the same subnet as the Android SMS
+# gateway phone (172.20.1.42), shadowing the route and breaking outbound
+# WebSocket connectivity from the control plane. 10.90.0.0/24 is in RFC1918
+# but outside the default 172.16/12 auto-allocation pool, so it won't be
+# handed out to any other project and won't collide with common LAN setups.
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.90.0.0/24

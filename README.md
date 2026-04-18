@@ -331,6 +331,7 @@ Point `INBOUND_GUARD_SCRIPT` at your own script if you want to customize the inj
 - **Signal-first messaging** - Signal is the built-in default channel, with support for other channels still available through the channel registry model.
 - **SMS over local WebSocket** - The `sms-socket` integration can send and receive SMS through an Android gateway app on your LAN.
 - **Unified control plane** - The admin UI and the verified Signal control chat use the same host-side control actions and audit log.
+- **Deep research reports** - `/research <topic>` and the `deep_research_start` tool create long-running, source-backed research jobs that save artifacts under `groups/<workspace>/research/<slug>/` and deliver only `<slug>-report.pdf` back to supported channels.
 - **Isolated group context** - Each group has its own `AGENT.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted to it.
 - **Main channel** - Your private channel (self-chat) for admin control; every group is completely isolated
 - **Scheduled tasks** - Recurring jobs that run the Self-Hosted Claw agent and can message you back
@@ -340,6 +341,14 @@ Point `INBOUND_GUARD_SCRIPT` at your own script if you want to customize the inj
 - **Credential security** - Credentials stay host-side and are passed only through explicit environment variables or host-side integrations you configure.
 - **Native tool loop** - Shell, files, web fetch/search, task controls, and nested delegation are handled by Self-Hosted Claw itself instead of a provider SDK
 - **Inbound guard hook** - A host-side script sanitizes inbound messages before storage to reduce prompt-injection risk
+
+## Deep Research
+
+- Start deep research explicitly with `/research <topic>` in the controller chat, or let the agent call `deep_research_start` for broad, comparative, or source-heavy requests.
+- Deep research uses provider-backed search and fetch only inside the `deep-research` integration. Standard `web_search` and `web_fetch` stay on their existing quick-lookup path.
+- Generated artifacts are stored in the workspace filesystem under `groups/<workspace>/research/<topic-slug>/`.
+- Only the final PDF is delivered back to the user. Sidecar files stay on disk in the workspace.
+- The admin UI now includes **Research** and **Files** pages for quota tracking, active jobs, artifact paths, and workspace mount visibility.
 
 ## Usage
 

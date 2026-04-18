@@ -161,6 +161,12 @@ const QR_DATA_FILE = path.join(STORE_DIR, 'qr-data.txt');
 
 class WhatsAppChannel implements Channel {
   name = 'whatsapp';
+  capabilities = {
+    attachments: {
+      pdf: true,
+      maxBytes: 25_000_000,
+    },
+  };
 
   private sock!: WASocket;
   private connected = false;
@@ -437,6 +443,22 @@ class WhatsAppChannel implements Channel {
       log.error({ err, jid }, 'WhatsApp outbound send failed');
       throw err;
     }
+  }
+
+  async sendAttachment(input: {
+    jid: string;
+    filePath: string;
+    mimeType: string;
+    caption?: string;
+    fileName?: string;
+  }): Promise<void> {
+    const document = fs.readFileSync(input.filePath);
+    await this.sock.sendMessage(input.jid, {
+      document,
+      mimetype: input.mimeType,
+      fileName: input.fileName || path.basename(input.filePath),
+      caption: input.caption,
+    });
   }
 
   isConnected(): boolean {

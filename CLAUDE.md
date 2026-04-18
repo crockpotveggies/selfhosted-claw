@@ -49,6 +49,8 @@ Integrations are the primary extension mechanism. Each integration is a self-con
 
 Creating a new integration: add a file to `src/integrations/`, call `registerIntegration()`, import it from `src/integrations/index.ts`.
 
+Deep research is an installable integration that adds `/research`, `deep_research_start`, workspace-scoped research artifacts, and PDF report delivery.
+
 ## Admin UI
 
 React + CoreUI dashboard at `http://localhost:3030` with pages:
@@ -66,6 +68,14 @@ React + CoreUI dashboard at `http://localhost:3030` with pages:
 - **Logs** â€” structured log viewer with filtering (level, integration, group, text search)
 
 Notification bell in header shows integration health alerts (expired tokens, offline services, circuit breakers).
+
+The admin UI also includes **Research** and **Files** pages for long-running research jobs, quota visibility, workspace mount inventory, and generated report artifacts.
+
+## Deep Research Notes
+
+- Deep research reuses the existing `ActionRecord` + `RunSpec` infrastructure instead of introducing a parallel queue.
+- Reports are written under `groups/<workspace>/research/<topic-slug>/`.
+- Only `<topic-slug>-report.pdf` is sent back to the originating channel; markdown, HTML, plan, and sources files remain local-only workspace artifacts.
 
 ## Structured Logging
 

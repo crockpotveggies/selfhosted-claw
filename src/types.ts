@@ -89,16 +89,34 @@ export interface ChannelGroupLookupResult {
   jid?: string;
 }
 
+export interface ChannelAttachmentInput {
+  jid: string;
+  filePath: string;
+  mimeType: string;
+  caption?: string;
+  fileName?: string;
+  threadId?: string;
+}
+
+export interface ChannelCapabilities {
+  attachments?: {
+    pdf: boolean;
+    maxBytes: number;
+  };
+}
+
 // --- Channel abstraction ---
 
 export interface Channel {
   name: string;
+  capabilities?: ChannelCapabilities;
   connect(): Promise<void>;
   sendMessage(
     jid: string,
     text: string,
     options?: { threadId?: string },
   ): Promise<void>;
+  sendAttachment?(input: ChannelAttachmentInput): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;

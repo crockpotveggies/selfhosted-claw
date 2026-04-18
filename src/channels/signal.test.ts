@@ -106,6 +106,36 @@ describe('SignalChannel', () => {
     });
   });
 
+  it('sends attachments through signal-cli rpc', async () => {
+    const fetchMock = vi.fn(async () => makeJsonResponse({}, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const tmpFile = 'signal-report.pdf';
+    await import('fs').then((fs) => fs.writeFileSync(tmpFile, 'pdf-body'));
+
+    const channel = new SignalChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      'http://127.0.0.1:8080',
+      '+15555550123',
+    );
+
+    await channel.sendAttachment?.({
+      jid: 'signal:user:+15551234567',
+      filePath: tmpFile,
+      mimeType: 'application/pdf',
+      fileName: 'life-canada-report.pdf',
+    });
+
+    const firstCall = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit | undefined,
+    ];
+    const body = JSON.parse(String(firstCall[1]?.body));
+    expect(body.base64_attachments).toHaveLength(1);
+
+    await import('fs').then((fs) => fs.unlinkSync(tmpFile));
+  });
+
   it('creates Signal groups and sends the initial message', async () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body || '{}'));

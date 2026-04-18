@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+
 import { readEnvFile } from '../env.js';
 import { ASSISTANT_NAME } from '../config.js';
 import { canonicalizeIdentity } from '../control-identities.js';
@@ -287,6 +290,12 @@ async function fetchSlackSocketUrl(appToken: string): Promise<string> {
 
 class SlackChannel implements Channel {
   name = INTEGRATION_NAME;
+  capabilities = {
+    attachments: {
+      pdf: true,
+      maxBytes: 25_000_000,
+    },
+  };
 
   private connected = false;
   private stopped = false;
@@ -361,6 +370,52 @@ class SlackChannel implements Channel {
         ...(options?.threadId ? { thread_ts: options.threadId } : {}),
       });
     }
+  }
+
+  async sendAttachment(input: {
+    jid: string;
+    filePath: string;
+    mimeType: string;
+    caption?: string;
+    fileName?: string;
+    threadId?: string;
+  }): Promise<void> {
+    const channel = toSlackConversationId(input.jid);
+    const fileName = input.fileName || path.basename(input.filePath);
+    const fileBuffer = fs.readFileSync(input.filePath);
+    const uploadInfo = await callSlackApi(
+      'files.getUploadURLExternal',
+      this.botToken,
+      {
+        filename: fileName,
+        length: fileBuffer.byteLength,
+      },
+    );
+    const uploadUrl = String(uploadInfo.upload_url || '');
+    const fileId = String(uploadInfo.file_id || '');
+    if (!uploadUrl || !fileId) {
+      throw new Error('Slack upload URL negotiation failed');
+    }
+
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': input.mimeType,
+      },
+      body: fileBuffer,
+    });
+    if (!uploadResponse.ok) {
+      throw new Error(
+        `Slack file upload failed with ${uploadResponse.status}`,
+      );
+    }
+
+    await callSlackApi('files.completeUploadExternal', this.botToken, {
+      files: [{ id: fileId, title: fileName }],
+      channel_id: channel,
+      initial_comment: input.caption || '',
+      ...(input.threadId ? { thread_ts: input.threadId } : {}),
+    });
   }
 
   async syncGroups(): Promise<void> {

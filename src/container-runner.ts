@@ -145,31 +145,24 @@ function buildVolumeMounts(
   );
 
   if (isMain) {
-    // Main gets the project root read-only. Writable paths the agent needs
-    // (store, group folder, IPC, runtime state) are mounted separately below.
-    // Read-only prevents the agent from modifying host application code
-    // (src/, dist/, package.json, etc.) which would bypass the sandbox
-    // entirely on next restart.
-    mounts.push({
-      hostPath: hostProjectRoot,
-      containerPath: '/workspace/project',
-      readonly: true,
-    });
-
-    // Shadow .env so the agent cannot read secrets from the mounted project root.
-    // Secrets stay on the host and are provided through explicit runtime env.
-    const envFile = path.join(projectRoot, '.env');
-    if (fs.existsSync(envFile)) {
-      mounts.push({
-        hostPath: '/dev/null',
-        containerPath: '/workspace/project/.env',
-        readonly: true,
-      });
-    }
-
-    // Main gets writable access to the store (SQLite DB) so it can
-    // query and write to the database directly.
-    const storeDir = path.join(projectRoot, 'store');
+    // We intentionally do NOT bind-mount the entire project root. Two
+    // earlier attempts failed:
+    //   1. project:ro + shadow .env via /dev/null → runc cannot create a
+    //      mountpoint inside an already-RO parent bind.
+    //   2. Pre-staging via fs.cpSync → the recursive synchronous copy ran
+    //      on first message after restart and blocked the event loop,
+    //      freezing the admin API and agent processing.
+    //
+    // The agent only needs a handful of subpaths (store, global, controller
+    // notes, the group folder). Those are mounted individually below. Code
+    // that referenced "/workspace/project/groups/global" falls back to
+    // "/workspace/global" — see container/agent-runner/src/index.ts ~L496.
+    //
+    // Main still gets writable store at the legacy nested path. With no RO
+    // parent bind, runc is free to create /workspace/project in the
+    // container's writable rootfs and nest /workspace/project/store under
+    // it without issue.
+    void projectRoot;
     mounts.push({
       hostPath: resolveHostPath(path.join(mountRoot, 'store')),
       containerPath: '/workspace/project/store',

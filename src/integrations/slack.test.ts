@@ -325,6 +325,71 @@ describe('Slack integration', () => {
     await channel.disconnect();
   });
 
+  it('uploads attachments through the Slack external upload flow', async () => {
+    fetchMock.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://slack.example/upload') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => 'ok',
+        } as Response;
+      }
+      const method = url.split('/').pop();
+      if (method === 'auth.test') {
+        return jsonResponse({ ok: true, user_id: 'U_BOT' });
+      }
+      if (method === 'apps.connections.open') {
+        return jsonResponse({ ok: true, url: 'wss://slack.example/socket' });
+      }
+      if (method === 'files.getUploadURLExternal') {
+        return jsonResponse({
+          ok: true,
+          upload_url: 'https://slack.example/upload',
+          file_id: 'F123',
+        });
+      }
+      if (method === 'files.completeUploadExternal') {
+        return jsonResponse({ ok: true });
+      }
+      if (method === 'conversations.list') {
+        return jsonResponse({ ok: true, channels: [], response_metadata: {} });
+      }
+      throw new Error(`Unexpected Slack API method: ${method}`);
+    });
+
+    const fs = await import('fs');
+    const tmpFile = 'slack-report.pdf';
+    fs.writeFileSync(tmpFile, 'pdf-body');
+
+    const channel = new SlackChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
+    await channel.connect();
+    await channel.sendAttachment?.({
+      jid: 'slack:C123',
+      filePath: tmpFile,
+      mimeType: 'application/pdf',
+      fileName: 'life-canada-report.pdf',
+      caption: 'Report attached',
+    });
+
+    expect(
+      fetchMock.mock.calls.some((call) =>
+        String(call[0]).endsWith('/files.getUploadURLExternal'),
+      ),
+    ).toBe(true);
+    expect(
+      fetchMock.mock.calls.some((call) =>
+        String(call[0]).endsWith('/files.completeUploadExternal'),
+      ),
+    ).toBe(true);
+
+    await channel.disconnect();
+    fs.unlinkSync(tmpFile);
+  });
+
   it('exposes Slack-specific helper behavior', () => {
     expect(isSlackJid('slack:C123')).toBe(true);
     expect(makeSlackJid('D123')).toBe('slack:D123');

@@ -14,6 +14,13 @@ interface QueuedTask {
 
 const MAX_RETRIES = 5;
 const BASE_RETRY_MS = 5000;
+// After exhausting MAX_RETRIES, suppress further attempts for this group for
+// COOLDOWN_MS. Without this, a permanent failure (e.g. broken mount,
+// unauthenticated channel) cycles through 5 retries → reset → new message
+// arrives → 5 more retries → … forever, saturating docker and the log. The
+// cooldown forces manual intervention time while still allowing self-recovery
+// if whatever broke gets fixed.
+const COOLDOWN_MS = 10 * 60_000;
 
 interface GroupState {
   active: boolean;
@@ -26,6 +33,7 @@ interface GroupState {
   containerName: string | null;
   groupFolder: string | null;
   retryCount: number;
+  cooldownUntil: number;
 }
 
 export class GroupQueue {
@@ -50,6 +58,7 @@ export class GroupQueue {
         containerName: null,
         groupFolder: null,
         retryCount: 0,
+        cooldownUntil: 0,
       };
       this.groups.set(groupJid, state);
     }
@@ -64,6 +73,19 @@ export class GroupQueue {
     if (this.shuttingDown) return;
 
     const state = this.getGroup(groupJid);
+
+    if (state.cooldownUntil > Date.now()) {
+      state.pendingMessages = true;
+      const remainingMs = state.cooldownUntil - Date.now();
+      logger.warn(
+        { groupJid, cooldownRemainingMs: remainingMs },
+        'Group in post-failure cooldown, deferring message processing',
+      );
+      setTimeout(() => {
+        if (!this.shuttingDown) this.enqueueMessageCheck(groupJid);
+      }, remainingMs + 500);
+      return;
+    }
 
     if (state.active) {
       state.pendingMessages = true;
@@ -264,9 +286,10 @@ export class GroupQueue {
   private scheduleRetry(groupJid: string, state: GroupState): void {
     state.retryCount++;
     if (state.retryCount > MAX_RETRIES) {
+      state.cooldownUntil = Date.now() + COOLDOWN_MS;
       logger.error(
-        { groupJid, retryCount: state.retryCount },
-        'Max retries exceeded, dropping messages (will retry on next incoming message)',
+        { groupJid, retryCount: state.retryCount, cooldownMs: COOLDOWN_MS },
+        'Max retries exceeded; entering cooldown. Subsequent messages will queue until cooldown expires.',
       );
       state.retryCount = 0;
       return;

@@ -7,6 +7,15 @@ export type TrustTier = (typeof trustTiers)[number];
 export const runnerPools = ['trusted', 'restricted'] as const;
 export type RunnerPool = (typeof runnerPools)[number];
 
+export const researchSubstates = [
+  'scoping',
+  'waiting_for_user',
+  'running',
+  'rendering',
+  'delivering',
+] as const;
+export type ResearchSubstate = (typeof researchSubstates)[number];
+
 export const actionStatuses = [
   'proposed',
   'approved',
@@ -86,6 +95,11 @@ export interface ActionRecord {
   semantic_dedupe_key?: string | null;
   requested_by_principal_id: string;
   approved_by_principal_id?: string | null;
+  research_substate?: ResearchSubstate | null;
+  progress_json?: string | null;
+  artifact_paths_json?: string | null;
+  followup_count?: number;
+  spend_json?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -105,12 +119,14 @@ export interface RunRecord {
 export interface ArtifactRecord {
   id: string;
   task_id: string;
+  action_id?: string | null;
   kind: string;
   path: string;
   media_type: string;
   sha256: string;
   size_bytes: number;
   created_by_run_id?: string | null;
+  created_at?: string | null;
 }
 
 export interface ApprovalRecord {

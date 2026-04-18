@@ -64,7 +64,8 @@ function createSchema(database: Database.Database): void {
       name TEXT,
       last_message_time TEXT,
       channel TEXT,
-      is_group INTEGER DEFAULT 0
+      is_group INTEGER DEFAULT 0,
+      pending_followup_action_id TEXT
     );
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT,
@@ -204,6 +205,11 @@ function createSchema(database: Database.Database): void {
       semantic_dedupe_key TEXT,
       requested_by_principal_id TEXT NOT NULL,
       approved_by_principal_id TEXT,
+      research_substate TEXT,
+      progress_json TEXT,
+      artifact_paths_json TEXT,
+      followup_count INTEGER NOT NULL DEFAULT 0,
+      spend_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (task_id) REFERENCES cp_tasks(id),
@@ -235,13 +241,16 @@ function createSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS cp_artifacts (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
+      action_id TEXT,
       kind TEXT NOT NULL,
       path TEXT NOT NULL,
       media_type TEXT NOT NULL,
       sha256 TEXT NOT NULL,
       size_bytes INTEGER NOT NULL,
       created_by_run_id TEXT,
+      created_at TEXT NOT NULL,
       FOREIGN KEY (task_id) REFERENCES cp_tasks(id),
+      FOREIGN KEY (action_id) REFERENCES cp_actions(id),
       FOREIGN KEY (created_by_run_id) REFERENCES cp_runs(id)
     );
     CREATE INDEX IF NOT EXISTS idx_cp_artifacts_task
@@ -365,6 +374,14 @@ function createSchema(database: Database.Database): void {
     /* columns already exist */
   }
 
+  try {
+    database.exec(
+      `ALTER TABLE chats ADD COLUMN pending_followup_action_id TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
   // Add reply context columns if they don't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT`);
@@ -378,6 +395,49 @@ function createSchema(database: Database.Database): void {
 
   try {
     database.exec(`ALTER TABLE messages ADD COLUMN thread_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE cp_actions ADD COLUMN research_substate TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(`ALTER TABLE cp_actions ADD COLUMN progress_json TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(`ALTER TABLE cp_actions ADD COLUMN artifact_paths_json TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE cp_actions ADD COLUMN followup_count INTEGER NOT NULL DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(`ALTER TABLE cp_actions ADD COLUMN spend_json TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(`ALTER TABLE cp_artifacts ADD COLUMN action_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE cp_artifacts ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`,
+    );
+    database.exec(
+      `UPDATE cp_artifacts SET created_at = COALESCE(NULLIF(created_at, ''), CURRENT_TIMESTAMP)`,
+    );
   } catch {
     /* column already exists */
   }
@@ -472,6 +532,7 @@ export interface ChatInfo {
   last_message_time: string;
   channel: string;
   is_group: number;
+  pending_followup_action_id?: string | null;
 }
 
 export interface ContactActivitySummary {
@@ -517,12 +578,38 @@ export function getAllChats(): ChatInfo[] {
   return db
     .prepare(
       `
-    SELECT jid, name, last_message_time, channel, is_group
+    SELECT jid, name, last_message_time, channel, is_group, pending_followup_action_id
     FROM chats
     ORDER BY last_message_time DESC
   `,
     )
     .all() as ChatInfo[];
+}
+
+export function getChatPendingFollowupActionId(
+  chatJid: string,
+): string | null {
+  const row = db
+    .prepare(
+      `SELECT pending_followup_action_id
+       FROM chats
+       WHERE jid = ?`,
+    )
+    .get(chatJid) as { pending_followup_action_id?: string | null } | undefined;
+  return row?.pending_followup_action_id ?? null;
+}
+
+export function setChatPendingFollowupActionId(
+  chatJid: string,
+  actionId: string | null,
+): void {
+  db.prepare(
+    `
+    INSERT INTO chats (jid, name, last_message_time, pending_followup_action_id)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(jid) DO UPDATE SET pending_followup_action_id = excluded.pending_followup_action_id
+  `,
+  ).run(chatJid, chatJid, new Date().toISOString(), actionId);
 }
 
 export function getIncomingContactSummaries(): ContactActivitySummary[] {
@@ -1259,9 +1346,10 @@ export function createActionRecord(action: ActionRecord): void {
     INSERT OR REPLACE INTO cp_actions (
       id, task_id, type, status, runner_pool, permission_profile,
       idempotency_key, semantic_dedupe_key, requested_by_principal_id,
-      approved_by_principal_id, created_at, updated_at
+      approved_by_principal_id, research_substate, progress_json,
+      artifact_paths_json, followup_count, spend_json, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     action.id,
@@ -1274,6 +1362,11 @@ export function createActionRecord(action: ActionRecord): void {
     action.semantic_dedupe_key ?? null,
     action.requested_by_principal_id,
     action.approved_by_principal_id ?? null,
+    action.research_substate ?? null,
+    action.progress_json ?? null,
+    action.artifact_paths_json ?? null,
+    action.followup_count ?? 0,
+    action.spend_json ?? null,
     action.created_at,
     action.updated_at,
   );
@@ -1284,7 +1377,8 @@ export function getActionRecord(id: string): ActionRecord | undefined {
     .prepare(
       `SELECT id, task_id, type, status, runner_pool, permission_profile,
               idempotency_key, semantic_dedupe_key, requested_by_principal_id,
-              approved_by_principal_id, created_at, updated_at
+              approved_by_principal_id, research_substate, progress_json,
+              artifact_paths_json, followup_count, spend_json, created_at, updated_at
        FROM cp_actions
        WHERE id = ?`,
     )
@@ -1298,7 +1392,8 @@ export function findSucceededActionBySemanticKey(
     .prepare(
       `SELECT id, task_id, type, status, runner_pool, permission_profile,
               idempotency_key, semantic_dedupe_key, requested_by_principal_id,
-              approved_by_principal_id, created_at, updated_at
+              approved_by_principal_id, research_substate, progress_json,
+              artifact_paths_json, followup_count, spend_json, created_at, updated_at
        FROM cp_actions
        WHERE semantic_dedupe_key = ? AND status = 'succeeded'
        ORDER BY updated_at DESC
@@ -1314,11 +1409,46 @@ export function findActionByIdempotencyKey(
     .prepare(
       `SELECT id, task_id, type, status, runner_pool, permission_profile,
               idempotency_key, semantic_dedupe_key, requested_by_principal_id,
-              approved_by_principal_id, created_at, updated_at
+              approved_by_principal_id, research_substate, progress_json,
+              artifact_paths_json, followup_count, spend_json, created_at, updated_at
        FROM cp_actions
        WHERE idempotency_key = ?`,
     )
     .get(idempotencyKey) as ActionRecord | undefined;
+}
+
+export function listActionsByType(type: string, limit = 100): ActionRecord[] {
+  return db
+    .prepare(
+      `SELECT id, task_id, type, status, runner_pool, permission_profile,
+              idempotency_key, semantic_dedupe_key, requested_by_principal_id,
+              approved_by_principal_id, research_substate, progress_json,
+              artifact_paths_json, followup_count, spend_json, created_at, updated_at
+       FROM cp_actions
+       WHERE type = ?
+       ORDER BY updated_at DESC
+       LIMIT ?`,
+    )
+    .all(type, limit) as ActionRecord[];
+}
+
+export function getLatestActionForThreadByType(
+  sourceThreadId: string,
+  type: string,
+): ActionRecord | undefined {
+  return db
+    .prepare(
+      `SELECT a.id, a.task_id, a.type, a.status, a.runner_pool, a.permission_profile,
+              a.idempotency_key, a.semantic_dedupe_key, a.requested_by_principal_id,
+              a.approved_by_principal_id, a.research_substate, a.progress_json,
+              a.artifact_paths_json, a.followup_count, a.spend_json, a.created_at, a.updated_at
+       FROM cp_actions a
+       JOIN cp_tasks t ON t.id = a.task_id
+       WHERE t.source_thread_id = ? AND a.type = ?
+       ORDER BY a.updated_at DESC
+       LIMIT 1`,
+    )
+    .get(sourceThreadId, type) as ActionRecord | undefined;
 }
 
 export function updateActionRecordStatus(
@@ -1341,6 +1471,49 @@ export function updateActionRecordStatus(
     status,
     updates?.approvedByPrincipalId ?? null,
     updates?.updatedAt ?? new Date().toISOString(),
+    id,
+  );
+}
+
+export function updateActionResearchState(
+  id: string,
+  updates: {
+    researchSubstate?: ActionRecord['research_substate'];
+    progressJson?: string | null;
+    artifactPathsJson?: string | null;
+    followupCount?: number;
+    spendJson?: string | null;
+    updatedAt?: string;
+  },
+): void {
+  const existing = getActionRecord(id);
+  if (!existing) return;
+  db.prepare(
+    `
+    UPDATE cp_actions
+    SET research_substate = ?,
+        progress_json = ?,
+        artifact_paths_json = ?,
+        followup_count = ?,
+        spend_json = ?,
+        updated_at = ?
+    WHERE id = ?
+  `,
+  ).run(
+    updates.researchSubstate === undefined
+      ? existing.research_substate ?? null
+      : updates.researchSubstate ?? null,
+    updates.progressJson === undefined
+      ? existing.progress_json ?? null
+      : updates.progressJson,
+    updates.artifactPathsJson === undefined
+      ? existing.artifact_paths_json ?? null
+      : updates.artifactPathsJson,
+    updates.followupCount ?? existing.followup_count ?? 0,
+    updates.spendJson === undefined
+      ? existing.spend_json ?? null
+      : updates.spendJson,
+    updates.updatedAt ?? new Date().toISOString(),
     id,
   );
 }
@@ -1415,31 +1588,44 @@ export function createArtifactRecord(artifact: ArtifactRecord): void {
   db.prepare(
     `
     INSERT OR REPLACE INTO cp_artifacts (
-      id, task_id, kind, path, media_type, sha256, size_bytes, created_by_run_id
+      id, task_id, action_id, kind, path, media_type, sha256, size_bytes, created_by_run_id, created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     artifact.id,
     artifact.task_id,
+    artifact.action_id ?? null,
     artifact.kind,
     artifact.path,
     artifact.media_type,
     artifact.sha256,
     artifact.size_bytes,
     artifact.created_by_run_id ?? null,
+    artifact.created_at ?? new Date().toISOString(),
   );
 }
 
 export function listArtifactsForTask(taskId: string): ArtifactRecord[] {
   return db
     .prepare(
-      `SELECT id, task_id, kind, path, media_type, sha256, size_bytes, created_by_run_id
+      `SELECT id, task_id, action_id, kind, path, media_type, sha256, size_bytes, created_by_run_id, created_at
        FROM cp_artifacts
        WHERE task_id = ?
        ORDER BY id`,
     )
     .all(taskId) as ArtifactRecord[];
+}
+
+export function listArtifactsForAction(actionId: string): ArtifactRecord[] {
+  return db
+    .prepare(
+      `SELECT id, task_id, action_id, kind, path, media_type, sha256, size_bytes, created_by_run_id, created_at
+       FROM cp_artifacts
+       WHERE action_id = ?
+       ORDER BY id`,
+    )
+    .all(actionId) as ArtifactRecord[];
 }
 
 export function createApprovalRecord(approval: ApprovalRecord): void {

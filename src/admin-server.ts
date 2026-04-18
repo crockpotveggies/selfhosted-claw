@@ -18,12 +18,18 @@ import {
 import { ControlActionService } from './control-actions.js';
 import {
   deleteTask,
+  getActionRecord,
   getAllChats,
   getAllRegisteredGroups,
   getAllTasks,
+  getCoreTask,
+  getPrincipal,
   getTaskById,
+  listActionsByType,
+  listArtifactsForAction,
   updateTask,
 } from './db.js';
+import { resolveGroupFolderPath } from './group-folder.js';
 import {
   getRegisteredIntegrations,
   getIntegration,
@@ -66,6 +72,7 @@ import {
   type PersistedLogRow,
 } from './logger/jsonl-stream.js';
 import { getLogPersistenceInfo, logger } from './logger.js';
+import { getDeepResearchService } from './research/service.js';
 import { resolveSignalRpcUrl } from './signal-rpc-url.js';
 import { runTaskNow } from './task-scheduler.js';
 import {
@@ -430,6 +437,80 @@ function refreshAllIntegrationToolManifests(): void {
       isMain: group.isMain === true,
     })),
   );
+}
+
+function listResearchArtifactsForWorkspace(folder: string) {
+  let researchDir: string;
+  try {
+    researchDir = path.join(resolveGroupFolderPath(folder), 'research');
+  } catch {
+    return [];
+  }
+  if (!fs.existsSync(researchDir)) return [];
+
+  const files: Array<{
+    name: string;
+    path: string;
+    sizeBytes: number;
+    updatedAt: string;
+  }> = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      const stat = fs.statSync(fullPath);
+      files.push({
+        name: entry.name,
+        path: fullPath,
+        sizeBytes: stat.size,
+        updatedAt: stat.mtime.toISOString(),
+      });
+    }
+  };
+  walk(researchDir);
+  return files.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function buildWorkspaceVisibility() {
+  return Object.entries(getAllRegisteredGroups()).map(([jid, group]) => ({
+    jid,
+    name: group.name,
+    folder: group.folder,
+    mounts: [
+      {
+        kind: 'group',
+        hostPath: resolveGroupFolderPath(group.folder),
+        containerPath: '/workspace/group',
+        readonly: false,
+      },
+      ...(group.isMain
+        ? [
+            {
+              kind: 'project',
+              hostPath: process.cwd(),
+              containerPath: '/workspace/project',
+              readonly: true,
+            },
+            {
+              kind: 'store',
+              hostPath: STORE_DIR,
+              containerPath: '/workspace/project/store',
+              readonly: false,
+            },
+          ]
+        : []),
+      ...((group.containerConfig?.additionalMounts || []).map((mount) => ({
+        kind: 'additional',
+        hostPath: mount.hostPath,
+        containerPath: `/workspace/extra/${mount.containerPath || path.basename(mount.hostPath)}`,
+        readonly: mount.readonly !== false,
+      })) || []),
+    ],
+    artifacts: listResearchArtifactsForWorkspace(group.folder),
+  }));
 }
 
 function isBasicAuthAuthorized(
@@ -814,6 +895,76 @@ export function startAdminServer(
         sendJson(res, 200, {
           ok: true,
           message: `Queued task ${taskId} for immediate execution.`,
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/admin/research/jobs') {
+        const summary = getDeepResearchService().getQuotaSummary();
+        const jobs = getDeepResearchService()
+          .listJobs(200)
+          .map((action) => {
+            const task = getCoreTask(action.task_id);
+            const principal = getPrincipal(action.requested_by_principal_id);
+            const progress = action.progress_json
+              ? JSON.parse(action.progress_json)
+              : null;
+            return {
+              id: action.id,
+              status: action.status,
+              researchSubstate: action.research_substate || null,
+              createdAt: action.created_at,
+              updatedAt: action.updated_at,
+              summary: task?.summary || '',
+              sourceThreadId: task?.source_thread_id || null,
+              principalDisplayName: principal?.display_name || 'Unknown',
+              spend: action.spend_json ? JSON.parse(action.spend_json) : null,
+              progress,
+            };
+          });
+        sendJson(res, 200, { jobs, summary });
+        return;
+      }
+
+      const researchJobDetailMatch =
+        req.method === 'GET' &&
+        url.pathname.match(/^\/api\/admin\/research\/jobs\/([^/]+)$/);
+      if (researchJobDetailMatch) {
+        const actionId = decodeURIComponent(researchJobDetailMatch[1]);
+        const action = getActionRecord(actionId);
+        if (!action || action.type !== 'deep_research') {
+          sendJson(res, 404, { error: 'research_job_not_found' });
+          return;
+        }
+        const task = getCoreTask(action.task_id);
+        const principal = getPrincipal(action.requested_by_principal_id);
+        sendJson(res, 200, {
+          action,
+          task,
+          principal,
+          progress: action.progress_json ? JSON.parse(action.progress_json) : null,
+          spend: action.spend_json ? JSON.parse(action.spend_json) : null,
+          artifacts: listArtifactsForAction(actionId),
+        });
+        return;
+      }
+
+      const researchJobCancelMatch =
+        req.method === 'POST' &&
+        url.pathname.match(/^\/api\/admin\/research\/jobs\/([^/]+)\/cancel$/);
+      if (researchJobCancelMatch) {
+        const actionId = decodeURIComponent(researchJobCancelMatch[1]);
+        getDeepResearchService().cancel(actionId);
+        sendJson(res, 200, { ok: true, actionId });
+        return;
+      }
+
+      if (
+        req.method === 'GET' &&
+        url.pathname === '/api/admin/files/visibility'
+      ) {
+        sendJson(res, 200, {
+          workspaces: buildWorkspaceVisibility(),
         });
         return;
       }

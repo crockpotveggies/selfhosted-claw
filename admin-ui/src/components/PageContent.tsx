@@ -1,10 +1,12 @@
 import type { AdminTab } from '../admin/types';
 import { DashboardPage } from '../pages/DashboardPage';
 import { ContactsPage } from '../pages/ContactsPage';
+import { FilesPage } from '../pages/FilesPage';
 import { PersonalityPage } from '../pages/PersonalityPage';
 import { PolicyPage } from '../pages/PolicyPage';
 import { AvailabilityPage } from '../pages/AvailabilityPage';
 import { IntegrationsPage } from '../pages/IntegrationsPage';
+import { ResearchPage } from '../pages/ResearchPage';
 import { ToolsPage } from '../pages/ToolsPage';
 import { SkillsPage } from '../pages/SkillsPage';
 import { TasksPage } from '../pages/TasksPage';
@@ -18,6 +20,8 @@ export function PageContent(props: { activeTab: AdminTab }) {
       return <DashboardPage />;
     case 'contacts':
       return <ContactsPage />;
+    case 'files':
+      return <FilesPage />;
     case 'personality':
       return <PersonalityPage />;
     case 'policy':
@@ -26,6 +30,8 @@ export function PageContent(props: { activeTab: AdminTab }) {
       return <AvailabilityPage />;
     case 'integrations':
       return <IntegrationsPage />;
+    case 'research':
+      return <ResearchPage />;
     case 'tools':
       return <ToolsPage />;
     case 'skills':

@@ -10,6 +10,7 @@ import {
   createActionRecord,
   createCoreTask,
   createPrincipal,
+  getActionRecord,
 } from '../db.js';
 import { ArtifactStore } from '../core/artifacts/store.js';
 import { RunSpecDispatcher } from './runspec-dispatcher.js';
@@ -166,6 +167,53 @@ describe('RunSpecDispatcher', () => {
     expect(dispatched.result.status).toBe('succeeded');
     expect(restrictedExecute).toHaveBeenCalledOnce();
     expect(trustedExecute).not.toHaveBeenCalled();
+  });
+
+  it('can stage deep research without prematurely completing the action', async () => {
+    _initTestDatabase();
+    createPrincipal({
+      id: 'principal-3',
+      type: 'controller',
+      display_name: 'Alex',
+      trust_tier: 'trusted',
+      status: 'active',
+      created_at: '2026-04-16T00:00:00.000Z',
+    });
+    createCoreTask({
+      id: 'task-3',
+      principal_id: 'principal-3',
+      source_channel: 'signal',
+      source_thread_id: 'thread-3',
+      status: 'open',
+      summary: 'Deep research: Life in Canada',
+      created_at: '2026-04-16T00:00:00.000Z',
+      updated_at: '2026-04-16T00:00:00.000Z',
+    });
+    createActionRecord({
+      id: 'action-3',
+      task_id: 'task-3',
+      type: 'deep_research',
+      status: 'queued',
+      runner_pool: 'trusted',
+      permission_profile: 'trusted-ops',
+      idempotency_key: 'idem-3',
+      semantic_dedupe_key: 'dedupe-3',
+      requested_by_principal_id: 'principal-3',
+      approved_by_principal_id: 'principal-3',
+      progress_json: JSON.stringify({
+        prompt: 'Life in Canada',
+        groupFolder: 'main',
+        chatJid: 'signal:user:+15550001111',
+      }),
+      created_at: '2026-04-16T00:00:00.000Z',
+      updated_at: '2026-04-16T00:00:00.000Z',
+    });
+
+    const dispatcher = new RunSpecDispatcher();
+    const staged = await dispatcher.stage('action-3');
+
+    expect(staged.result.status).toBe('succeeded');
+    expect(getActionRecord('action-3')?.status).toBe('executing');
   });
 
   it('exposes lifecycle hooks for shared pool management', async () => {

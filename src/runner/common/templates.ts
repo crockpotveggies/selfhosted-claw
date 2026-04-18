@@ -57,8 +57,41 @@ class DraftReplyFromThreadTemplate implements TemplateExecutor {
   }
 }
 
+class DeepResearchTemplate implements TemplateExecutor {
+  name = 'deep_research';
+
+  async execute(context: TemplateExecutionContext) {
+    const prompt = String(context.spec.template_args.prompt ?? '').trim();
+    const slug = String(context.spec.template_args.topic_slug ?? 'research-report').trim();
+    const plan = JSON.stringify(
+      {
+        topic_slug: slug,
+        objectives: [prompt],
+        subqueries: [prompt],
+        needs_followup: false,
+        followup_questions: [],
+      },
+      null,
+      2,
+    );
+    return {
+      status: 'succeeded' as const,
+      stdoutTail: 'deep research template staged',
+      stderrTail: '',
+      outputs: [
+        {
+          relativePath: `${slug}-plan.json`,
+          mediaType: 'application/json',
+          content: plan,
+        },
+      ],
+    };
+  }
+}
+
 const templates = new Map<string, TemplateExecutor>([
   ['draft_reply_from_thread', new DraftReplyFromThreadTemplate()],
+  ['deep_research', new DeepResearchTemplate()],
 ]);
 
 export function getKnownTemplateNames(): string[] {

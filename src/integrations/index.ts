@@ -8,3 +8,4 @@ import './google-contacts.js';
 import './google-places.js';
 import './sms-socket.js';
 import './slack.js';
+import './deep-research.js';

@@ -1,3 +1,5 @@
+import fs from 'fs';
+
 import {
   ASSISTANT_NAME,
   SIGNAL_ACCOUNT,
@@ -134,6 +136,12 @@ function toIsoTimestamp(raw: number | string | undefined): string {
 
 export class SignalChannel implements Channel {
   name = 'signal';
+  capabilities = {
+    attachments: {
+      pdf: true,
+      maxBytes: 25_000_000,
+    },
+  };
 
   private connected = false;
   private stopped = false;
@@ -252,6 +260,47 @@ export class SignalChannel implements Channel {
     );
     if (response.status !== 201) {
       throw new Error(`Signal RPC send failed with ${response.status}`);
+    }
+  }
+
+  async sendAttachment(input: {
+    jid: string;
+    filePath: string;
+    mimeType: string;
+    caption?: string;
+    fileName?: string;
+  }): Promise<void> {
+    const buffer = fs.readFileSync(input.filePath);
+    let recipients: string[] | null;
+    if (input.jid.startsWith('signal:group:')) {
+      const rawGroupId = input.jid.slice('signal:group:'.length);
+      const groupRecipient = rawGroupId.startsWith('group.')
+        ? rawGroupId
+        : `group.${Buffer.from(rawGroupId).toString('base64')}`;
+      recipients = [groupRecipient];
+    } else if (input.jid.startsWith('signal:user:')) {
+      recipients = [formatUuidLike(input.jid.slice('signal:user:'.length))];
+    } else {
+      recipients = null;
+    }
+    if (!recipients) throw new Error(`Unsupported Signal JID: ${input.jid}`);
+
+    const response = await this.fetchWithContext(
+      new URL('/v2/send', this.rpcUrl),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          number: this.account,
+          recipients,
+          message: input.caption || '',
+          base64_attachments: [buffer.toString('base64')],
+        }),
+      },
+      'sendAttachment',
+    );
+    if (response.status !== 201) {
+      throw new Error(`Signal RPC attachment send failed with ${response.status}`);
     }
   }
 

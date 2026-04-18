@@ -4,10 +4,12 @@ export type SignalProvisionMode = 'link' | 'register';
 export type AdminTab =
   | 'dashboard'
   | 'contacts'
+  | 'files'
   | 'personality'
   | 'policy'
   | 'availability'
   | 'integrations'
+  | 'research'
   | 'tools'
   | 'skills'
   | 'tasks'

@@ -66,6 +66,47 @@ export function mapContainerPathToHostPath(
       );
 }
 
+/**
+ * Under host networking the container shares the host's UTS namespace, so
+ * HOSTNAME and /etc/hostname both return the host's hostname — not the
+ * container id. `docker inspect <host-hostname>` then fails, resolveHostPath
+ * falls back to identity, and we start passing container-internal paths
+ * (e.g. /workspace-host/…) to the docker daemon, which it can't resolve.
+ *
+ * /proc/self/mountinfo always contains the container id in the overlay
+ * upperdir/workdir paths even under host networking, so we mine it from
+ * there when the hostname lookup doesn't yield something inspect-able.
+ */
+function readContainerIdFromMountinfo(): string | null {
+  try {
+    const raw = fs.readFileSync('/proc/self/mountinfo', 'utf-8');
+    const match = raw.match(/[0-9a-f]{64}/);
+    return match ? match[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveContainerId(): string | null {
+  const hostname = process.env.HOSTNAME?.trim();
+  if (hostname && hostname !== 'docker-desktop' && hostname !== 'localhost') {
+    return hostname;
+  }
+  try {
+    const fileHostname = fs.readFileSync('/etc/hostname', 'utf-8').trim();
+    if (
+      fileHostname &&
+      fileHostname !== 'docker-desktop' &&
+      fileHostname !== 'localhost'
+    ) {
+      return fileHostname;
+    }
+  } catch {
+    /* fall through */
+  }
+  return readContainerIdFromMountinfo();
+}
+
 export function getContainerBindMounts(
   inspectRunner: (containerId: string) => string = defaultInspectRunner,
 ): DockerMount[] | null {
@@ -77,9 +118,11 @@ export function getContainerBindMounts(
   }
 
   try {
-    const containerId =
-      process.env.HOSTNAME?.trim() ||
-      fs.readFileSync('/etc/hostname', 'utf-8').trim();
+    const containerId = resolveContainerId();
+    if (!containerId) {
+      cachedMounts = null;
+      return cachedMounts;
+    }
     const raw = inspectRunner(containerId);
     const parsed = JSON.parse(raw) as Array<{ Mounts?: DockerMount[] }>;
     cachedMounts = parsed[0]?.Mounts ?? null;

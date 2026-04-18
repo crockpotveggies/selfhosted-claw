@@ -363,7 +363,7 @@ export class HotRunnerPool {
       // Wake one waiter (if any) immediately — avoids up-to-25ms polling
       // jitter in acquireSession when the pool is saturated.
       const waiter = this.idleWaiters.shift();
-      if (waiter) waiter(entry);
+      if (waiter) waiter.resolve(entry);
       await this.reapIdleSessions();
     }
   }
@@ -390,8 +390,14 @@ export class HotRunnerPool {
   }
 
   // Waiters blocked on a saturated pool — woken by the finally block in
-  // execute() the moment a session returns to idle.
-  private readonly idleWaiters: Array<(entry: SessionEntry) => void> = [];
+  // execute() the moment a session returns to idle. If a busy session dies
+  // without hitting the finally (process crash, parent SIGKILL), waiters
+  // would hang forever without the watchdog timeout below.
+  private readonly idleWaiters: Array<{
+    resolve: (entry: SessionEntry) => void;
+    reject: (err: Error) => void;
+  }> = [];
+  private static readonly WAITER_TIMEOUT_MS = 2 * 60_000;
 
   private async acquireSession(): Promise<SessionEntry> {
     const idle = [...this.sessions.values()].find(
@@ -410,8 +416,20 @@ export class HotRunnerPool {
       return entry;
     }
 
-    return new Promise<SessionEntry>((resolve) => {
-      this.idleWaiters.push(resolve);
+    return new Promise<SessionEntry>((resolve, reject) => {
+      const waiter = { resolve, reject };
+      this.idleWaiters.push(waiter);
+      setTimeout(() => {
+        const idx = this.idleWaiters.indexOf(waiter);
+        if (idx === -1) return; // already woken
+        this.idleWaiters.splice(idx, 1);
+        reject(
+          new Error(
+            `Hot runner pool (${this.lane}) waiter timed out after ` +
+              `${HotRunnerPool.WAITER_TIMEOUT_MS}ms; upstream likely crashed.`,
+          ),
+        );
+      }, HotRunnerPool.WAITER_TIMEOUT_MS).unref?.();
     });
   }
 

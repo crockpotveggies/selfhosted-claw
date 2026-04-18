@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { _buildConfiguredMainGroup } from './index.js';
+import {
+  _buildConfiguredMainGroup,
+  _getPendingResearchFollowupReply,
+} from './index.js';
 import { RegisteredGroup } from './types.js';
 
 describe('configured Signal main group', () => {
@@ -34,5 +37,30 @@ describe('configured Signal main group', () => {
   it('ignores non-direct-signal control identifiers', () => {
     expect(_buildConfiguredMainGroup('signal:group:abc123', {})).toBeNull();
     expect(_buildConfiguredMainGroup('phone:+15550001111', {})).toBeNull();
+  });
+});
+
+describe('deep research follow-up routing', () => {
+  it('routes follow-up replies only when all messages come from the original sender', () => {
+    const action = {
+      type: 'deep_research',
+      progress_json: JSON.stringify({
+        requestedBySender: 'signal:user:+15550001111',
+      }),
+    };
+
+    expect(
+      _getPendingResearchFollowupReply(action, [
+        { sender: 'signal:user:+15550001111', content: 'Focus on housing' },
+        { sender: 'signal:user:+15550001111', content: 'and jobs' },
+      ]),
+    ).toBe('Focus on housing\nand jobs');
+
+    expect(
+      _getPendingResearchFollowupReply(action, [
+        { sender: 'signal:user:+15550001111', content: 'Focus on housing' },
+        { sender: 'signal:user:+15550002222', content: 'me too' },
+      ]),
+    ).toBeNull();
   });
 });

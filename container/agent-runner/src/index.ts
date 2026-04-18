@@ -561,7 +561,13 @@ function saveHistory(history: OpenAIMessage[]): void {
   const content =
     history.map((entry) => JSON.stringify(entry)).join('\n') +
     (history.length > 0 ? '\n' : '');
-  fs.writeFileSync(HISTORY_FILE, content);
+  // Atomic rename: a SIGKILL during fs.writeFileSync on HISTORY_FILE directly
+  // leaves the file half-written and unparsable, which would compound across
+  // retries. Writing to a sibling temp + rename keeps the old history intact
+  // if we're killed before the rename lands.
+  const tempPath = `${HISTORY_FILE}.tmp`;
+  fs.writeFileSync(tempPath, content);
+  fs.renameSync(tempPath, HISTORY_FILE);
 }
 
 function estimateTokens(messages: OpenAIMessage[], summary: string | null): number {
