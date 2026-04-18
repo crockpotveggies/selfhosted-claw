@@ -94,7 +94,9 @@ function normalizePlannedSubqueries(raw: unknown): PlannedSubquery[] {
       const obj = item as { query?: unknown; category?: unknown };
       const query = String(obj.query || '').trim();
       if (!query) continue;
-      const rawCategory = String(obj.category || '').trim().toLowerCase();
+      const rawCategory = String(obj.category || '')
+        .trim()
+        .toLowerCase();
       const category = VALID_RESEARCH_CATEGORIES.has(
         rawCategory as ResearchCategory,
       )
