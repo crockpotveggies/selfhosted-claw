@@ -328,12 +328,16 @@ const calendarTools: IntegrationTool[] = [
         {
           calendarId: String(args.calendar_id || 'primary'),
           eventId: String(args.event_id || ''),
-          summary: args.summary !== undefined ? String(args.summary) : undefined,
+          summary:
+            args.summary !== undefined ? String(args.summary) : undefined,
           start: args.start !== undefined ? String(args.start) : undefined,
           end: args.end !== undefined ? String(args.end) : undefined,
           description:
-            args.description !== undefined ? String(args.description) : undefined,
-          location: args.location !== undefined ? String(args.location) : undefined,
+            args.description !== undefined
+              ? String(args.description)
+              : undefined,
+          location:
+            args.location !== undefined ? String(args.location) : undefined,
           attendees: Array.isArray(args.attendees)
             ? args.attendees.map((email) => String(email))
             : args.attendees !== undefined

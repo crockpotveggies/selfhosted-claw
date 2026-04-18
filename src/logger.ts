@@ -75,10 +75,7 @@ if (isTest) {
           err: pino.stdSerializers.err,
         },
       },
-      pino.multistream([
-        { stream: stdoutStream },
-        { stream: sqliteStream },
-      ]),
+      pino.multistream([{ stream: stdoutStream }, { stream: sqliteStream }]),
     );
     logPersistenceInfo = {
       mode: 'sqlite',
@@ -110,10 +107,7 @@ if (isTest) {
             err: pino.stdSerializers.err,
           },
         },
-        pino.multistream([
-          { stream: stdoutStream },
-          { stream: jsonlStream },
-        ]),
+        pino.multistream([{ stream: stdoutStream }, { stream: jsonlStream }]),
       );
       logPersistenceInfo = {
         mode: 'jsonl-fallback',

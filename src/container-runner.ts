@@ -860,7 +860,10 @@ export function writeIntegrationToolsManifest(
   });
 
   const manifestFile = path.join(groupIpcDir, 'integration_tools.json');
-  fs.writeFileSync(manifestFile, JSON.stringify(snapshot.integrationManifest, null, 2));
+  fs.writeFileSync(
+    manifestFile,
+    JSON.stringify(snapshot.integrationManifest, null, 2),
+  );
 
   const allowedToolsFile = path.join(groupIpcDir, 'allowed_tools.json');
   fs.writeFileSync(

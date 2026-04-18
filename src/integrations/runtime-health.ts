@@ -3,10 +3,7 @@ import path from 'path';
 
 import { ADMIN_CONFIG_DIR } from '../config.js';
 
-import type {
-  IntegrationNotification,
-  IntegrationStatus,
-} from './types.js';
+import type { IntegrationNotification, IntegrationStatus } from './types.js';
 
 export type IntegrationRuntimeFaultCategory =
   | 'auth'

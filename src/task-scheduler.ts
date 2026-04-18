@@ -157,9 +157,14 @@ async function runTask(
       next_run: t.next_run,
     })),
   );
-  writeIntegrationToolsManifest(task.group_folder, isMain, controllerTriggered, {
-    scheduledTaskMode: true,
-  });
+  writeIntegrationToolsManifest(
+    task.group_folder,
+    isMain,
+    controllerTriggered,
+    {
+      scheduledTaskMode: true,
+    },
+  );
 
   let result: string | null = null;
   let error: string | null = null;

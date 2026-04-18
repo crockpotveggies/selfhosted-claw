@@ -4,10 +4,7 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  resolveProfile,
-  syncPersonalityFiles,
-} from './control-personality.js';
+import { resolveProfile, syncPersonalityFiles } from './control-personality.js';
 import type { PersonalityProfile } from './control-types.js';
 
 describe('control personality', () => {
@@ -65,7 +62,10 @@ describe('control personality', () => {
 
       syncPersonalityFiles(profiles, 'global');
 
-      const mainAgent = fs.readFileSync(path.join(mainDir, 'AGENT.md'), 'utf-8');
+      const mainAgent = fs.readFileSync(
+        path.join(mainDir, 'AGENT.md'),
+        'utf-8',
+      );
       expect(mainAgent).toContain('Tone: Direct');
       expect(mainAgent).toContain('Communication: Do not use emojis.');
       expect(mainAgent).toContain('Never be bubbly.');

@@ -824,7 +824,10 @@ const smsSocketIntegration: IntegrationDefinition = {
           throw new Error('SMS Socket channel is not connected');
         }
         if (consumeRecentAgentSmsSend(ctx.chatJid, text) === 'duplicate') {
-          log.warn({ jid: ctx.chatJid }, 'Suppressed duplicate agent SMS reply');
+          log.warn(
+            { jid: ctx.chatJid },
+            'Suppressed duplicate agent SMS reply',
+          );
           return JSON.stringify({ status: 'duplicate', to: ctx.chatJid });
         }
         await channel.sendMessage(ctx.chatJid, text);

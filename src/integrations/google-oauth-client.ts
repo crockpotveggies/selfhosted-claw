@@ -22,10 +22,7 @@ function getGoogleIntegrationCredentials(integrationName: string): {
 } {
   const settings = getIntegrationSettings(integrationName);
   return {
-    clientId: firstNonEmpty(
-      settings.GOOGLE_CLIENT_ID,
-      settings.googleClientId,
-    ),
+    clientId: firstNonEmpty(settings.GOOGLE_CLIENT_ID, settings.googleClientId),
     clientSecret: firstNonEmpty(
       settings.GOOGLE_CLIENT_SECRET,
       settings.googleClientSecret,

@@ -349,12 +349,14 @@ function querySqliteLogRows(
   const where =
     conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-  return withLogDatabaseSnapshot(logDbPath, (logDb) =>
-    logDb
-      .prepare(
-        `SELECT id, time, level, level_label, msg, integration, channel, group_folder, entity, run_id, tool, data FROM logs ${where} ORDER BY time DESC LIMIT ?`,
-      )
-      .all(...params, limitHint) as PersistedLogRow[],
+  return withLogDatabaseSnapshot(
+    logDbPath,
+    (logDb) =>
+      logDb
+        .prepare(
+          `SELECT id, time, level, level_label, msg, integration, channel, group_folder, entity, run_id, tool, data FROM logs ${where} ORDER BY time DESC LIMIT ?`,
+        )
+        .all(...params, limitHint) as PersistedLogRow[],
   );
 }
 
@@ -368,7 +370,9 @@ function queryJsonlFallbackRows(filters: LogQueryFilters): PersistedLogRow[] {
     return [];
   }
 
-  return sortLogRowsDesc(filterLogRows(readJsonlLogRows(persistence.jsonlPath), filters));
+  return sortLogRowsDesc(
+    filterLogRows(readJsonlLogRows(persistence.jsonlPath), filters),
+  );
 }
 
 function querySqliteLogStats(logDbPath: string): {
@@ -393,7 +397,9 @@ function querySqliteLogStats(logDbPath: string): {
     logDbPath,
     (logDb) =>
       logDb
-        .prepare('SELECT level_label, count(*) as cnt FROM logs GROUP BY level_label')
+        .prepare(
+          'SELECT level_label, count(*) as cnt FROM logs GROUP BY level_label',
+        )
         .all() as Array<{ level_label: string; cnt: number }>,
   );
   const byIntegration = withLogDatabaseSnapshot(
@@ -408,7 +414,9 @@ function querySqliteLogStats(logDbPath: string): {
 
   return {
     total,
-    byLevel: Object.fromEntries(byLevel.map((row) => [row.level_label, row.cnt])),
+    byLevel: Object.fromEntries(
+      byLevel.map((row) => [row.level_label, row.cnt]),
+    ),
     byIntegration: Object.fromEntries(
       byIntegration.map((row) => [row.name, row.cnt]),
     ),
@@ -758,8 +766,9 @@ export function startAdminServer(
         return;
       }
 
-      const taskPromptMatch =
-        url.pathname.match(/^\/api\/admin\/tasks\/([^/]+)$/);
+      const taskPromptMatch = url.pathname.match(
+        /^\/api\/admin\/tasks\/([^/]+)$/,
+      );
       if (req.method === 'PATCH' && taskPromptMatch) {
         const taskId = decodeURIComponent(taskPromptMatch[1]);
         const task = getTaskById(taskId);
@@ -1404,8 +1413,8 @@ export function startAdminServer(
                     hasCredential: (key) =>
                       Boolean(
                         process.env[key] ||
-                          options.service.getSetupEnvironment()[key] ||
-                          settings[key],
+                        options.service.getSetupEnvironment()[key] ||
+                        settings[key],
                       ),
                     runtimeFault,
                   }),
@@ -1484,8 +1493,8 @@ export function startAdminServer(
                   hasCredential: (key) =>
                     Boolean(
                       process.env[key] ||
-                        options.service.getSetupEnvironment()[key] ||
-                        settings[key],
+                      options.service.getSetupEnvironment()[key] ||
+                      settings[key],
                     ),
                   runtimeFault,
                 }),
@@ -1834,7 +1843,11 @@ export function startAdminServer(
           );
           const offset =
             parseInt(url.searchParams.get('offset') || '0', 10) || 0;
-          const dbRows = querySqliteLogRows(logDbPath, filters, limit + offset + 500);
+          const dbRows = querySqliteLogRows(
+            logDbPath,
+            filters,
+            limit + offset + 500,
+          );
           const fallbackRows = queryJsonlFallbackRows(filters);
           const rows = paginateLogRows(
             sortLogRowsDesc([...dbRows, ...fallbackRows]),

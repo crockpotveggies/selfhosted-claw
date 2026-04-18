@@ -158,7 +158,10 @@ export function getNormalizedToolAccessPolicy(
   };
 }
 
-function resolveToolEnabled(toolName: string, policy: ToolAccessPolicy): boolean {
+function resolveToolEnabled(
+  toolName: string,
+  policy: ToolAccessPolicy,
+): boolean {
   return policy.tools[toolName]?.enabled !== false;
 }
 
@@ -195,7 +198,9 @@ export function buildEffectiveToolRegistry(options?: {
 }): EffectiveToolRegistryEntry[] {
   const store = options?.store || new ControlStore();
   const service = options?.service || new ControlActionService(store);
-  const toolPolicy = getNormalizedToolAccessPolicy(store.getPolicy().toolAccess);
+  const toolPolicy = getNormalizedToolAccessPolicy(
+    store.getPolicy().toolAccess,
+  );
 
   const coreTools = getCoreRunnerToolDefinitions().map((tool) => {
     const enabled = resolveToolEnabled(tool.name, toolPolicy);
@@ -205,66 +210,68 @@ export function buildEffectiveToolRegistry(options?: {
       toolPolicy,
     );
     return {
-    name: tool.name,
-    description: tool.description,
-    source: 'runner',
-    sourceKind: 'core-runner' as const,
-    location: 'container' as const,
-    agentVisible: true,
-    controllerOnly,
-    enabled,
-    internalEnabled: resolveLaneEnabled(
-      true,
-      enabled,
+      name: tool.name,
+      description: tool.description,
+      source: 'runner',
+      sourceKind: 'core-runner' as const,
+      location: 'container' as const,
+      agentVisible: true,
       controllerOnly,
-      toolPolicy,
-    ),
-    externalEnabled: resolveLaneEnabled(
-      false,
       enabled,
-      controllerOnly,
-      toolPolicy,
-    ),
-  };
+      internalEnabled: resolveLaneEnabled(
+        true,
+        enabled,
+        controllerOnly,
+        toolPolicy,
+      ),
+      externalEnabled: resolveLaneEnabled(
+        false,
+        enabled,
+        controllerOnly,
+        toolPolicy,
+      ),
+    };
   });
 
-  const integrationTools = getRegisteredIntegrations().flatMap((integration) => {
-    if (!isIntegrationEnabled(integration.name) || !integration.tools) {
-      return [];
-    }
-    return integration.tools
-      .filter((tool) => tool.location === 'host')
-      .map((tool) => {
-        const enabled = resolveToolEnabled(tool.name, toolPolicy);
-        const controllerOnly = resolveControllerOnly(
-          tool.name,
-          tool.controllerOnly === true,
-          toolPolicy,
-        );
-        return {
-          name: tool.name,
-          description: tool.description,
-          source: integration.name,
-          sourceKind: 'integration' as const,
-          location: tool.location,
-          agentVisible: true,
-          controllerOnly,
-          enabled,
-          internalEnabled: resolveLaneEnabled(
-            true,
-            enabled,
-            controllerOnly,
+  const integrationTools = getRegisteredIntegrations().flatMap(
+    (integration) => {
+      if (!isIntegrationEnabled(integration.name) || !integration.tools) {
+        return [];
+      }
+      return integration.tools
+        .filter((tool) => tool.location === 'host')
+        .map((tool) => {
+          const enabled = resolveToolEnabled(tool.name, toolPolicy);
+          const controllerOnly = resolveControllerOnly(
+            tool.name,
+            tool.controllerOnly === true,
             toolPolicy,
-          ),
-          externalEnabled: resolveLaneEnabled(
-            false,
-            enabled,
+          );
+          return {
+            name: tool.name,
+            description: tool.description,
+            source: integration.name,
+            sourceKind: 'integration' as const,
+            location: tool.location,
+            agentVisible: true,
             controllerOnly,
-            toolPolicy,
-          ),
-        };
-      });
-  });
+            enabled,
+            internalEnabled: resolveLaneEnabled(
+              true,
+              enabled,
+              controllerOnly,
+              toolPolicy,
+            ),
+            externalEnabled: resolveLaneEnabled(
+              false,
+              enabled,
+              controllerOnly,
+              toolPolicy,
+            ),
+          };
+        });
+    },
+  );
 
   const controlActions = service.listToolDefinitions().map((tool) => ({
     name: tool.name,
@@ -285,8 +292,7 @@ export function buildEffectiveToolRegistry(options?: {
   }));
 
   return [...coreTools, ...integrationTools, ...controlActions].sort(
-    (a, b) =>
-      a.source.localeCompare(b.source) || a.name.localeCompare(b.name),
+    (a, b) => a.source.localeCompare(b.source) || a.name.localeCompare(b.name),
   );
 }
 
@@ -312,30 +318,32 @@ export function buildSessionToolRegistrySnapshot(options: {
     .map((tool) => tool.name);
 
   const allowedSet = new Set(allowedToolNames);
-  const integrationManifest = getRegisteredIntegrations().flatMap((integration) => {
-    if (!isIntegrationEnabled(integration.name) || !integration.tools) {
-      return [];
-    }
-    return integration.tools
-      .filter((tool) => tool.location === 'host')
-      .filter((tool) => allowedSet.has(tool.name))
-      .filter((tool) => {
-        if (
-          options.scheduledTaskMode &&
-          tool.name.endsWith('.send_message')
-        ) {
-          return false;
-        }
-        return true;
-      })
-      .map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters,
-        integration: integration.name,
-        controllerOnly: tool.controllerOnly,
-      }));
-  });
+  const integrationManifest = getRegisteredIntegrations().flatMap(
+    (integration) => {
+      if (!isIntegrationEnabled(integration.name) || !integration.tools) {
+        return [];
+      }
+      return integration.tools
+        .filter((tool) => tool.location === 'host')
+        .filter((tool) => allowedSet.has(tool.name))
+        .filter((tool) => {
+          if (
+            options.scheduledTaskMode &&
+            tool.name.endsWith('.send_message')
+          ) {
+            return false;
+          }
+          return true;
+        })
+        .map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+          integration: integration.name,
+          controllerOnly: tool.controllerOnly,
+        }));
+    },
+  );
 
   const sessionAllowedNames = allowedToolNames.filter((toolName) =>
     options.scheduledTaskMode ? !toolName.endsWith('.send_message') : true,

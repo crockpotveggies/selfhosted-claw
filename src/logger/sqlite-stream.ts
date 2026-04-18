@@ -113,9 +113,7 @@ export function withSqliteLogDatabase<T>(
 }
 
 export function resetSqliteLogDatabaseForTests(dbPath?: string): void {
-  const targets = dbPath
-    ? [path.resolve(dbPath)]
-    : [...sharedDatabases.keys()];
+  const targets = dbPath ? [path.resolve(dbPath)] : [...sharedDatabases.keys()];
   for (const target of targets) {
     const db = sharedDatabases.get(target);
     if (!db) continue;
@@ -172,7 +170,9 @@ export function createSqliteLogStream(options: SqliteLogStreamOptions = {}) {
   const stream = new Writable({
     write(chunk, _encoding, callback) {
       try {
-        const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+        const text = Buffer.isBuffer(chunk)
+          ? chunk.toString('utf8')
+          : String(chunk);
         const lines = text
           .split('\n')
           .map((line) => line.trim())

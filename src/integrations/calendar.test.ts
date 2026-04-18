@@ -15,11 +15,14 @@ const {
     'nanoclaw-calendar-test',
   ),
   registerIntegrationMock: vi.fn(),
-  getIntegrationSettingsMock:
-    vi.fn<(integrationName: string) => Record<string, unknown>>(() => ({})),
+  getIntegrationSettingsMock: vi.fn<
+    (integrationName: string) => Record<string, unknown>
+  >(() => ({})),
   saveIntegrationSettingsMock: vi.fn(),
   clearIntegrationRuntimeFaultMock: vi.fn(),
-  readEnvFileMock: vi.fn<(keys: string[]) => Record<string, string>>(() => ({})),
+  readEnvFileMock: vi.fn<(keys: string[]) => Record<string, string>>(
+    () => ({}),
+  ),
 }));
 
 vi.mock('../config.js', () => ({

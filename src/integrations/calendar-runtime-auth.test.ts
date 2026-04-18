@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { readEnvFileMock, getIntegrationSettingsMock } = vi.hoisted(() => ({
-  readEnvFileMock: vi.fn<(keys: string[]) => Record<string, string>>(() => ({})),
-  getIntegrationSettingsMock:
-    vi.fn<(integrationName: string) => Record<string, unknown>>(() => ({})),
+  readEnvFileMock: vi.fn<(keys: string[]) => Record<string, string>>(
+    () => ({}),
+  ),
+  getIntegrationSettingsMock: vi.fn<
+    (integrationName: string) => Record<string, unknown>
+  >(() => ({})),
 }));
 
 vi.mock('../env.js', () => ({

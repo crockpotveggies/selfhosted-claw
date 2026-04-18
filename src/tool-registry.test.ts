@@ -145,9 +145,9 @@ describe('tool registry policy', () => {
     expect(tools.some((tool) => tool.name === 'signal_create_group')).toBe(
       false,
     );
-    expect(
-      tools.some((tool) => tool.name === 'signal_add_group_members'),
-    ).toBe(false);
+    expect(tools.some((tool) => tool.name === 'signal_add_group_members')).toBe(
+      false,
+    );
     expect(tools.some((tool) => tool.name === 'signal_list_groups')).toBe(
       false,
     );

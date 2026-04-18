@@ -50,7 +50,9 @@ const INDEXED_KEYS = new Set([
 ]);
 
 export function createJsonlLogStream(options: JsonlLogStreamOptions = {}) {
-  const filePath = path.resolve(options.filePath || path.join('logs', 'live.jsonl'));
+  const filePath = path.resolve(
+    options.filePath || path.join('logs', 'live.jsonl'),
+  );
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   return fs.createWriteStream(filePath, {
     flags: 'a',

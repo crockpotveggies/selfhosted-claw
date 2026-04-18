@@ -68,7 +68,9 @@ export function assertCalendarMutationAllowed(
   context: CalendarRuntimeContext,
 ): void {
   if (!context.calendarAccess) {
-    throw new Error('Calendar events can only be modified from the control chat.');
+    throw new Error(
+      'Calendar events can only be modified from the control chat.',
+    );
   }
 }
 
@@ -187,7 +189,8 @@ export async function calendarFetch(
 
   if (response.status === 401) {
     try {
-      const refreshedToken = await forceRefreshGoogleCalendarAccessToken(runtime);
+      const refreshedToken =
+        await forceRefreshGoogleCalendarAccessToken(runtime);
       if (refreshedToken) {
         response = await makeRequest(refreshedToken);
       }
@@ -224,7 +227,10 @@ export async function calendarListEventsApi(
   url.searchParams.set('singleEvents', 'true');
   url.searchParams.set('orderBy', 'startTime');
   if (params.query) url.searchParams.set('q', params.query);
-  return (await calendarFetch(url.toString(), runtime)) as CalendarEventListResult;
+  return (await calendarFetch(
+    url.toString(),
+    runtime,
+  )) as CalendarEventListResult;
 }
 
 export async function calendarCheckAvailabilityApi(
@@ -235,14 +241,18 @@ export async function calendarCheckAvailabilityApi(
     calendarIds: string[];
   },
 ): Promise<unknown> {
-  return calendarFetch('https://www.googleapis.com/calendar/v3/freeBusy', runtime, {
-    method: 'POST',
-    body: JSON.stringify({
-      timeMin: params.timeMin,
-      timeMax: params.timeMax,
-      items: params.calendarIds.map((id) => ({ id })),
-    }),
-  });
+  return calendarFetch(
+    'https://www.googleapis.com/calendar/v3/freeBusy',
+    runtime,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        timeMin: params.timeMin,
+        timeMax: params.timeMax,
+        items: params.calendarIds.map((id) => ({ id })),
+      }),
+    },
+  );
 }
 
 export async function calendarGetEventApi(
