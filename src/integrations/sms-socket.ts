@@ -1,3 +1,10 @@
+import fs from 'fs';
+import path from 'path';
+
+import {
+  inferMimeTypeFromPath,
+  resolveAgentFilePath,
+} from '../agent-path-resolver.js';
 import { readEnvFile } from '../env.js';
 import { createChildLogger } from '../logger.js';
 import { resolveSmsSocketGatewayUrl } from '../sms-socket-gateway-url.js';
@@ -50,6 +57,15 @@ interface GatewayStateSnapshot {
   addresses?: string[];
   connectionCount?: number;
   apiKeyPreview?: string;
+}
+
+interface SmsSocketAttachmentPayload {
+  id?: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number;
+  base64?: string;
+  previewBase64?: string;
 }
 
 function getApiKey(settings?: Record<string, unknown>): string {
@@ -119,7 +135,13 @@ function messageKeyFor(
   const address = String(payload.address || payload.destination || '').trim();
   const body = String(payload.body || '').trim();
   const messageId = String(payload.messageId || payload.id || '').trim();
-  return [type, messageId || address, timestamp, body].join('|');
+  const attachmentNames = getAttachmentPayloads(payload)
+    .map((attachment) => attachment.fileName || attachment.id || '')
+    .filter(Boolean)
+    .join(',');
+  return [type, messageId || address, timestamp, body, attachmentNames].join(
+    '|',
+  );
 }
 
 function consumeRecentAgentSmsSend(
@@ -141,6 +163,51 @@ function consumeRecentAgentSmsSend(
     }
   }
   return 'fresh';
+}
+
+function getAttachmentPayloads(
+  payload: Record<string, unknown>,
+): SmsSocketAttachmentPayload[] {
+  const rawAttachments = payload.attachments;
+  if (!Array.isArray(rawAttachments)) return [];
+  return rawAttachments
+    .filter(
+      (value): value is Record<string, unknown> =>
+        typeof value === 'object' && value !== null,
+    )
+    .map((attachment) => ({
+      id: typeof attachment.id === 'string' ? attachment.id : undefined,
+      fileName: String(attachment.fileName || '').trim(),
+      mimeType: String(attachment.mimeType || '').trim(),
+      sizeBytes:
+        typeof attachment.sizeBytes === 'number'
+          ? attachment.sizeBytes
+          : undefined,
+      base64:
+        typeof attachment.base64 === 'string' ? attachment.base64 : undefined,
+      previewBase64:
+        typeof attachment.previewBase64 === 'string'
+          ? attachment.previewBase64
+          : undefined,
+    }))
+    .filter((attachment) => attachment.fileName || attachment.id);
+}
+
+function describeMmsContent(payload: Record<string, unknown>): string {
+  const body = String(payload.body || '').trim();
+  const attachments = getAttachmentPayloads(payload);
+  const attachmentSummary = attachments
+    .map((attachment) => attachment.fileName || attachment.id || 'attachment')
+    .filter(Boolean)
+    .join(', ');
+  if (body && attachmentSummary) {
+    return `${body}\n[MMS attachment: ${attachmentSummary}]`;
+  }
+  if (body) return body;
+  if (attachmentSummary) {
+    return `[MMS attachment: ${attachmentSummary}]`;
+  }
+  return '[MMS attachment]';
 }
 
 export class SmsSocketChannel implements Channel {
@@ -222,6 +289,53 @@ export class SmsSocketChannel implements Channel {
       ) {
         await this.ensureConnected();
         await this.sendRequest('sendSms', payload);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async sendAttachment(input: {
+    jid: string;
+    filePath: string;
+    mimeType: string;
+    caption?: string;
+    fileName?: string;
+  }): Promise<void> {
+    const destination = input.jid.startsWith('sms:')
+      ? input.jid.slice(4)
+      : normalizePhone(input.jid);
+    if (!destination || destination.replace(/[^\d]/g, '').length < 7) {
+      throw new Error(`Unsupported MMS destination: ${input.jid}`);
+    }
+
+    const fileBuffer = fs.readFileSync(input.filePath);
+    const fileName = input.fileName || path.basename(input.filePath);
+    const payload: Record<string, unknown> = {
+      destination,
+      body: input.caption?.trim() || undefined,
+      attachment: {
+        fileName,
+        mimeType: input.mimeType,
+        sizeBytes: fileBuffer.byteLength,
+        base64: fileBuffer.toString('base64'),
+      } satisfies SmsSocketAttachmentPayload,
+    };
+    const subscriptionId = getDefaultSubscriptionId(this.settings);
+    if (subscriptionId !== undefined) {
+      payload.subscriptionId = subscriptionId;
+    }
+
+    await this.ensureConnected();
+    try {
+      await this.sendRequest('sendMms', payload);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes('SMS Socket is not connected')
+      ) {
+        await this.ensureConnected();
+        await this.sendRequest('sendMms', payload);
         return;
       }
       throw error;
@@ -488,7 +602,7 @@ export class SmsSocketChannel implements Channel {
       return;
     }
 
-    if (!type.startsWith('sms.')) {
+    if (!type.startsWith('sms.') && !type.startsWith('mms.')) {
       this.persistLastSeen(timestamp);
       return;
     }
@@ -501,7 +615,13 @@ export class SmsSocketChannel implements Channel {
       if (oldest) this.seenMessages.delete(oldest);
     }
 
-    if (type === 'sms.received' || type === 'sms.outbound.sent') {
+    if (
+      type === 'sms.received' ||
+      type === 'sms.outbound.sent' ||
+      type === 'mms.received' ||
+      type === 'mms.outbound.sent' ||
+      type === 'mms.outbound.delivered'
+    ) {
       const normalized = this.normalizeEventMessage(
         type,
         payload,
@@ -532,11 +652,16 @@ export class SmsSocketChannel implements Channel {
     const address = normalizePhone(
       String(payload.address || payload.destination || ''),
     );
-    const body = String(payload.body || '').trim();
+    const body = type.startsWith('mms.')
+      ? describeMmsContent(payload)
+      : String(payload.body || '').trim();
     if (!address || !body) return null;
 
     const chatJid = makeSmsJid(address);
-    const isFromMe = type === 'sms.outbound.sent';
+    const isFromMe =
+      type === 'sms.outbound.sent' ||
+      type === 'mms.outbound.sent' ||
+      type === 'mms.outbound.delivered';
     const isoTimestamp = toIsoTimestamp(
       payload.receivedAt || envelope.timestamp || timestamp,
     );
@@ -838,6 +963,96 @@ const smsSocketIntegration: IntegrationDefinition = {
         }
         await channel.sendMessage(ctx.chatJid, text);
         return JSON.stringify({ status: 'sent', to: ctx.chatJid });
+      },
+    },
+    {
+      name: 'sms_socket.send_file',
+      description:
+        'Send a file over MMS to a phone number or the current SMS conversation. The path can be an agent-visible container path (e.g. /workspace/group/report.pdf) or an absolute host path. This tool IS the user-visible attachment - do not also produce a text reply summarising what you sent. After calling this tool, return an empty text response to end your turn.',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: {
+            type: 'string',
+            description:
+              'Recipient phone number or sms:+E164 JID. Omit to send to the current conversation.',
+          },
+          file_path: {
+            type: 'string',
+            description:
+              'Path to the file being uploaded. Agent-visible paths under /workspace/group, /workspace/global, and /workspace/state are auto-translated to their host equivalents.',
+          },
+          caption: {
+            type: 'string',
+            description: 'Optional message body to send alongside the file.',
+          },
+          file_name: {
+            type: 'string',
+            description:
+              'Optional override for the visible file name. Defaults to basename(file_path).',
+          },
+        },
+        required: ['file_path'],
+      },
+      location: 'host' as const,
+      controllerOnly: true,
+      execute: async (args, ctx) => {
+        const rawFilePath = String(args.file_path || '').trim();
+        if (!rawFilePath) throw new Error('file_path is required');
+        const filePath = resolveAgentFilePath(rawFilePath, ctx.sourceGroup);
+        if (!fs.existsSync(filePath)) {
+          throw new Error(
+            `file_path does not exist: ${rawFilePath}` +
+              (rawFilePath === filePath
+                ? ''
+                : ` (resolved host path: ${filePath})`),
+          );
+        }
+        const channel = ctx.channels?.find(
+          (candidate) => candidate.name === INTEGRATION_NAME,
+        ) as
+          | (SmsSocketChannel & {
+              sendAttachment?: (input: {
+                jid: string;
+                filePath: string;
+                mimeType: string;
+                caption?: string;
+                fileName?: string;
+              }) => Promise<void>;
+            })
+          | undefined;
+        if (!channel?.sendAttachment) {
+          throw new Error('SMS Socket channel is not connected');
+        }
+        const targetRaw =
+          String(args.to || '').trim() || String(ctx.chatJid || '').trim();
+        if (!targetRaw) {
+          throw new Error(
+            'No target SMS conversation - provide "to" or use inside an SMS chat',
+          );
+        }
+        const jid = targetRaw.startsWith('sms:')
+          ? targetRaw
+          : await channel.resolveRecipient(targetRaw);
+        const caption = String(args.caption || '').trim();
+        const fileName =
+          String(args.file_name || '').trim() || path.basename(filePath);
+        const mimeType = inferMimeTypeFromPath(filePath);
+        await channel.sendAttachment({
+          jid,
+          filePath,
+          mimeType,
+          caption: caption || undefined,
+          fileName,
+        });
+        return JSON.stringify({
+          status: 'uploaded',
+          to: jid,
+          file_name: fileName,
+          ack_text: `Uploaded ${fileName} to MMS.`,
+          agent_instruction:
+            'Reply to the user with ack_text verbatim. No commentary, no emoji, no rephrasing.',
+        });
       },
     },
   ],

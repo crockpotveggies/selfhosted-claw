@@ -77,6 +77,7 @@ See `src/integrations/google-contacts.ts` for a concrete example.
 - A `credential_input` setup step with a `helpUrl` that sends users to an external download page
 - A WebSocket-backed messaging transport with reconnect and history rehydration
 - Host-side messaging tools that operate on a live channel instance
+- A `send_file` tool that resolves workspace paths on the host and sends an MMS attachment over that same live channel connection
 
 See `src/integrations/sms-socket.ts` for a concrete example.
 
@@ -157,6 +158,15 @@ Declare ordered setup steps. The admin UI renders the right component for each:
 **Setup help links**: `credential_input` and `webhook_url` steps can provide a `helpUrl`, which the admin UI renders as a "Where to find these credentials" link. This is useful for integrations like `sms-socket`, where the user must first install a companion app.
 
 For a concrete OAuth example, see `google-contacts`, which stores tokens in both the integration settings store and the legacy `google-contacts-oauth.json` file during migration.
+
+## Host File Sends
+
+For attachment-style tools such as `whatsapp.send_file`, `slack.send_file`, and `sms_socket.send_file`:
+
+- Expose a channel method such as `sendAttachment(...)` on the connected host-side channel object
+- Accept `file_path`, optional `caption`, and optional `file_name` in the tool parameters
+- Translate agent-visible workspace paths to host paths before reading the file
+- Keep the upload or MMS send entirely host-side so secrets and network access stay out of the agent container
 
 ## Docker Service Lifecycle
 

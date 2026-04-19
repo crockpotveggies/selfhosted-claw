@@ -43,10 +43,7 @@ import {
   type ResearchFetchResult,
   type ResearchProvider,
 } from './providers.js';
-import {
-  processFirstUsableImage,
-  type ProcessedImage,
-} from './images.js';
+import { processFirstUsableImage, type ProcessedImage } from './images.js';
 import { deterministicTopicSlug, ensureTopicSlug } from './slug.js';
 
 const SYSTEM_RESEARCH_PRINCIPAL_ID = 'principal-system-deep-research';
@@ -219,7 +216,25 @@ function getResearchSettings() {
       ? settings.domainBlocklist.map(String).filter(Boolean)
       : [],
     fixturePath: String(settings.fixturePath || ''),
+    sectionsMin: clampInt(settings.sectionsMin, 5, 1, 20),
+    sectionsMax: clampInt(settings.sectionsMax, 8, 1, 20),
+    wordsPerSectionMin: clampInt(settings.wordsPerSectionMin, 600, 100, 4000),
+    wordsPerSectionMax: clampInt(settings.wordsPerSectionMax, 1200, 100, 4000),
   };
+}
+
+// Coerce a setting that may be missing, a string, or out of range. Mirrors
+// the schema bounds in integrations/deep-research.ts so a malformed
+// settings file can't push the prompts into nonsense territory.
+function clampInt(
+  raw: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(value)));
 }
 
 function parseProgress(actionId: string): ResearchProgress {
@@ -873,6 +888,9 @@ export class DeepResearchExecutor {
 
   private async buildPlan(progress: ResearchProgress): Promise<ResearchPlan> {
     const followupContext = (progress.followupAnswers || []).join('\n');
+    const settings = getResearchSettings();
+    const sectionsMin = Math.min(settings.sectionsMin, settings.sectionsMax);
+    const sectionsMax = Math.max(settings.sectionsMin, settings.sectionsMax);
     try {
       const result = await callJsonChatCompletion<ResearchPlan>(
         [
@@ -883,7 +901,7 @@ export class DeepResearchExecutor {
               'Return JSON with keys: topic_slug, objectives, sections, subqueries, needs_followup, followup_questions.',
               '- topic_slug: 1-3 lowercase ASCII words joined by hyphens.',
               '- objectives: 3-6 concrete research goals.',
-              '- sections: 5-8 report sections. Each section has {title, angle, key_questions}. `angle` is a 1-2 sentence thesis for what this section argues or explores. `key_questions` is 2-4 questions the section should answer.',
+              `- sections: ${sectionsMin}-${sectionsMax} report sections. Each section has {title, angle, key_questions}. \`angle\` is a 1-2 sentence thesis for what this section argues or explores. \`key_questions\` is 2-4 questions the section should answer.`,
               '- subqueries: 8-15 diverse web search queries. Each entry is {query, category}, where `query` is the search string and `category` optionally restricts source type. Valid categories: "research paper" (academic / peer-reviewed), "news" (current events), "pdf" (whitepapers, reports), "company", "financial report", "github", or omit for general web search. Choose categories deliberately — use "research paper" for foundational / technical claims, "news" for recent developments, general (no category) for broad context. Mix broad framing, specific entities, counter-arguments, and recent developments.',
               '- needs_followup: only true if the prompt is genuinely ambiguous. Prefer false.',
               'Aim for richness: favor more sections over fewer, and queries that will surface contrasting viewpoints.',
@@ -1097,6 +1115,15 @@ export class DeepResearchExecutor {
     summaries: SourceSummary[],
   ): Promise<string> {
     const serializedSummaries = this.formatSummariesForPrompt(summaries);
+    const settings = getResearchSettings();
+    const wordsMin = Math.min(
+      settings.wordsPerSectionMin,
+      settings.wordsPerSectionMax,
+    );
+    const wordsMax = Math.max(
+      settings.wordsPerSectionMin,
+      settings.wordsPerSectionMax,
+    );
     try {
       const result = await callJsonChatCompletion<{
         section_markdown: string;
@@ -1108,7 +1135,7 @@ export class DeepResearchExecutor {
               'Write one section of a long-form research report as JSON with key section_markdown.',
               'Requirements:',
               '- Begin with "## <section title>" exactly as given.',
-              '- 600-1200 words. Multiple paragraphs. Use ### subheadings where it helps structure, and bullets where enumeration is natural.',
+              `- ${wordsMin}-${wordsMax} words. Multiple paragraphs. Use ### subheadings where it helps structure, and bullets where enumeration is natural.`,
               '- Ground every non-obvious claim in the provided sources. Cite inline using [n] where n is the source number. You may cite multiple sources per claim, e.g. [1][3].',
               '- Do not fabricate facts that are not in the source summaries. If the sources are thin on this section, say so briefly and focus on what can be supported.',
               '- Do not include a "Sources" list in this section — that appears elsewhere in the report.',

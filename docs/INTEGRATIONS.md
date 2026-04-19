@@ -85,7 +85,8 @@ The `sms-socket` integration is a useful real-world example of a lightweight mes
 - the setup step includes a `helpUrl` that points users to the Android app download repo
 - the channel transport is implemented directly in the integration file
 - the live WebSocket connection handles reconnects and history rehydration
-- host tools reuse the connected channel instance for `send_message` and `reply`
+- host tools reuse the connected channel instance for `send_message`, `reply`, and `send_file`
+- the file-send path maps agent-visible workspace paths to host files, then sends MMS attachments over the gateway WebSocket using the AsyncAPI `sendMms` payload
 
 See `src/integrations/sms-socket.ts`.
 
@@ -164,6 +165,13 @@ tools: [
 ```
 
 Host tools execute on the host side (where credentials live) and return results via IPC. Container tools run locally inside the Docker container.
+
+For file uploads, follow the same pattern used by `whatsapp.send_file`, `slack.send_file`, and `sms_socket.send_file`:
+
+- accept `file_path`, optional `caption`, and optional `file_name`
+- resolve agent-visible paths like `/workspace/group/...` to host paths before reading the file
+- infer or validate the MIME type on the host
+- perform the real upload/send from a live host-side channel instance
 
 ### Setup Wizard
 

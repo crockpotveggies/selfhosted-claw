@@ -357,12 +357,7 @@ function layoutBlocks(
   for (const block of blocks) {
     if (block.kind === 'text') {
       const maxWidth = CONTENT_WIDTH - block.indent;
-      const wrapped = wrapToWidth(
-        block.text,
-        block.size,
-        block.font,
-        maxWidth,
-      );
+      const wrapped = wrapToWidth(block.text, block.size, block.font, maxWidth);
       y -= block.spaceBefore;
       for (let i = 0; i < wrapped.length; i++) {
         const lineText = wrapped[i];

@@ -165,6 +165,40 @@ const deepResearchIntegration: IntegrationDefinition = {
           items: { type: 'string' },
           default: [],
         },
+        sectionsMin: {
+          type: 'integer',
+          title: 'Sections per Report (min)',
+          description:
+            'Lower bound on how many sections the planner produces. Combined with the max, controls overall report length.',
+          default: 5,
+          minimum: 1,
+          maximum: 20,
+        },
+        sectionsMax: {
+          type: 'integer',
+          title: 'Sections per Report (max)',
+          description: 'Upper bound on how many sections the planner produces.',
+          default: 8,
+          minimum: 1,
+          maximum: 20,
+        },
+        wordsPerSectionMin: {
+          type: 'integer',
+          title: 'Words per Section (min)',
+          description:
+            'Target lower bound for the section drafter. Each section also has its own LLM token budget; very large values can overflow.',
+          default: 600,
+          minimum: 100,
+          maximum: 4000,
+        },
+        wordsPerSectionMax: {
+          type: 'integer',
+          title: 'Words per Section (max)',
+          description: 'Target upper bound for the section drafter.',
+          default: 1200,
+          minimum: 100,
+          maximum: 4000,
+        },
       },
     },
     defaults: {
@@ -180,6 +214,10 @@ const deepResearchIntegration: IntegrationDefinition = {
       allowedPrincipalTypes: ['controller'],
       domainAllowlist: [],
       domainBlocklist: [],
+      sectionsMin: 5,
+      sectionsMax: 8,
+      wordsPerSectionMin: 600,
+      wordsPerSectionMax: 1200,
     },
   },
   adminPage: {

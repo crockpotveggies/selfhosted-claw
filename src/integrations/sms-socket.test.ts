@@ -1,3 +1,7 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const integrationSettings = {
@@ -119,6 +123,17 @@ class MockWebSocket {
         timestamp: 4,
         payload: { messageId: 'msg-1' },
       });
+      return;
+    }
+
+    if (type === 'sendMms') {
+      this.emit({
+        type: 'response',
+        requestId,
+        ok: true,
+        timestamp: 5,
+        payload: { messageId: 'mms-1' },
+      });
     }
   }
 
@@ -206,6 +221,47 @@ describe('SmsSocketChannel', () => {
     await channel.disconnect();
   });
 
+  it('sends outbound mms attachments through the websocket gateway', async () => {
+    const channel = new SmsSocketChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
+    const tmpFile = path.join(os.tmpdir(), `sms-socket-${Date.now()}.pdf`);
+    fs.writeFileSync(tmpFile, 'hello mms');
+
+    try {
+      await channel.connect();
+      await channel.sendAttachment({
+        jid: 'sms:+15557654321',
+        filePath: tmpFile,
+        mimeType: 'application/pdf',
+        caption: 'see attached',
+        fileName: 'hello.pdf',
+      });
+
+      const sentMessages = MockWebSocket.instances[0]?.sentMessages || [];
+      const sendRequest = sentMessages.find(
+        (message) => message.type === 'sendMms',
+      );
+      expect(sendRequest).toMatchObject({
+        type: 'sendMms',
+        payload: {
+          destination: '+15557654321',
+          body: 'see attached',
+          attachment: {
+            fileName: 'hello.pdf',
+            mimeType: 'application/pdf',
+            sizeBytes: Buffer.byteLength('hello mms'),
+            base64: Buffer.from('hello mms').toString('base64'),
+          },
+        },
+      });
+    } finally {
+      await channel.disconnect();
+      fs.rmSync(tmpFile, { force: true });
+    }
+  });
+
   it('reconnects on demand before sending when the socket has dropped', async () => {
     const channel = new SmsSocketChannel(
       { onMessage, onChatMetadata, registeredGroups },
@@ -276,6 +332,62 @@ describe('SmsSocketChannel', () => {
     expect(second).toContain('"status":"duplicate"');
 
     await channel.disconnect();
+  });
+
+  it('uploads files over mms through the integration tool', async () => {
+    const channel = new SmsSocketChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sms-socket-tool-'));
+    const tmpFile = path.join(tmpDir, 'report.pdf');
+    fs.writeFileSync(tmpFile, 'mms tool payload');
+
+    try {
+      await channel.connect();
+
+      const tool = getIntegration('sms-socket')?.tools?.find(
+        (candidate) => candidate.name === 'sms_socket.send_file',
+      );
+      expect(tool?.execute).toBeTypeOf('function');
+
+      const result = await tool!.execute!(
+        {
+          to: '+15557654321',
+          file_path: tmpFile,
+          caption: 'Monthly report',
+          file_name: 'monthly-report.pdf',
+        },
+        {
+          settings: integrationSettings,
+          sourceGroup: 'main',
+          isMain: true,
+          calendarAccess: true,
+          chatJid: 'signal:user:+15550001111',
+          channels: [channel],
+        },
+      );
+
+      const sentMessages = MockWebSocket.instances[0]?.sentMessages || [];
+      const sendRequest = sentMessages.find(
+        (message) => message.type === 'sendMms',
+      );
+      expect(sendRequest).toMatchObject({
+        payload: {
+          destination: '+15557654321',
+          body: 'Monthly report',
+          attachment: {
+            fileName: 'monthly-report.pdf',
+            mimeType: 'application/pdf',
+          },
+        },
+      });
+      expect(result).toContain('"status":"uploaded"');
+      expect(result).toContain('"file_name":"monthly-report.pdf"');
+    } finally {
+      await channel.disconnect();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('normalizes live inbound and outbound websocket events', async () => {

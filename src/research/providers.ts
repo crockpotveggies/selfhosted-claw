@@ -333,10 +333,12 @@ export class ExaProvider implements ResearchProvider {
       type: 'auto',
       contents: {
         text: { maxCharacters: 8000 },
-        // imageLinks returns multiple in-page images per result, not just the
-        // og:image. Critical for academic / PDF / Nature-style sources where
-        // og:image is usually empty.
-        extras: { imageLinks: 5 },
+        // imageLinks returns multiple in-page images per result, not just
+        // the og:image. Critical for academic / PDF / Nature-style sources
+        // where og:image is usually empty. We request a generous count so
+        // the score-and-rank stage downstream has good candidates to pick
+        // from after the quality gate filters out logos and icons.
+        extras: { imageLinks: 10 },
       },
     };
     if (options.category) body.category = options.category;

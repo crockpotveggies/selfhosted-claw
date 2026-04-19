@@ -255,8 +255,9 @@ The `sms-socket` integration:
 
 - uses an API-key-only setup flow
 - reconnects to the Android gateway over WebSocket
-- rehydrates recent SMS history after reconnects
+- rehydrates recent SMS and MMS history after reconnects
 - exposes host-side SMS send/reply tools to the agent
+- exposes an MMS file-upload tool so the agent can send PDFs, images, and other files through the Android gateway
 
 **Docker networking note**
 
@@ -329,7 +330,7 @@ Point `INBOUND_GUARD_SCRIPT` at your own script if you want to customize the inj
 ## What It Supports
 
 - **Signal-first messaging** - Signal is the built-in default channel, with support for other channels still available through the channel registry model.
-- **SMS over local WebSocket** - The `sms-socket` integration can send and receive SMS through an Android gateway app on your LAN.
+- **SMS and MMS over local WebSocket** - The `sms-socket` integration can send and receive SMS, and send MMS attachments, through an Android gateway app on your LAN.
 - **Unified control plane** - The admin UI and the verified Signal control chat use the same host-side control actions and audit log.
 - **Deep research reports** - `/research <topic>` and the `deep_research_start` tool create long-running, source-backed research jobs that save artifacts under `groups/<workspace>/research/<slug>/` and deliver only `<slug>-report.pdf` back to supported channels.
 - **Isolated group context** - Each group has its own `AGENT.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted to it.
@@ -445,6 +446,8 @@ Yes. Docker is the default runtime and works on macOS, Linux, and Windows (via W
 **Can I use SMS without a cloud provider?**
 
 Yes. Install the Android [sms-socket-app](https://github.com/crockpotveggies/sms-socket-app), keep the phone on the same LAN, and configure the `sms-socket` integration with its API key and gateway URL.
+
+The agent can also send MMS attachments through that gateway with the `sms_socket.send_file` host-side tool, using the same workspace file-path pattern as Slack and WhatsApp uploads.
 
 **Is this secure?**
 
