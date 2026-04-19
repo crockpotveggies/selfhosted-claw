@@ -163,6 +163,7 @@ interface ResearchProgress {
   fetchCalls?: number;
   statusMessage?: string;
   deadlineAt?: string;
+  quotaMode?: QuotaMode;
 }
 
 export interface DeepResearchStartInput {
@@ -212,7 +213,7 @@ function getResearchSettings() {
       Number(settings.maxSearchCallsPerJob) || 30,
     ),
     maxFetchesPerJob: Math.max(1, Number(settings.maxFetchesPerJob) || 40),
-    dailyProviderQuota: Math.max(1, Number(settings.dailyProviderQuota) || 250),
+    dailyProviderQuota: Math.max(1, Number(settings.dailyProviderQuota) || 2500),
     maxFollowups: Math.max(0, Number(settings.maxFollowups) || 2),
     progressPingIntervalMs: Math.max(
       10_000,
@@ -371,7 +372,10 @@ function recordWorkspaceArtifact(input: {
   });
 }
 
-function buildProvider(): ResearchProvider {
+type QuotaMode = 'normal' | 'ddg-only';
+
+function buildProvider(opts?: { quotaMode?: QuotaMode }): ResearchProvider {
+  const quotaMode = opts?.quotaMode ?? 'normal';
   const settings = getResearchSettings();
   if (settings.fixturePath) {
     const fixture = JSON.parse(
@@ -390,6 +394,7 @@ function buildProvider(): ResearchProvider {
   // we don't burn latency on guaranteed failures.
   const candidates: NamedProvider[] = [];
   const addExa = () => {
+    if (quotaMode === 'ddg-only') return;
     if (settings.exaApiKey) {
       candidates.push({
         name: 'exa',
@@ -398,6 +403,7 @@ function buildProvider(): ResearchProvider {
     }
   };
   const addBrave = () => {
+    if (quotaMode === 'ddg-only') return;
     if (settings.braveApiKey) {
       candidates.push({
         name: 'brave',
@@ -527,8 +533,11 @@ export class DeepResearchExecutor {
     const task = getCoreTask(action.task_id);
     if (!task) throw new Error(`Unknown deep research task ${action.task_id}`);
     const settings = getResearchSettings();
-    const provider = buildProvider();
     const progress = parseProgress(actionId);
+    // quotaMode is decided by start() synchronously before the job queues,
+    // so the chain skips paid providers when the self-imposed daily ceiling
+    // has been reached.
+    const provider = buildProvider({ quotaMode: progress.quotaMode });
     const deadlineAtMs = Date.now() + settings.maxRuntimeMs;
     progress.deadlineAt = new Date(deadlineAtMs).toISOString();
 
@@ -575,16 +584,12 @@ export class DeepResearchExecutor {
         progressJson: stringifyProgress(progress),
       });
 
-      const today = new Date().toISOString().slice(0, 10);
-      const dailyUsage = calculateDailyResearchUsage(
-        listActionsByType('deep_research', 500),
-        today,
-      );
-      if (dailyUsage >= settings.dailyProviderQuota) {
-        throw new Error(
-          'Daily deep research provider quota has been exhausted',
-        );
-      }
+      // Self-imposed daily call ceiling was previously a hard abort. That
+      // turned out to be user-hostile: a single exhausted ceiling killed the
+      // job mid-turn and the chain/fallback code never ran. The quota mode
+      // is now decided at `start()` time and threaded through via
+      // progress.quotaMode — if 'ddg-only', we downgrade to the free
+      // fallback provider instead of aborting. Nothing to do here.
 
       ensureWithinRuntime();
       const scopedPlan = await raceWithTimeout(
@@ -1023,8 +1028,9 @@ export class DeepResearchExecutor {
       // "Deep research failed" message for the same failure. Without this
       // flag the user sees duplicate failure messages for every error.
       if (error instanceof Error) {
-        (error as Error & { __deepResearchReported?: boolean }).__deepResearchReported =
-          true;
+        (
+          error as Error & { __deepResearchReported?: boolean }
+        ).__deepResearchReported = true;
       }
       throw error;
     } finally {
@@ -1663,12 +1669,36 @@ export class DeepResearchService {
     taskId: string;
     actionId: string;
     runId: string;
+    ack_text: string;
   }> {
     const now = new Date().toISOString();
     const taskId = randomUUID();
     const actionId = randomUUID();
     const runId = randomUUID();
     const principalId = input.principalId || ensureSystemResearchPrincipal();
+
+    // Decide the quota mode NOW — synchronously — so the ack_text we return
+    // to the agent matches what the background job will actually do. This
+    // also eliminates the race where the background job could abort with a
+    // quota failure message *before* the agent's ack had been sent.
+    const settings = getResearchSettings();
+    const today = now.slice(0, 10);
+    const dailyUsage = calculateDailyResearchUsage(
+      listActionsByType('deep_research', 500),
+      today,
+    );
+    const quotaMode: QuotaMode =
+      dailyUsage >= settings.dailyProviderQuota ? 'ddg-only' : 'normal';
+    if (quotaMode === 'ddg-only') {
+      log.warn(
+        {
+          actionId,
+          dailyUsage,
+          dailyProviderQuota: settings.dailyProviderQuota,
+        },
+        'Self-imposed daily call ceiling reached — degrading to DuckDuckGo-only mode for this job',
+      );
+    }
 
     createCoreTask({
       id: taskId,
@@ -1701,6 +1731,7 @@ export class DeepResearchService {
         requestedBySender: input.senderId ?? null,
         requestedBySenderName: input.senderName ?? null,
         startedAt: now,
+        quotaMode,
       }),
       artifact_paths_json: null,
       followup_count: 0,
@@ -1727,11 +1758,22 @@ export class DeepResearchService {
         chatJid: input.chatJid,
         groupFolder: input.groupFolder,
         prompt: input.prompt,
+        quotaMode,
       },
       'Deep research job queued',
     );
     this.kickOff(actionId, runId);
-    return { taskId, actionId, runId };
+
+    // ack_text is the single-source-of-truth user-facing start message. The
+    // agent outputs it verbatim per the tool's description contract; the
+    // background service no longer sends its own competing "Starting..."
+    // message, so this can't race with anything.
+    const ack_text =
+      quotaMode === 'ddg-only'
+        ? `Starting deep research on "${input.prompt}" using DuckDuckGo only (self-imposed daily API call ceiling reached). I'll send the PDF when it's ready.`
+        : `Starting deep research on "${input.prompt}". I'll send the PDF when it's ready.`;
+
+    return { taskId, actionId, runId, ack_text };
   }
 
   async answerFollowup(
@@ -1756,6 +1798,17 @@ export class DeepResearchService {
       answer.trim(),
     ];
     progress.followupAnswers = followupAnswers;
+    // Re-evaluate quota mode — the followup could land any amount of time
+    // after the original start(), including the next day when the ceiling
+    // has reset.
+    const settings = getResearchSettings();
+    const today = new Date().toISOString().slice(0, 10);
+    const dailyUsage = calculateDailyResearchUsage(
+      listActionsByType('deep_research', 500),
+      today,
+    );
+    progress.quotaMode =
+      dailyUsage >= settings.dailyProviderQuota ? 'ddg-only' : 'normal';
     updateActionRecordStatus(actionId, 'queued');
     updateActionResearchState(actionId, {
       researchSubstate: 'scoping',

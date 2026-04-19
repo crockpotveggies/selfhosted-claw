@@ -185,8 +185,10 @@ const deepResearchIntegration: IntegrationDefinition = {
         },
         dailyProviderQuota: {
           type: 'integer',
-          title: 'Daily Provider Quota',
-          default: 250,
+          title: 'Daily Call Ceiling (paid providers)',
+          description:
+            'Self-imposed cap on total search+fetch calls per day. When this is reached the next jobs automatically fall back to DuckDuckGo only — paid APIs like Exa/Brave are skipped. Use this as a cost runaway guard, not a per-day usage limit.',
+          default: 2500,
           minimum: 1,
           maximum: 100000,
         },
@@ -300,7 +302,7 @@ const deepResearchIntegration: IntegrationDefinition = {
       maxConcurrency: 2,
       maxSearchCallsPerJob: 30,
       maxFetchesPerJob: 40,
-      dailyProviderQuota: 250,
+      dailyProviderQuota: 2500,
       maxFollowups: 2,
       progressPingIntervalMs: 60000,
       attachmentSizeCapBytes: 25000000,
@@ -371,10 +373,11 @@ const deepResearchIntegration: IntegrationDefinition = {
           senderId: sender.senderId,
           senderName: sender.senderName,
         });
-        const ackText = `Starting deep research on "${prompt}". I'll send the PDF report when it's ready.`;
+        // ack_text is produced by start() itself so that quota-degraded
+        // runs can tell the user they're getting a DuckDuckGo-only report
+        // instead of silently serving lower-quality results.
         return JSON.stringify({
           ...result,
-          ack_text: ackText,
           agent_instruction:
             'Reply to the user with ack_text verbatim. Do not add commentary, do not include task or run IDs, do not add emoji, do not rephrase.',
         });
