@@ -199,6 +199,35 @@ const deepResearchIntegration: IntegrationDefinition = {
           minimum: 100,
           maximum: 4000,
         },
+        visionEnabled: {
+          type: 'boolean',
+          title: 'Enable Vision Filtering',
+          description:
+            'When on, each selected image is described by a multimodal LLM and rejected if it is a logo or otherwise uninformative. Falls back to the heuristic-only filter if the endpoint errors.',
+          default: true,
+        },
+        visionBaseUrl: {
+          type: 'string',
+          title: 'Vision Endpoint Base URL',
+          description:
+            'OpenAI-compatible chat completions base URL used only for image description. Leave blank to share the main agent endpoint (OPENAI_BASE_URL). Example: http://127.0.0.1:8000/v1',
+          default: '',
+        },
+        visionApiKey: {
+          type: 'string',
+          title: 'Vision API Key',
+          description:
+            'API key for the vision endpoint. Leave blank to share OPENAI_API_KEY.',
+          sensitive: true,
+          default: '',
+        },
+        visionModel: {
+          type: 'string',
+          title: 'Vision Model',
+          description:
+            'Model name to use for image description. Must be multimodal (e.g. a Qwen-VL or similar). Leave blank to share OPENAI_MODEL.',
+          default: '',
+        },
       },
     },
     defaults: {
@@ -218,6 +247,10 @@ const deepResearchIntegration: IntegrationDefinition = {
       sectionsMax: 8,
       wordsPerSectionMin: 600,
       wordsPerSectionMax: 1200,
+      visionEnabled: true,
+      visionBaseUrl: '',
+      visionApiKey: '',
+      visionModel: '',
     },
   },
   adminPage: {

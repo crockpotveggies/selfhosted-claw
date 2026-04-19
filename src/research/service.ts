@@ -2,7 +2,13 @@ import { createHash, randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-import { GROUPS_DIR, OPENAI_MAX_TOKENS } from '../config.js';
+import {
+  GROUPS_DIR,
+  OPENAI_API_KEY,
+  OPENAI_BASE_URL,
+  OPENAI_MAX_TOKENS,
+  OPENAI_MODEL,
+} from '../config.js';
 import {
   createActionRecord,
   createArtifactRecord,
@@ -44,6 +50,11 @@ import {
   type ResearchProvider,
 } from './providers.js';
 import { processFirstUsableImage, type ProcessedImage } from './images.js';
+import {
+  describeImage,
+  type ImageDescription,
+  type VisionConfig,
+} from './vision.js';
 import { deterministicTopicSlug, ensureTopicSlug } from './slug.js';
 
 const SYSTEM_RESEARCH_PRINCIPAL_ID = 'principal-system-deep-research';
@@ -117,6 +128,7 @@ interface SourceSummary {
   notable_quotes: string[];
   relevance_notes: string;
   image?: ProcessedImage;
+  imageDescription?: ImageDescription;
 }
 
 // Total images embedded per report. Each image is capped at ~120 KB so six
@@ -220,6 +232,25 @@ function getResearchSettings() {
     sectionsMax: clampInt(settings.sectionsMax, 8, 1, 20),
     wordsPerSectionMin: clampInt(settings.wordsPerSectionMin, 600, 100, 4000),
     wordsPerSectionMax: clampInt(settings.wordsPerSectionMax, 1200, 100, 4000),
+    visionEnabled: settings.visionEnabled !== false,
+    visionBaseUrl: String(settings.visionBaseUrl || '').trim(),
+    visionApiKey: String(settings.visionApiKey || '').trim(),
+    visionModel: String(settings.visionModel || '').trim(),
+  };
+}
+
+// Resolve the effective vision endpoint, falling through to the main agent
+// OPENAI_* configuration when the integration-level overrides are blank.
+// Keeps the default zero-config behavior while allowing a user to point
+// image classification at a different (e.g. multimodal-capable) endpoint.
+function getVisionConfig(
+  settings: ReturnType<typeof getResearchSettings>,
+): VisionConfig {
+  return {
+    enabled: settings.visionEnabled,
+    baseUrl: settings.visionBaseUrl || OPENAI_BASE_URL,
+    apiKey: settings.visionApiKey || OPENAI_API_KEY,
+    model: settings.visionModel || OPENAI_MODEL,
   };
 }
 
@@ -1016,9 +1047,46 @@ export class DeepResearchExecutor {
       for (const candidate of source.imageCandidates ?? []) push(candidate);
       return out;
     })();
-    const imagePromise: Promise<ProcessedImage | null> = imageCandidates.length
-      ? processFirstUsableImage(imageCandidates).catch(() => null)
-      : Promise.resolve(null);
+    // Chain: download + heuristic-filter best candidate, then describe it
+    // with the vision model. If vision says "logo" or "not informative", we
+    // drop the image entirely so the drafter has nothing to reference.
+    const imageClassification: Promise<{
+      image?: ProcessedImage;
+      imageDescription?: ImageDescription;
+    }> = (async () => {
+      if (!imageCandidates.length) return {};
+      const image = await processFirstUsableImage(imageCandidates).catch(
+        () => null,
+      );
+      if (!image) return {};
+      const visionConfig = getVisionConfig(getResearchSettings());
+      const description = await describeImage(
+        image.buffer,
+        {
+          topic: progress.prompt,
+          sourceTitle: source.title,
+          sourceUrl: image.sourceUrl,
+        },
+        visionConfig,
+      );
+      if (description) {
+        if (!description.is_informative || description.kind === 'logo') {
+          log.info(
+            {
+              sourceIndex: index,
+              url: image.sourceUrl,
+              kind: description.kind,
+              description: description.description,
+            },
+            'Vision dropped image as uninformative',
+          );
+          return {};
+        }
+        return { image, imageDescription: description };
+      }
+      // Vision disabled or failed — keep the image from heuristic selection.
+      return { image };
+    })();
     try {
       const result = await callJsonChatCompletion<{
         key_points: string[];
@@ -1066,7 +1134,7 @@ export class DeepResearchExecutor {
         relevance_notes: this.sanitizeSummaryLine(
           String(result.relevance_notes || ''),
         ),
-        image: (await imagePromise) ?? undefined,
+        ...(await imageClassification),
       };
     } catch {
       // Summarizer failed or emitted unparseable output. Skip the source
@@ -1080,7 +1148,7 @@ export class DeepResearchExecutor {
         key_points: [],
         notable_quotes: [],
         relevance_notes: '',
-        image: (await imagePromise) ?? undefined,
+        ...(await imageClassification),
       };
     }
   }
@@ -1088,9 +1156,16 @@ export class DeepResearchExecutor {
   private formatSummariesForPrompt(summaries: SourceSummary[]): string {
     return summaries
       .map((summary) => {
-        const header = summary.image
-          ? `[${summary.index}] ${summary.title} — ${summary.url}  (image available)`
-          : `[${summary.index}] ${summary.title} — ${summary.url}`;
+        let header = `[${summary.index}] ${summary.title} — ${summary.url}`;
+        if (summary.image) {
+          if (summary.imageDescription) {
+            const kind = summary.imageDescription.kind;
+            const desc = summary.imageDescription.description;
+            header += `  (image available: ${kind} — ${desc})`;
+          } else {
+            header += '  (image available)';
+          }
+        }
         const lines = [
           header,
           ...summary.key_points.map((point) => `  - ${point}`),
@@ -1140,7 +1215,7 @@ export class DeepResearchExecutor {
               '- Do not fabricate facts that are not in the source summaries. If the sources are thin on this section, say so briefly and focus on what can be supported.',
               '- Do not include a "Sources" list in this section — that appears elsewhere in the report.',
               '- Avoid hedging throat-clearing like "In this section we will...". Get to substance immediately.',
-              'Images: sources marked "(image available)" have an accompanying picture you SHOULD include when relevant. Use this exact markdown syntax on its own line: ![short descriptive caption](source-N-image) where N is the source number. Aim for ONE image per section when at least one cited source has an image available, placing it after the opening paragraph or near the claim it supports. Skip the image only if no cited source has one available, or if it would clearly be irrelevant (e.g. a definitions section). Never invent images for sources not marked "(image available)".',
+              'Images: sources marked "(image available: ...)" have an accompanying picture. The parenthetical tells you what kind (chart, diagram, screenshot, etc.) and a short description of what it shows. Use this exact markdown syntax on its own line to include one: ![short descriptive caption](source-N-image) where N is the source number. Pick the image whose description most directly supports a claim in THIS section; do not reuse an image another section would use better. Aim for ZERO or ONE image per section — never more. Skip the image when no available image is a clear fit for this section\'s substance. Never invent images for sources not marked "(image available: ...)".',
             ].join('\n'),
           },
           {
@@ -1268,17 +1343,34 @@ export class DeepResearchExecutor {
       const drafted = await this.draftSection(progress, section, summaries);
       sectionMarkdowns.push(drafted);
     }
-    const sectionsJoined = sectionMarkdowns.join('\n\n');
+    const rawSectionsJoined = sectionMarkdowns.join('\n\n');
 
-    const emittedImageRefs = (
-      sectionsJoined.match(/!\[[^\]]*\]\(source-\d+-image\)/g) || []
-    ).length;
+    // Drafters occasionally reach for the same image across multiple
+    // sections even though they're told not to. Strip any repeat image
+    // reference (by name), keeping the first occurrence only, so the PDF
+    // never embeds duplicates.
+    const seenImageRefs = new Set<string>();
+    let droppedDuplicateRefs = 0;
+    const sectionsJoined = rawSectionsJoined.replace(
+      /^!\[([^\]]*)\]\((source-\d+-image)\)$/gm,
+      (full, _caption, name) => {
+        if (seenImageRefs.has(name)) {
+          droppedDuplicateRefs += 1;
+          return '';
+        }
+        seenImageRefs.add(name);
+        return full;
+      },
+    );
+
+    const emittedImageRefs = seenImageRefs.size;
     log.info(
       {
         topicSlug: progress.topicSlug,
         sections: plan.sections.length,
         availableImages: summariesWithImage,
         emittedImageRefs,
+        droppedDuplicateRefs,
       },
       'Section drafts complete',
     );
