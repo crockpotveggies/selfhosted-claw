@@ -538,15 +538,38 @@ export function resetProviderCircuits(): void {
 }
 
 export interface ChainEventHandlers {
-  /** Called when a provider call throws. */
+  /**
+   * Per-provider failure. Informational when the chain eventually recovers;
+   * the real user-facing failure event is `onChainFailure` below.
+   */
   onFailure?: (
     providerName: string,
     op: 'search' | 'fetch',
     error: Error,
     breaker: BreakerState,
   ) => void;
-  /** Called when a provider is skipped because its breaker is open. */
-  onSkip?: (providerName: string, op: 'search' | 'fetch', reason: string) => void;
+  /** A provider was skipped because its breaker is open. */
+  onSkip?: (
+    providerName: string,
+    op: 'search' | 'fetch',
+    reason: string,
+  ) => void;
+  /**
+   * Every provider in the chain failed. This is the *only* chain-level
+   * signal that the caller should surface to users — anything else is
+   * recoverable noise.
+   */
+  onChainFailure?: (
+    op: 'search' | 'fetch',
+    lastError: Error,
+    providerSequence: string[],
+  ) => void;
+  /** Fires on fallback success so callers can see which provider won. */
+  onFallbackRecovery?: (
+    providerName: string,
+    op: 'search' | 'fetch',
+    skippedOrFailed: string[],
+  ) => void;
 }
 
 // Tries each provider in order until one succeeds. If a provider's circuit
@@ -568,23 +591,40 @@ export class ChainProvider implements ResearchProvider {
     call: (provider: ResearchProvider) => Promise<T>,
   ): Promise<T> {
     const allOpen = this.providers.every((p) => isProviderCircuitOpen(p.name));
+    const skippedOrFailed: string[] = [];
     let lastError: Error | null = null;
     for (const { name, provider } of this.providers) {
       if (!allOpen && isProviderCircuitOpen(name)) {
         this.handlers?.onSkip?.(name, op, 'circuit open');
+        skippedOrFailed.push(name);
         continue;
       }
       try {
         const result = await call(provider);
         recordProviderSuccess(name);
+        // If we needed to pass over any previous provider to get here, this
+        // is a successful fallback — let the caller log it.
+        if (skippedOrFailed.length > 0) {
+          this.handlers?.onFallbackRecovery?.(name, op, skippedOrFailed);
+        }
         return result;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         const breaker = recordProviderFailure(name, lastError);
         this.handlers?.onFailure?.(name, op, lastError, breaker);
+        skippedOrFailed.push(name);
       }
     }
-    throw lastError ?? new Error('All research providers failed');
+    // Every provider failed (or was skipped and then failed in the all-open
+    // pass). Surface that as a single chain-level event, not N noisy
+    // per-provider warnings.
+    const finalError = lastError ?? new Error('All research providers failed');
+    this.handlers?.onChainFailure?.(
+      op,
+      finalError,
+      this.providers.map((p) => p.name),
+    );
+    throw finalError;
   }
 
   async search(
@@ -667,9 +707,7 @@ export class DuckDuckGoProvider implements ResearchProvider {
         resultIdx += 1;
         continue;
       }
-      const title = decodeHtmlEntities(
-        match[2].replace(/<[^>]+>/g, '').trim(),
-      );
+      const title = decodeHtmlEntities(match[2].replace(/<[^>]+>/g, '').trim());
       if (!title) {
         resultIdx += 1;
         continue;

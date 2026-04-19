@@ -158,9 +158,9 @@ describe('ChainProvider + circuit breaker', () => {
       search: vi.fn().mockRejectedValue(new Error('quota exhausted')),
     });
     const ok = makeProvider('fallback', {
-      search: vi.fn().mockResolvedValue([
-        { title: 'Result', url: 'https://example.com/a' },
-      ]),
+      search: vi
+        .fn()
+        .mockResolvedValue([{ title: 'Result', url: 'https://example.com/a' }]),
     });
     const chain = new ChainProvider([failing, ok]);
     const results = await chain.search('anything', { maxResults: 5 });
@@ -171,9 +171,9 @@ describe('ChainProvider + circuit breaker', () => {
   it('opens the circuit after repeated failures and skips the provider', async () => {
     const failingSearch = vi.fn().mockRejectedValue(new Error('429'));
     const failing = makeProvider('primary', { search: failingSearch });
-    const okSearch = vi.fn().mockResolvedValue([
-      { title: 'B', url: 'https://example.com/b' },
-    ]);
+    const okSearch = vi
+      .fn()
+      .mockResolvedValue([{ title: 'B', url: 'https://example.com/b' }]);
     const ok = makeProvider('fallback', { search: okSearch });
     const chain = new ChainProvider([failing, ok]);
 
@@ -193,9 +193,9 @@ describe('ChainProvider + circuit breaker', () => {
       search: vi.fn().mockRejectedValue(new Error('boom')),
     });
     const ok = makeProvider('fallback', {
-      search: vi.fn().mockResolvedValue([
-        { title: 'C', url: 'https://example.com/c' },
-      ]),
+      search: vi
+        .fn()
+        .mockResolvedValue([{ title: 'C', url: 'https://example.com/c' }]),
     });
     const onFailure = vi.fn();
     const onSkip = vi.fn();
@@ -251,9 +251,9 @@ describe('ChainProvider + circuit breaker', () => {
       }),
     });
     const ok = makeProvider('fallback', {
-      search: vi.fn().mockResolvedValue([
-        { title: 'fb', url: 'https://example.com/fb' },
-      ]),
+      search: vi
+        .fn()
+        .mockResolvedValue([{ title: 'fb', url: 'https://example.com/fb' }]),
     });
     const chain = new ChainProvider([failing, ok]);
 

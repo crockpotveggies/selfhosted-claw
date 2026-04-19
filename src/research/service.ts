@@ -51,6 +51,7 @@ import {
   type ResearchCategory,
   type ResearchFetchResult,
   type ResearchProvider,
+  type ResearchSearchResult,
 } from './providers.js';
 import { processFirstUsableImage, type ProcessedImage } from './images.js';
 import {
@@ -425,27 +426,49 @@ function buildProvider(): ResearchProvider {
   }
 
   return new ChainProvider(candidates, {
+    // Per-provider failure is INFO level: the chain will usually recover,
+    // and the notification bell should not light up for routine 429s. The
+    // only event that warrants a user-visible warning is the chain-level
+    // onChainFailure below.
     onFailure: (providerName, op, err, breaker) => {
-      log.warn(
+      log.info(
         {
           provider: providerName,
           op,
           err: err.message,
           consecutiveFailures: breaker.consecutiveFailures,
           circuitOpenedUntil: breaker.openUntil || undefined,
+          circuitJustOpened: Boolean(
+            breaker.openedAt && Date.now() - breaker.openedAt < 2000,
+          ),
           fallbackOrder: candidates.map((c) => c.name),
         },
-        breaker.openUntil > Date.now() &&
-          breaker.openedAt &&
-          Date.now() - breaker.openedAt < 2000
-          ? 'Research provider failed, circuit opened'
-          : 'Research provider failed, falling back to next in chain',
+        'Research provider failed, trying next in chain',
       );
     },
     onSkip: (providerName, op, reason) => {
       log.info(
         { provider: providerName, op, reason },
         'Research provider skipped by circuit breaker',
+      );
+    },
+    onFallbackRecovery: (providerName, op, skippedOrFailed) => {
+      log.info(
+        { provider: providerName, op, skippedOrFailed },
+        'Research provider chain recovered via fallback',
+      );
+    },
+    onChainFailure: (op, lastError, providerSequence) => {
+      // Every provider is now dead — THIS is the event that should surface
+      // as a warning. Caller code treats the chain's thrown error as the
+      // single "deep research failed" user message.
+      log.warn(
+        {
+          op,
+          err: lastError.message,
+          providerSequence,
+        },
+        'All research providers failed',
       );
     },
   });
@@ -667,32 +690,74 @@ export class DeepResearchExecutor {
       // Progress pings and final PDF delivery still come from this service
       // because those fire after the turn closes and cannot race.
 
+      let failedSubqueries = 0;
+      let failedFetches = 0;
       for (const subquery of scopedPlan.subqueries.slice(
         0,
         settings.maxSearchCallsPerJob,
       )) {
         ensureWithinRuntime();
         progress.searchCalls += 1;
-        const results = await raceWithTimeout(
-          () =>
-            provider.search(subquery.query, {
-              maxResults: 5,
-              includeDomains,
-              excludeDomains,
-              category: subquery.category,
-            }),
-          remainingRuntimeMs(),
-          'Deep research timed out while searching for sources',
-        );
+        // Search is chain-level fallback: if EVERY provider errors for this
+        // query (Exa quota + Brave key invalid + DDG scrape broken) we must
+        // not abort the whole job — skip this subquery and keep trying the
+        // remaining ones. Timeouts are treated as soft failures here too.
+        let results: ResearchSearchResult[] = [];
+        try {
+          results = await raceWithTimeout(
+            () =>
+              provider.search(subquery.query, {
+                maxResults: 5,
+                includeDomains,
+                excludeDomains,
+                category: subquery.category,
+              }),
+            remainingRuntimeMs(),
+            'Deep research timed out while searching for sources',
+          );
+        } catch (searchErr) {
+          failedSubqueries += 1;
+          log.info(
+            {
+              actionId,
+              query: subquery.query,
+              err:
+                searchErr instanceof Error
+                  ? searchErr.message
+                  : String(searchErr),
+            },
+            'Subquery search failed across all providers, skipping',
+          );
+          continue;
+        }
         for (const result of results.slice(0, 2)) {
           if (progress.fetchCalls >= settings.maxFetchesPerJob) break;
           ensureWithinRuntime();
           progress.fetchCalls += 1;
-          const fetched = await raceWithTimeout(
-            () => provider.fetch(result.url),
-            remainingRuntimeMs(),
-            `Deep research timed out while fetching ${result.url}`,
-          );
+          // Same logic for fetch: an unreachable URL or a chain-level fetch
+          // failure should cost us one source, not the entire report.
+          let fetched;
+          try {
+            fetched = await raceWithTimeout(
+              () => provider.fetch(result.url),
+              remainingRuntimeMs(),
+              `Deep research timed out while fetching ${result.url}`,
+            );
+          } catch (fetchErr) {
+            failedFetches += 1;
+            log.info(
+              {
+                actionId,
+                url: result.url,
+                err:
+                  fetchErr instanceof Error
+                    ? fetchErr.message
+                    : String(fetchErr),
+              },
+              'Source fetch failed across all providers, skipping URL',
+            );
+            continue;
+          }
           sourcePayloads.push({
             ...fetched,
             title: result.title || fetched.title,
@@ -716,6 +781,27 @@ export class DeepResearchExecutor {
           );
         }
         if (progress.fetchCalls >= settings.maxFetchesPerJob) break;
+      }
+
+      log.info(
+        {
+          actionId,
+          searchCalls: progress.searchCalls,
+          fetchCalls: progress.fetchCalls,
+          sourcesCollected: sourcePayloads.length,
+          failedSubqueries,
+          failedFetches,
+        },
+        'Source collection phase complete',
+      );
+
+      // If literally nothing survived — every subquery errored AND every
+      // fetch errored — there's no point continuing. Throw here so the
+      // catch below emits the single user-facing failure message.
+      if (sourcePayloads.length === 0) {
+        throw new Error(
+          `No sources could be collected (searches failed: ${failedSubqueries}, fetches failed: ${failedFetches}). All research providers appear to be unavailable.`,
+        );
       }
 
       const reportDir = path.join(

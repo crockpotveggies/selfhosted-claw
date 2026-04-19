@@ -25,9 +25,7 @@ const log = createChildLogger({ integration: 'deep-research' });
 
 function getProvider(settings: Record<string, unknown>): ResearchProvider {
   const primary = String(settings.defaultProvider || 'exa');
-  const exaApiKey = String(
-    settings.exaApiKey || process.env.EXA_API_KEY || '',
-  );
+  const exaApiKey = String(settings.exaApiKey || process.env.EXA_API_KEY || '');
   const braveApiKey = String(
     settings.braveApiKey || process.env.BRAVE_API_KEY || '',
   );
@@ -61,8 +59,10 @@ function getProvider(settings: Record<string, unknown>): ResearchProvider {
 
   if (candidates.length === 1) return candidates[0].provider;
   return new ChainProvider(candidates, {
+    // Routine per-provider failures are INFO only — notification bell should
+    // light up only on chain-level failure (onChainFailure below).
     onFailure: (providerName, op, err, breaker) => {
-      log.warn(
+      log.info(
         {
           provider: providerName,
           op,
@@ -70,13 +70,29 @@ function getProvider(settings: Record<string, unknown>): ResearchProvider {
           consecutiveFailures: breaker.consecutiveFailures,
           circuitOpenedUntil: breaker.openUntil || undefined,
         },
-        'Research provider failed in tool chain, falling back',
+        'Research provider failed in tool chain, trying next',
       );
     },
     onSkip: (providerName, op, reason) => {
       log.info(
         { provider: providerName, op, reason },
         'Research provider skipped by circuit breaker',
+      );
+    },
+    onFallbackRecovery: (providerName, op, skippedOrFailed) => {
+      log.info(
+        { provider: providerName, op, skippedOrFailed },
+        'Research provider chain recovered via fallback',
+      );
+    },
+    onChainFailure: (op, lastError, providerSequence) => {
+      log.warn(
+        {
+          op,
+          err: lastError.message,
+          providerSequence,
+        },
+        'All research providers failed in tool chain',
       );
     },
   });
