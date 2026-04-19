@@ -32,7 +32,7 @@ import { findChannel } from '../router.js';
 import type { Channel } from '../types.js';
 import { getIntegrationSettings } from '../integrations/settings-store.js';
 import type { RunSpecDispatcher } from '../dispatcher/runspec-dispatcher.js';
-import { createSimplePdf } from './pdf.js';
+import { createSimplePdf, type PdfImage } from './pdf.js';
 import { callJsonChatCompletion } from './openai.js';
 import {
   BraveProvider,
@@ -43,6 +43,10 @@ import {
   type ResearchFetchResult,
   type ResearchProvider,
 } from './providers.js';
+import {
+  processFirstUsableImage,
+  type ProcessedImage,
+} from './images.js';
 import { deterministicTopicSlug, ensureTopicSlug } from './slug.js';
 
 const SYSTEM_RESEARCH_PRINCIPAL_ID = 'principal-system-deep-research';
@@ -115,7 +119,12 @@ interface SourceSummary {
   key_points: string[];
   notable_quotes: string[];
   relevance_notes: string;
+  image?: ProcessedImage;
 }
+
+// Total images embedded per report. Each image is capped at ~120 KB so six
+// images + ~40 KB of text + PDF overhead stays comfortably under 1 MB.
+const MAX_IMAGES_PER_REPORT = 6;
 
 interface ResearchProgress {
   prompt: string;
@@ -647,7 +656,10 @@ export class DeepResearchExecutor {
       progress.summaryBullets = reportPayload.summary_bullets;
       const markdown = reportPayload.report_markdown.trim();
       const html = markdownToHtml(markdown);
-      const pdf = createSimplePdf(markdown);
+      const pdf = createSimplePdf(markdown, {
+        images: reportPayload.images,
+        maxSizeBytes: 1_048_576,
+      });
 
       fs.writeFileSync(markdownPath, markdown, 'utf-8');
       fs.writeFileSync(htmlPath, html, 'utf-8');
@@ -965,9 +977,30 @@ export class DeepResearchExecutor {
     progress: ResearchProgress,
     source: ResearchFetchResult,
     index: number,
+    options?: { allowImage?: boolean },
   ): Promise<SourceSummary> {
     const unframed = this.stripSourceFraming(source.textContent);
     const truncated = this.truncateForPrompt(unframed, 12000);
+    // Fire image download in parallel with the summary call so we don't pay
+    // serial latency. Tries each candidate URL until one succeeds (Exa
+    // returns og:image plus several in-page imageLinks per result).
+    const imageCandidates = (() => {
+      if (!options?.allowImage) return [];
+      const seen = new Set<string>();
+      const out: string[] = [];
+      const push = (u?: string) => {
+        if (!u) return;
+        if (seen.has(u)) return;
+        seen.add(u);
+        out.push(u);
+      };
+      push(source.imageUrl);
+      for (const candidate of source.imageCandidates ?? []) push(candidate);
+      return out;
+    })();
+    const imagePromise: Promise<ProcessedImage | null> = imageCandidates.length
+      ? processFirstUsableImage(imageCandidates).catch(() => null)
+      : Promise.resolve(null);
     try {
       const result = await callJsonChatCompletion<{
         key_points: string[];
@@ -1015,6 +1048,7 @@ export class DeepResearchExecutor {
         relevance_notes: this.sanitizeSummaryLine(
           String(result.relevance_notes || ''),
         ),
+        image: (await imagePromise) ?? undefined,
       };
     } catch {
       // Summarizer failed or emitted unparseable output. Skip the source
@@ -1028,6 +1062,7 @@ export class DeepResearchExecutor {
         key_points: [],
         notable_quotes: [],
         relevance_notes: '',
+        image: (await imagePromise) ?? undefined,
       };
     }
   }
@@ -1035,8 +1070,11 @@ export class DeepResearchExecutor {
   private formatSummariesForPrompt(summaries: SourceSummary[]): string {
     return summaries
       .map((summary) => {
+        const header = summary.image
+          ? `[${summary.index}] ${summary.title} — ${summary.url}  (image available)`
+          : `[${summary.index}] ${summary.title} — ${summary.url}`;
         const lines = [
-          `[${summary.index}] ${summary.title} — ${summary.url}`,
+          header,
           ...summary.key_points.map((point) => `  - ${point}`),
         ];
         if (summary.notable_quotes.length) {
@@ -1075,6 +1113,7 @@ export class DeepResearchExecutor {
               '- Do not fabricate facts that are not in the source summaries. If the sources are thin on this section, say so briefly and focus on what can be supported.',
               '- Do not include a "Sources" list in this section — that appears elsewhere in the report.',
               '- Avoid hedging throat-clearing like "In this section we will...". Get to substance immediately.',
+              'Images: sources marked "(image available)" have an accompanying picture you SHOULD include when relevant. Use this exact markdown syntax on its own line: ![short descriptive caption](source-N-image) where N is the source number. Aim for ONE image per section when at least one cited source has an image available, placing it after the opening paragraph or near the claim it supports. Skip the image only if no cited source has one available, or if it would clearly be irrelevant (e.g. a definitions section). Never invent images for sources not marked "(image available)".',
             ].join('\n'),
           },
           {
@@ -1154,13 +1193,19 @@ export class DeepResearchExecutor {
     progress: ResearchProgress,
     sources: ResearchFetchResult[],
     checkpoint: () => number,
-  ): Promise<{ summary_bullets: string[]; report_markdown: string }> {
+  ): Promise<{
+    summary_bullets: string[];
+    report_markdown: string;
+    images: Map<string, PdfImage>;
+  }> {
     const plan = progress.plan;
     if (!plan) {
       throw new Error('Cannot build report without a research plan');
     }
 
     // 1. Per-source summarization (bounded by fetch count; each call is small).
+    //    We also kick off an image fetch for up to MAX_IMAGES_PER_REPORT
+    //    sources so the section drafter can optionally embed them.
     const perSourceBudget = Math.min(sources.length, 16);
     const summaries: SourceSummary[] = [];
     for (let index = 0; index < perSourceBudget; index++) {
@@ -1169,9 +1214,25 @@ export class DeepResearchExecutor {
         progress,
         sources[index],
         index + 1,
+        { allowImage: index < MAX_IMAGES_PER_REPORT },
       );
       summaries.push(summary);
     }
+
+    const sourcesWithImageUrl = sources
+      .slice(0, perSourceBudget)
+      .filter((source) => source.imageUrl).length;
+    const summariesWithImage = summaries.filter((s) => s.image).length;
+    log.info(
+      {
+        topicSlug: progress.topicSlug,
+        totalSources: sources.length,
+        summarized: summaries.length,
+        sourcesWithImageUrl,
+        summariesWithImage,
+      },
+      'Source summarization complete',
+    );
 
     // 2. Draft each section with all source summaries in context.
     const sectionMarkdowns: string[] = [];
@@ -1181,6 +1242,19 @@ export class DeepResearchExecutor {
       sectionMarkdowns.push(drafted);
     }
     const sectionsJoined = sectionMarkdowns.join('\n\n');
+
+    const emittedImageRefs = (
+      sectionsJoined.match(/!\[[^\]]*\]\(source-\d+-image\)/g) || []
+    ).length;
+    log.info(
+      {
+        topicSlug: progress.topicSlug,
+        sections: plan.sections.length,
+        availableImages: summariesWithImage,
+        emittedImageRefs,
+      },
+      'Section drafts complete',
+    );
 
     // 3. Executive summary written last, seeing the full body.
     checkpoint();
@@ -1223,9 +1297,23 @@ export class DeepResearchExecutor {
       .filter((line) => line !== null)
       .join('\n');
 
+    // Build the image map keyed by the markdown reference names the section
+    // drafter was told to emit: `source-N-image`. The PDF renderer drops any
+    // that overflow the size budget.
+    const images = new Map<string, PdfImage>();
+    for (const summary of summaries) {
+      if (!summary.image) continue;
+      images.set(`source-${summary.index}-image`, {
+        buffer: summary.image.buffer,
+        width: summary.image.width,
+        height: summary.image.height,
+      });
+    }
+
     return {
       summary_bullets: summaryBullets.slice(0, 3),
       report_markdown: report.trim(),
+      images,
     };
   }
 }

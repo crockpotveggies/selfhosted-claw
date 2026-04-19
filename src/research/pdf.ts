@@ -1,10 +1,21 @@
-// Minimal markdown-aware PDF renderer. Produces a real multi-page PDF with
-// heading hierarchy, bulleted lists, and paragraphs, using only the standard
-// Helvetica/Helvetica-Bold PostScript fonts built into every PDF viewer.
+// Markdown-aware PDF renderer. Produces a real multi-page PDF with heading
+// hierarchy, bulleted lists, paragraphs, and embedded JPEG images using only
+// the standard Helvetica/Helvetica-Bold PostScript fonts built into every
+// PDF viewer. Images are referenced from markdown as:
+//   ![optional caption](name)
+// where `name` is a key into the `images` map passed to createSimplePdf.
 
 type FontKey = 'regular' | 'bold';
 
-interface RenderBlock {
+export interface PdfImage {
+  /** Raw JPEG bytes (as produced by sharp .jpeg()). */
+  buffer: Buffer;
+  width: number;
+  height: number;
+}
+
+interface TextBlock {
+  kind: 'text';
   text: string;
   font: FontKey;
   size: number;
@@ -15,16 +26,27 @@ interface RenderBlock {
   leading: number;
 }
 
+interface ImageBlock {
+  kind: 'image';
+  name: string;
+  caption: string;
+  spaceBefore: number;
+  spaceAfter: number;
+}
+
+type RenderBlock = TextBlock | ImageBlock;
+
 const PAGE_WIDTH = 612;
 const PAGE_HEIGHT = 792;
 const MARGIN_X = 54;
 const MARGIN_TOP = 54;
 const MARGIN_BOTTOM = 54;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN_X * 2;
+// Hard cap on a single image's rendered height so a tall portrait doesn't
+// devour a whole page.
+const MAX_IMAGE_HEIGHT = 320;
+const DEFAULT_SIZE_BUDGET_BYTES = 1_048_576; // 1 MB
 
-// Map common Unicode codepoints to WinAnsi (PDF built-in Helvetica) byte values.
-// Anything else non-ASCII is transliterated to a safe ASCII fallback so the
-// viewer does not render the wrong glyph (e.g. • becoming ¢).
 const WIN_ANSI_MAP: Record<string, number> = {
   '\u2022': 0x95,
   '\u2013': 0x96,
@@ -97,7 +119,6 @@ function stripInlineMarkdown(text: string): string {
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
 }
 
-// Approximate character widths for Helvetica at 1pt, good enough for wrapping.
 function approxCharWidth(char: string, size: number, font: FontKey): number {
   const narrow = 'ilrt!.,;:|\'"`/\\()[]{}';
   const wide = 'MW%@';
@@ -136,7 +157,6 @@ function wrapToWidth(
     if (measure(word, size, font) <= maxWidth) {
       current = word;
     } else {
-      // Hard split on overly long tokens (URLs, etc.).
       let remaining = word;
       while (
         measure(remaining, size, font) > maxWidth &&
@@ -159,6 +179,8 @@ function wrapToWidth(
   return lines;
 }
 
+const IMAGE_LINE_PATTERN = /^!\[([^\]]*)\]\(([^)]+)\)$/;
+
 function parseMarkdownToBlocks(markdown: string): RenderBlock[] {
   const blocks: RenderBlock[] = [];
   const lines = markdown.split(/\r?\n/);
@@ -167,6 +189,7 @@ function parseMarkdownToBlocks(markdown: string): RenderBlock[] {
   const flushParagraph = () => {
     if (!paragraphBuf.length) return;
     blocks.push({
+      kind: 'text',
       text: stripInlineMarkdown(paragraphBuf.join(' ')),
       font: 'regular',
       size: 11,
@@ -188,9 +211,23 @@ function parseMarkdownToBlocks(markdown: string): RenderBlock[] {
       continue;
     }
 
+    const imageMatch = trimmed.match(IMAGE_LINE_PATTERN);
+    if (imageMatch) {
+      flushParagraph();
+      blocks.push({
+        kind: 'image',
+        caption: imageMatch[1].trim(),
+        name: imageMatch[2].trim(),
+        spaceBefore: 8,
+        spaceAfter: 8,
+      });
+      continue;
+    }
+
     if (trimmed.startsWith('# ')) {
       flushParagraph();
       blocks.push({
+        kind: 'text',
         text: stripInlineMarkdown(trimmed.slice(2).trim()),
         font: 'bold',
         size: 22,
@@ -205,6 +242,7 @@ function parseMarkdownToBlocks(markdown: string): RenderBlock[] {
     if (trimmed.startsWith('## ')) {
       flushParagraph();
       blocks.push({
+        kind: 'text',
         text: stripInlineMarkdown(trimmed.slice(3).trim()),
         font: 'bold',
         size: 16,
@@ -219,6 +257,7 @@ function parseMarkdownToBlocks(markdown: string): RenderBlock[] {
     if (trimmed.startsWith('### ')) {
       flushParagraph();
       blocks.push({
+        kind: 'text',
         text: stripInlineMarkdown(trimmed.slice(4).trim()),
         font: 'bold',
         size: 13,
@@ -233,6 +272,7 @@ function parseMarkdownToBlocks(markdown: string): RenderBlock[] {
     if (/^[-*]\s+/.test(trimmed)) {
       flushParagraph();
       blocks.push({
+        kind: 'text',
         text: stripInlineMarkdown(trimmed.replace(/^[-*]\s+/, '')),
         font: 'regular',
         size: 11,
@@ -248,6 +288,7 @@ function parseMarkdownToBlocks(markdown: string): RenderBlock[] {
       flushParagraph();
       const match = trimmed.match(/^(\d+)\.\s+(.*)$/);
       blocks.push({
+        kind: 'text',
         text: `${match?.[1]}. ${stripInlineMarkdown(match?.[2] || '')}`,
         font: 'regular',
         size: 11,
@@ -262,6 +303,7 @@ function parseMarkdownToBlocks(markdown: string): RenderBlock[] {
     if (trimmed.startsWith('> ')) {
       flushParagraph();
       blocks.push({
+        kind: 'text',
         text: stripInlineMarkdown(trimmed.slice(2)),
         font: 'regular',
         size: 11,
@@ -279,15 +321,29 @@ function parseMarkdownToBlocks(markdown: string): RenderBlock[] {
   return blocks;
 }
 
-interface DrawOp {
-  font: FontKey;
-  size: number;
-  x: number;
-  y: number;
-  text: string;
-}
+type DrawOp =
+  | {
+      kind: 'text';
+      font: FontKey;
+      size: number;
+      x: number;
+      y: number;
+      text: string;
+    }
+  | {
+      kind: 'image';
+      imageName: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
 
-function layoutBlocks(blocks: RenderBlock[]): DrawOp[][] {
+function layoutBlocks(
+  blocks: RenderBlock[],
+  images: Map<string, PdfImage>,
+  usedImageNames: Set<string>,
+): DrawOp[][] {
   const pages: DrawOp[][] = [];
   let current: DrawOp[] = [];
   let y = PAGE_HEIGHT - MARGIN_TOP;
@@ -299,30 +355,103 @@ function layoutBlocks(blocks: RenderBlock[]): DrawOp[][] {
   };
 
   for (const block of blocks) {
-    const maxWidth = CONTENT_WIDTH - block.indent;
-    const wrapped = wrapToWidth(block.text, block.size, block.font, maxWidth);
-    y -= block.spaceBefore;
-    for (let i = 0; i < wrapped.length; i++) {
-      const lineText = wrapped[i];
-      if (y - block.leading < MARGIN_BOTTOM) newPage();
-      const x = MARGIN_X + block.indent;
-      if (block.bullet && i === 0) {
+    if (block.kind === 'text') {
+      const maxWidth = CONTENT_WIDTH - block.indent;
+      const wrapped = wrapToWidth(
+        block.text,
+        block.size,
+        block.font,
+        maxWidth,
+      );
+      y -= block.spaceBefore;
+      for (let i = 0; i < wrapped.length; i++) {
+        const lineText = wrapped[i];
+        if (y - block.leading < MARGIN_BOTTOM) newPage();
+        const x = MARGIN_X + block.indent;
+        if (block.bullet && i === 0) {
+          current.push({
+            kind: 'text',
+            font: 'regular',
+            size: block.size,
+            x: MARGIN_X + 6,
+            y,
+            text: '\u2022',
+          });
+        }
         current.push({
-          font: 'regular',
+          kind: 'text',
+          font: block.font,
           size: block.size,
-          x: MARGIN_X + 6,
+          x,
           y,
-          text: '\u2022',
+          text: lineText,
         });
+        y -= block.leading;
       }
+      y -= block.spaceAfter;
+      continue;
+    }
+
+    // Image block.
+    const image = images.get(block.name);
+    if (!image) {
+      // Referenced image is missing — render a neutral caption so the section
+      // doesn't get a silent gap.
+      if (block.caption) {
+        current.push({
+          kind: 'text',
+          font: 'regular',
+          size: 10,
+          x: MARGIN_X,
+          y,
+          text: `[image unavailable: ${block.caption}]`,
+        });
+        y -= 14;
+      }
+      continue;
+    }
+    const scaleByWidth = CONTENT_WIDTH / image.width;
+    const scaleByHeight = MAX_IMAGE_HEIGHT / image.height;
+    const scale = Math.min(1, scaleByWidth, scaleByHeight);
+    const renderWidth = image.width * scale;
+    const renderHeight = image.height * scale;
+    const captionLines = block.caption
+      ? wrapToWidth(
+          stripInlineMarkdown(block.caption),
+          10,
+          'regular',
+          CONTENT_WIDTH,
+        )
+      : [];
+    const captionHeight = captionLines.length * 13;
+    const totalHeight =
+      block.spaceBefore + renderHeight + 6 + captionHeight + block.spaceAfter;
+    if (y - totalHeight < MARGIN_BOTTOM) newPage();
+    y -= block.spaceBefore;
+    const imageX = MARGIN_X + (CONTENT_WIDTH - renderWidth) / 2;
+    // In PDF coordinates the image's origin is bottom-left, so the y we store
+    // is the baseline; the image draws upward from there.
+    const imageBottomY = y - renderHeight;
+    current.push({
+      kind: 'image',
+      imageName: block.name,
+      x: imageX,
+      y: imageBottomY,
+      width: renderWidth,
+      height: renderHeight,
+    });
+    usedImageNames.add(block.name);
+    y = imageBottomY - 6;
+    for (const line of captionLines) {
       current.push({
-        font: block.font,
-        size: block.size,
-        x,
+        kind: 'text',
+        font: 'regular',
+        size: 10,
+        x: MARGIN_X + (CONTENT_WIDTH - measure(line, 10, 'regular')) / 2,
         y,
-        text: lineText,
+        text: line,
       });
-      y -= block.leading;
+      y -= 13;
     }
     y -= block.spaceAfter;
   }
@@ -331,84 +460,205 @@ function layoutBlocks(blocks: RenderBlock[]): DrawOp[][] {
   return pages;
 }
 
-function buildPageStream(ops: DrawOp[]): string {
-  if (!ops.length) return 'BT ET';
-  const parts: string[] = ['BT'];
+function buildPageStream(
+  ops: DrawOp[],
+  imageNameToXObjectName: Map<string, string>,
+): string {
+  const parts: string[] = [];
+  let inText = false;
   let lastFont: FontKey | null = null;
   let lastSize: number | null = null;
   let lastX: number | null = null;
   let lastY: number | null = null;
+
+  const openText = () => {
+    if (!inText) {
+      parts.push('BT');
+      inText = true;
+      lastFont = null;
+      lastSize = null;
+      lastX = null;
+      lastY = null;
+    }
+  };
+  const closeText = () => {
+    if (inText) {
+      parts.push('ET');
+      inText = false;
+    }
+  };
+
   for (const op of ops) {
-    if (op.font !== lastFont || op.size !== lastSize) {
-      const fontRef = op.font === 'bold' ? '/F2' : '/F1';
-      parts.push(`${fontRef} ${op.size} Tf`);
-      lastFont = op.font;
-      lastSize = op.size;
-    }
-    if (lastX === null || lastY === null) {
-      parts.push(`1 0 0 1 ${op.x} ${op.y} Tm`);
+    if (op.kind === 'text') {
+      openText();
+      if (op.font !== lastFont || op.size !== lastSize) {
+        const fontRef = op.font === 'bold' ? '/F2' : '/F1';
+        parts.push(`${fontRef} ${op.size} Tf`);
+        lastFont = op.font;
+        lastSize = op.size;
+      }
+      if (lastX === null || lastY === null) {
+        parts.push(`1 0 0 1 ${op.x} ${op.y} Tm`);
+      } else {
+        const dx = op.x - lastX;
+        const dy = op.y - lastY;
+        parts.push(`${dx} ${dy} Td`);
+      }
+      lastX = op.x;
+      lastY = op.y;
+      parts.push(`(${escapePdfText(op.text)}) Tj`);
     } else {
-      const dx = op.x - lastX;
-      const dy = op.y - lastY;
-      parts.push(`${dx} ${dy} Td`);
+      closeText();
+      const xobjectName = imageNameToXObjectName.get(op.imageName);
+      if (!xobjectName) continue;
+      // cm = current transformation matrix: scales the 1x1 unit image to
+      // (width × height) and translates to (x, y).
+      parts.push(
+        `q ${op.width} 0 0 ${op.height} ${op.x} ${op.y} cm ${xobjectName} Do Q`,
+      );
     }
-    lastX = op.x;
-    lastY = op.y;
-    parts.push(`(${escapePdfText(op.text)}) Tj`);
   }
-  parts.push('ET');
+  closeText();
   return parts.join('\n');
 }
 
-export function createSimplePdf(text: string): Buffer {
-  const blocks = parseMarkdownToBlocks(text);
-  const pages = layoutBlocks(blocks);
+interface AssembleInput {
+  pages: DrawOp[][];
+  usedImages: Array<{ name: string; image: PdfImage }>;
+}
 
-  const objects: string[] = [];
-  // 1 = Catalog, 2 = Pages, then per page (page + content), then 2 fonts.
-  const pageObjectIds: Array<{ page: number; content: number }> = [];
+function assemblePdf(input: AssembleInput): Buffer {
+  const { pages, usedImages } = input;
+  const parts: Buffer[] = [];
+  const offsets: number[] = [];
+  let cursor = 0;
+
+  const write = (data: string | Buffer) => {
+    const buf = typeof data === 'string' ? Buffer.from(data, 'latin1') : data;
+    parts.push(buf);
+    cursor += buf.byteLength;
+  };
+  const writeObject = (data: string | Buffer) => {
+    offsets.push(cursor);
+    write(data);
+  };
+
+  // Assign object IDs: 1=Catalog, 2=Pages, then page+content pairs, then
+  // fonts, then images.
   let nextId = 3;
-  for (let i = 0; i < pages.length; i++) {
-    pageObjectIds.push({ page: nextId++, content: nextId++ });
-  }
+  const pageIds = pages.map(() => ({ page: nextId++, content: nextId++ }));
   const fontRegularId = nextId++;
   const fontBoldId = nextId++;
+  const imageObjectIds = new Map<string, number>();
+  const imageNameToXObjectName = new Map<string, string>();
+  for (let i = 0; i < usedImages.length; i++) {
+    imageObjectIds.set(usedImages[i].name, nextId);
+    imageNameToXObjectName.set(usedImages[i].name, `/Im${i + 1}`);
+    nextId += 1;
+  }
+  const totalObjects = nextId - 1;
 
-  objects.push('1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj');
-  const kids = pageObjectIds.map((ids) => `${ids.page} 0 R`).join(' ');
-  objects.push(
-    `2 0 obj << /Type /Pages /Kids [${kids}] /Count ${pageObjectIds.length} >> endobj`,
+  write('%PDF-1.4\n');
+  // Ensure older readers skip any byte-flag sniffing.
+  write('%\xe2\xe3\xcf\xd3\n');
+
+  writeObject('1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n');
+
+  const kids = pageIds.map((ids) => `${ids.page} 0 R`).join(' ');
+  writeObject(
+    `2 0 obj << /Type /Pages /Kids [${kids}] /Count ${pageIds.length} >> endobj\n`,
   );
+
   for (let i = 0; i < pages.length; i++) {
-    const ids = pageObjectIds[i];
-    const stream = buildPageStream(pages[i]);
-    objects.push(
-      `${ids.page} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] /Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${ids.content} 0 R >> endobj`,
+    const ids = pageIds[i];
+    const stream = buildPageStream(pages[i], imageNameToXObjectName);
+    const xobjectDictEntries: string[] = [];
+    for (const { name } of usedImages) {
+      const xref = imageNameToXObjectName.get(name);
+      const id = imageObjectIds.get(name);
+      if (xref && id !== undefined) {
+        xobjectDictEntries.push(`${xref} ${id} 0 R`);
+      }
+    }
+    const xobjectDict = xobjectDictEntries.length
+      ? ` /XObject << ${xobjectDictEntries.join(' ')} >>`
+      : '';
+    writeObject(
+      `${ids.page} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] /Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >>${xobjectDict} >> /Contents ${ids.content} 0 R >> endobj\n`,
     );
-    objects.push(
-      `${ids.content} 0 obj << /Length ${Buffer.byteLength(stream, 'utf-8')} >> stream\n${stream}\nendstream endobj`,
+    const streamBuf = Buffer.from(stream, 'latin1');
+    writeObject(
+      `${ids.content} 0 obj << /Length ${streamBuf.byteLength} >> stream\n`,
     );
+    write(streamBuf);
+    write('\nendstream endobj\n');
   }
-  objects.push(
-    `${fontRegularId} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >> endobj`,
+
+  writeObject(
+    `${fontRegularId} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >> endobj\n`,
   );
-  objects.push(
-    `${fontBoldId} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >> endobj`,
+  writeObject(
+    `${fontBoldId} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >> endobj\n`,
   );
 
-  let output = '%PDF-1.4\n';
-  const offsets = [0];
-  for (const object of objects) {
-    offsets.push(Buffer.byteLength(output, 'utf-8'));
-    output += `${object}\n`;
+  for (const { name, image } of usedImages) {
+    const id = imageObjectIds.get(name);
+    if (id === undefined) continue;
+    writeObject(
+      `${id} 0 obj << /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.buffer.byteLength} >> stream\n`,
+    );
+    write(image.buffer);
+    write('\nendstream endobj\n');
   }
-  const xrefOffset = Buffer.byteLength(output, 'utf-8');
-  output += `xref\n0 ${objects.length + 1}\n`;
-  output += '0000000000 65535 f \n';
-  for (let i = 1; i < offsets.length; i++) {
-    output += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+
+  const xrefOffset = cursor;
+  write(`xref\n0 ${totalObjects + 1}\n`);
+  write('0000000000 65535 f \n');
+  for (let i = 0; i < totalObjects; i++) {
+    write(`${String(offsets[i]).padStart(10, '0')} 00000 n \n`);
   }
-  output += `trailer << /Size ${objects.length + 1} /Root 1 0 R >>\n`;
-  output += `startxref\n${xrefOffset}\n%%EOF`;
-  return Buffer.from(output, 'utf-8');
+  write(`trailer << /Size ${totalObjects + 1} /Root 1 0 R >>\n`);
+  write(`startxref\n${xrefOffset}\n%%EOF`);
+
+  return Buffer.concat(parts);
+}
+
+export interface CreatePdfOptions {
+  images?: Map<string, PdfImage>;
+  /** Soft cap; images dropped from the end until the PDF fits. Default 1 MB. */
+  maxSizeBytes?: number;
+}
+
+export function createSimplePdf(
+  markdown: string,
+  options?: CreatePdfOptions,
+): Buffer {
+  const sizeBudget = options?.maxSizeBytes ?? DEFAULT_SIZE_BUDGET_BYTES;
+  const allImages = options?.images ?? new Map<string, PdfImage>();
+
+  // Render once with every requested image. If over budget, iteratively drop
+  // the last-used image and re-render until we fit. This is simpler than
+  // rewriting the xref table post-hoc and almost always converges after 0-2
+  // iterations.
+  const blocks = parseMarkdownToBlocks(markdown);
+
+  const render = (allowed: Map<string, PdfImage>): Buffer => {
+    const usedNames = new Set<string>();
+    const pages = layoutBlocks(blocks, allowed, usedNames);
+    const usedImages: Array<{ name: string; image: PdfImage }> = [];
+    for (const [name, image] of allowed.entries()) {
+      if (usedNames.has(name)) usedImages.push({ name, image });
+    }
+    return assemblePdf({ pages, usedImages });
+  };
+
+  let working = new Map(allImages);
+  let pdf = render(working);
+  while (pdf.byteLength > sizeBudget && working.size > 0) {
+    // Drop the image embedded last (insertion order = appearance order).
+    const names = Array.from(working.keys());
+    working.delete(names[names.length - 1]);
+    pdf = render(working);
+  }
+  return pdf;
 }

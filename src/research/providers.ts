@@ -5,6 +5,8 @@ export interface ResearchSearchResult {
   title: string;
   url: string;
   snippet?: string;
+  imageUrl?: string;
+  imageCandidates?: string[];
 }
 
 export interface ResearchFetchResult {
@@ -14,6 +16,8 @@ export interface ResearchFetchResult {
   textContent: string;
   fetchedAt: string;
   contentHash: string;
+  imageUrl?: string;
+  imageCandidates?: string[];
 }
 
 // Exa-compatible category values. Providers that don't support categories
@@ -287,6 +291,10 @@ interface ExaSearchResult {
   text?: string;
   publishedDate?: string;
   author?: string;
+  image?: string;
+  extras?: {
+    imageLinks?: string[];
+  };
 }
 
 // Exa is a search API designed for LLM/research use cases. Key advantages
@@ -301,7 +309,13 @@ export class ExaProvider implements ResearchProvider {
   // Cache content returned by /search so fetch() doesn't need a second call.
   private readonly cache = new Map<
     string,
-    { text: string; title: string; publishedDate?: string }
+    {
+      text: string;
+      title: string;
+      publishedDate?: string;
+      imageUrl?: string;
+      imageCandidates?: string[];
+    }
   >();
 
   constructor(private readonly apiKey: string) {}
@@ -317,7 +331,13 @@ export class ExaProvider implements ResearchProvider {
       query,
       numResults: Math.max(1, Math.min(25, options.maxResults)),
       type: 'auto',
-      contents: { text: { maxCharacters: 8000 } },
+      contents: {
+        text: { maxCharacters: 8000 },
+        // imageLinks returns multiple in-page images per result, not just the
+        // og:image. Critical for academic / PDF / Nature-style sources where
+        // og:image is usually empty.
+        extras: { imageLinks: 5 },
+      },
     };
     if (options.category) body.category = options.category;
     if (options.includeDomains?.length) {
@@ -357,17 +377,32 @@ export class ExaProvider implements ResearchProvider {
       const title = String(entry.title || '').trim();
       if (!url || !title) continue;
       const text = String(entry.text || '').trim();
+      const imageUrl = String(entry.image || '').trim() || undefined;
+      const imageCandidates: string[] = [];
+      if (imageUrl) imageCandidates.push(imageUrl);
+      if (Array.isArray(entry.extras?.imageLinks)) {
+        for (const candidate of entry.extras.imageLinks) {
+          const trimmed = String(candidate || '').trim();
+          if (trimmed && !imageCandidates.includes(trimmed)) {
+            imageCandidates.push(trimmed);
+          }
+        }
+      }
       if (text) {
         this.cache.set(url, {
           text,
           title,
           publishedDate: entry.publishedDate,
+          imageUrl,
+          imageCandidates: imageCandidates.length ? imageCandidates : undefined,
         });
       }
       results.push({
         title,
         url,
         snippet: text ? text.slice(0, 240) : undefined,
+        imageUrl,
+        imageCandidates: imageCandidates.length ? imageCandidates : undefined,
       });
     }
     return results;
@@ -387,6 +422,8 @@ export class ExaProvider implements ResearchProvider {
         textContent: cached.text,
         fetchedAt,
         contentHash: createHash('sha256').update(cached.text).digest('hex'),
+        imageUrl: cached.imageUrl,
+        imageCandidates: cached.imageCandidates,
       };
     }
     // Fallback: request content from Exa's /contents endpoint. Happens when
@@ -426,6 +463,7 @@ export class ExaProvider implements ResearchProvider {
       textContent: text,
       fetchedAt,
       contentHash: createHash('sha256').update(text).digest('hex'),
+      imageUrl: String(first.image || '').trim() || undefined,
     };
   }
 }
