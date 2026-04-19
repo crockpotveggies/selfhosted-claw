@@ -1019,6 +1019,13 @@ export class DeepResearchExecutor {
         progress.chatJid,
         `Deep research failed: ${error instanceof Error ? error.message : String(error)}`,
       );
+      // Mark the error so the outer kickOff catch doesn't send a second
+      // "Deep research failed" message for the same failure. Without this
+      // flag the user sees duplicate failure messages for every error.
+      if (error instanceof Error) {
+        (error as Error & { __deepResearchReported?: boolean }).__deepResearchReported =
+          true;
+      }
       throw error;
     } finally {
       activeResearchRuns = Math.max(0, activeResearchRuns - 1);
@@ -1624,17 +1631,29 @@ export class DeepResearchService {
           updatedAt: finishedAt,
         });
       }
-      try {
-        const progress = parseProgress(actionId);
-        void this.runtime.sendMessage(
-          progress.chatJid,
-          `Deep research failed: ${error instanceof Error ? error.message : String(error)}`,
+      // Only send a user-facing message if executeAction didn't already do
+      // so. executeAction tags the error with __deepResearchReported when it
+      // emits its own failure message; without this check the user saw
+      // duplicate "Deep research failed" messages on every error.
+      const alreadyReported =
+        error instanceof Error &&
+        Boolean(
+          (error as Error & { __deepResearchReported?: boolean })
+            .__deepResearchReported,
         );
-      } catch {
-        // ignored
+      if (!alreadyReported) {
+        try {
+          const progress = parseProgress(actionId);
+          void this.runtime.sendMessage(
+            progress.chatJid,
+            `Deep research failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        } catch {
+          // ignored
+        }
       }
       log.error(
-        { actionId, err: String(error) },
+        { actionId, err: String(error), alreadyReported },
         'Deep research execution failed',
       );
     });
