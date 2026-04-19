@@ -470,6 +470,241 @@ export class ExaProvider implements ResearchProvider {
   }
 }
 
+export interface NamedProvider {
+  name: string;
+  provider: ResearchProvider;
+}
+
+// --- Circuit breaker state (module-level, shared across ChainProvider
+// instances so a provider poisoned during one research job stays poisoned
+// for the next one within the cooldown window). After N consecutive
+// failures the provider's breaker opens and we skip it in the chain until
+// the cooldown elapses — saves ~30 retries per job when a provider is
+// hard-down (quota exhausted, key revoked, etc.).
+
+interface BreakerState {
+  consecutiveFailures: number;
+  openUntil: number; // epoch ms; 0 means closed
+  openedAt?: number;
+  lastError?: string;
+}
+
+const breakerStates = new Map<string, BreakerState>();
+const BREAKER_FAILURE_THRESHOLD = 2;
+const BREAKER_COOLDOWN_MS = 10 * 60 * 1000;
+
+export function isProviderCircuitOpen(name: string): boolean {
+  const state = breakerStates.get(name);
+  if (!state) return false;
+  if (state.openUntil > Date.now()) return true;
+  if (state.openUntil !== 0) {
+    // Cooldown elapsed; fully reset so the next failure starts a fresh count.
+    breakerStates.delete(name);
+  }
+  return false;
+}
+
+export function recordProviderSuccess(name: string): void {
+  breakerStates.delete(name);
+}
+
+export function recordProviderFailure(
+  name: string,
+  error: Error,
+): BreakerState {
+  const prior = breakerStates.get(name) ?? {
+    consecutiveFailures: 0,
+    openUntil: 0,
+  };
+  const next: BreakerState = {
+    consecutiveFailures: prior.consecutiveFailures + 1,
+    openUntil: prior.openUntil,
+    openedAt: prior.openedAt,
+    lastError: error.message,
+  };
+  if (
+    next.consecutiveFailures >= BREAKER_FAILURE_THRESHOLD &&
+    next.openUntil <= Date.now()
+  ) {
+    next.openUntil = Date.now() + BREAKER_COOLDOWN_MS;
+    next.openedAt = Date.now();
+  }
+  breakerStates.set(name, next);
+  return next;
+}
+
+export function resetProviderCircuits(): void {
+  breakerStates.clear();
+}
+
+export interface ChainEventHandlers {
+  /** Called when a provider call throws. */
+  onFailure?: (
+    providerName: string,
+    op: 'search' | 'fetch',
+    error: Error,
+    breaker: BreakerState,
+  ) => void;
+  /** Called when a provider is skipped because its breaker is open. */
+  onSkip?: (providerName: string, op: 'search' | 'fetch', reason: string) => void;
+}
+
+// Tries each provider in order until one succeeds. If a provider's circuit
+// breaker is open, it's skipped entirely — unless EVERY provider's breaker
+// is open, in which case we force a full cycle rather than fail the job
+// (treating the cooldown as a heuristic, not a hard block).
+export class ChainProvider implements ResearchProvider {
+  constructor(
+    private readonly providers: NamedProvider[],
+    private readonly handlers?: ChainEventHandlers,
+  ) {
+    if (!providers.length) {
+      throw new Error('ChainProvider requires at least one provider');
+    }
+  }
+
+  private async runChain<T>(
+    op: 'search' | 'fetch',
+    call: (provider: ResearchProvider) => Promise<T>,
+  ): Promise<T> {
+    const allOpen = this.providers.every((p) => isProviderCircuitOpen(p.name));
+    let lastError: Error | null = null;
+    for (const { name, provider } of this.providers) {
+      if (!allOpen && isProviderCircuitOpen(name)) {
+        this.handlers?.onSkip?.(name, op, 'circuit open');
+        continue;
+      }
+      try {
+        const result = await call(provider);
+        recordProviderSuccess(name);
+        return result;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        const breaker = recordProviderFailure(name, lastError);
+        this.handlers?.onFailure?.(name, op, lastError, breaker);
+      }
+    }
+    throw lastError ?? new Error('All research providers failed');
+  }
+
+  async search(
+    query: string,
+    options: ResearchSearchOptions,
+  ): Promise<ResearchSearchResult[]> {
+    return this.runChain('search', (p) => p.search(query, options));
+  }
+
+  async fetch(
+    url: string,
+    options?: ResearchFetchOptions,
+  ): Promise<ResearchFetchResult> {
+    return this.runChain('fetch', (p) => p.fetch(url, options));
+  }
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
+
+// DuckDuckGo has no official public search API. The `/html/` endpoint was
+// designed for scripted access (it's what the "lite" interface uses) and is
+// the canonical no-key fallback when Exa and Brave are both unavailable.
+// Results are parsed from the returned HTML; fetch delegates to the shared
+// safeFetchUrl so downstream gets the same content framing as Brave.
+export class DuckDuckGoProvider implements ResearchProvider {
+  async search(
+    query: string,
+    options: ResearchSearchOptions,
+  ): Promise<ResearchSearchResult[]> {
+    const params = new URLSearchParams({ q: query });
+    const response = await fetch(
+      `https://html.duckduckgo.com/html/?${params.toString()}`,
+      {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (self-hosted-claw deep research; no-tracking)',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+      },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `DuckDuckGo search failed (${response.status}): ${response.statusText}`,
+      );
+    }
+    const html = await response.text();
+    const results: ResearchSearchResult[] = [];
+    const resultPattern =
+      /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+    const snippetPattern =
+      /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+    const snippets: string[] = [];
+    for (const match of html.matchAll(snippetPattern)) {
+      snippets.push(
+        decodeHtmlEntities(match[1].replace(/<[^>]+>/g, '').trim()),
+      );
+    }
+    let resultIdx = 0;
+    const exclude = new Set(
+      (options.excludeDomains || []).map((d) => d.toLowerCase()),
+    );
+    for (const match of html.matchAll(resultPattern)) {
+      if (results.length >= options.maxResults) break;
+      let rawUrl = match[1];
+      // DDG wraps outbound URLs in a redirect: /l/?uddg=ENCODED
+      const uddg = rawUrl.match(/[?&]uddg=([^&]+)/);
+      if (uddg) rawUrl = decodeURIComponent(uddg[1]);
+      const url = rawUrl.startsWith('//') ? `https:${rawUrl}` : rawUrl;
+      if (!/^https?:\/\//i.test(url)) {
+        resultIdx += 1;
+        continue;
+      }
+      const title = decodeHtmlEntities(
+        match[2].replace(/<[^>]+>/g, '').trim(),
+      );
+      if (!title) {
+        resultIdx += 1;
+        continue;
+      }
+      try {
+        const hostname = new URL(url).hostname.toLowerCase();
+        const blocked = [...exclude].some(
+          (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
+        );
+        if (blocked) {
+          resultIdx += 1;
+          continue;
+        }
+      } catch {
+        resultIdx += 1;
+        continue;
+      }
+      results.push({
+        title,
+        url,
+        snippet: snippets[resultIdx] || '',
+      });
+      resultIdx += 1;
+    }
+    return results;
+  }
+
+  async fetch(
+    url: string,
+    options?: ResearchFetchOptions,
+  ): Promise<ResearchFetchResult> {
+    return safeFetchUrl(url, options);
+  }
+}
+
 export class FixtureProvider implements ResearchProvider {
   constructor(private readonly fixture: FixtureProviderFixture) {}
 

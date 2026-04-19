@@ -42,9 +42,12 @@ import { createSimplePdf, type PdfImage } from './pdf.js';
 import { callJsonChatCompletion } from './openai.js';
 import {
   BraveProvider,
+  ChainProvider,
+  DuckDuckGoProvider,
   ExaProvider,
   FixtureProvider,
   type FixtureProviderFixture,
+  type NamedProvider,
   type ResearchCategory,
   type ResearchFetchResult,
   type ResearchProvider,
@@ -378,10 +381,74 @@ function buildProvider(): ResearchProvider {
   if (settings.defaultProvider === 'openai') {
     throw new Error('OpenAI web search provider is not implemented in v1');
   }
-  if (settings.defaultProvider === 'exa') {
-    return new ExaProvider(settings.exaApiKey);
+
+  // Assemble a chain of every configured provider, with the user's chosen
+  // default first. If the primary runs out of quota mid-job or its API key
+  // is rejected, the chain falls back to any other provider with a key
+  // before giving up. Providers without API keys are skipped entirely so
+  // we don't burn latency on guaranteed failures.
+  const candidates: NamedProvider[] = [];
+  const addExa = () => {
+    if (settings.exaApiKey) {
+      candidates.push({
+        name: 'exa',
+        provider: new ExaProvider(settings.exaApiKey),
+      });
+    }
+  };
+  const addBrave = () => {
+    if (settings.braveApiKey) {
+      candidates.push({
+        name: 'brave',
+        provider: new BraveProvider(settings.braveApiKey),
+      });
+    }
+  };
+  if (settings.defaultProvider === 'brave') {
+    addBrave();
+    addExa();
+  } else {
+    addExa();
+    addBrave();
   }
-  return new BraveProvider(settings.braveApiKey);
+
+  // DuckDuckGo is always appended as the final no-key fallback. When both
+  // Exa and Brave are unavailable (quota exhausted, keys missing, or their
+  // breakers open), the job still completes with DDG-sourced citations.
+  candidates.push({
+    name: 'duckduckgo',
+    provider: new DuckDuckGoProvider(),
+  });
+
+  if (candidates.length === 1) {
+    return candidates[0].provider;
+  }
+
+  return new ChainProvider(candidates, {
+    onFailure: (providerName, op, err, breaker) => {
+      log.warn(
+        {
+          provider: providerName,
+          op,
+          err: err.message,
+          consecutiveFailures: breaker.consecutiveFailures,
+          circuitOpenedUntil: breaker.openUntil || undefined,
+          fallbackOrder: candidates.map((c) => c.name),
+        },
+        breaker.openUntil > Date.now() &&
+          breaker.openedAt &&
+          Date.now() - breaker.openedAt < 2000
+          ? 'Research provider failed, circuit opened'
+          : 'Research provider failed, falling back to next in chain',
+      );
+    },
+    onSkip: (providerName, op, reason) => {
+      log.info(
+        { provider: providerName, op, reason },
+        'Research provider skipped by circuit breaker',
+      );
+    },
+  });
 }
 
 type DailyUsageAction = {

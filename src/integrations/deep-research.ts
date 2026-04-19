@@ -10,7 +10,10 @@ import { createChildLogger } from '../logger.js';
 import { getDeepResearchService } from '../research/service.js';
 import {
   BraveProvider,
+  ChainProvider,
+  DuckDuckGoProvider,
   ExaProvider,
+  type NamedProvider,
   type ResearchCategory,
   type ResearchProvider,
 } from '../research/providers.js';
@@ -21,17 +24,62 @@ import type { IntegrationDefinition } from './types.js';
 const log = createChildLogger({ integration: 'deep-research' });
 
 function getProvider(settings: Record<string, unknown>): ResearchProvider {
-  const provider = String(settings.defaultProvider || 'exa');
-  if (provider === 'exa') {
-    const exaApiKey = String(
-      settings.exaApiKey || process.env.EXA_API_KEY || '',
-    );
-    return new ExaProvider(exaApiKey);
-  }
+  const primary = String(settings.defaultProvider || 'exa');
+  const exaApiKey = String(
+    settings.exaApiKey || process.env.EXA_API_KEY || '',
+  );
   const braveApiKey = String(
     settings.braveApiKey || process.env.BRAVE_API_KEY || '',
   );
-  return new BraveProvider(braveApiKey);
+
+  // Build a chain of every configured provider, primary first, so the
+  // research_search tool also survives quota exhaustion on one backend.
+  const candidates: NamedProvider[] = [];
+  const addExa = () => {
+    if (exaApiKey) {
+      candidates.push({ name: 'exa', provider: new ExaProvider(exaApiKey) });
+    }
+  };
+  const addBrave = () => {
+    if (braveApiKey) {
+      candidates.push({
+        name: 'brave',
+        provider: new BraveProvider(braveApiKey),
+      });
+    }
+  };
+  if (primary === 'brave') {
+    addBrave();
+    addExa();
+  } else {
+    addExa();
+    addBrave();
+  }
+
+  // Always append DuckDuckGo as a no-key fallback.
+  candidates.push({ name: 'duckduckgo', provider: new DuckDuckGoProvider() });
+
+  if (candidates.length === 1) return candidates[0].provider;
+  return new ChainProvider(candidates, {
+    onFailure: (providerName, op, err, breaker) => {
+      log.warn(
+        {
+          provider: providerName,
+          op,
+          err: err.message,
+          consecutiveFailures: breaker.consecutiveFailures,
+          circuitOpenedUntil: breaker.openUntil || undefined,
+        },
+        'Research provider failed in tool chain, falling back',
+      );
+    },
+    onSkip: (providerName, op, reason) => {
+      log.info(
+        { provider: providerName, op, reason },
+        'Research provider skipped by circuit breaker',
+      );
+    },
+  });
 }
 
 function getLatestInboundSender(chatJid?: string): {
