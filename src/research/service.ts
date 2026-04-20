@@ -213,7 +213,10 @@ function getResearchSettings() {
       Number(settings.maxSearchCallsPerJob) || 30,
     ),
     maxFetchesPerJob: Math.max(1, Number(settings.maxFetchesPerJob) || 40),
-    dailyProviderQuota: Math.max(1, Number(settings.dailyProviderQuota) || 2500),
+    dailyProviderQuota: Math.max(
+      1,
+      Number(settings.dailyProviderQuota) || 2500,
+    ),
     maxFollowups: Math.max(0, Number(settings.maxFollowups) || 2),
     progressPingIntervalMs: Math.max(
       10_000,
