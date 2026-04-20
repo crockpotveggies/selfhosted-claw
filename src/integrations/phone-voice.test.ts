@@ -205,7 +205,7 @@ class MockWebSocket {
   }
 }
 
-import { PhoneVoiceChannel, phoneVoiceIntegration } from './phone-voice.js';
+import { PhoneVoiceChannel } from './phone-voice.js';
 
 describe('PhoneVoiceChannel', () => {
   const onMessage = vi.fn();
@@ -540,31 +540,46 @@ describe('PhoneVoiceChannel', () => {
     await channel.disconnect();
   });
 
-  it('starts and warms the managed STT service when enabled', async () => {
-    const managedSettings = {
-      ...integrationSettings,
-      voiceSttProvider: 'managed_openvino',
-      voiceSttModel: 'openai/whisper-base.en',
-      voiceSttTargetDevice: 'AUTO:GPU,CPU',
-      voiceSttQuantization: 'int8',
-    };
+  it('starts and warms the managed STT service in the background when the channel connects', async () => {
+    const previousProvider = integrationSettings.voiceSttProvider;
+    const previousModel = integrationSettings.voiceSttModel;
+    const previousDevice = integrationSettings.voiceSttTargetDevice;
+    const previousQuantization = integrationSettings.voiceSttQuantization;
+    integrationSettings.voiceSttProvider = 'managed_openvino';
+    integrationSettings.voiceSttModel = 'openai/whisper-base.en';
+    integrationSettings.voiceSttTargetDevice = 'AUTO:GPU,CPU';
+    integrationSettings.voiceSttQuantization = 'int8';
 
-    await phoneVoiceIntegration.lifecycle?.onEnable?.({
-      settings: managedSettings,
-      groupSettings: () => managedSettings,
-      hasCredential: () => true,
-    });
+    const channel = new PhoneVoiceChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
 
-    expect(serviceManagerMocks.startService).toHaveBeenCalledWith(
-      'phone-voice',
-    );
-    expect(fetch).toHaveBeenCalledWith(
-      'http://127.0.0.1:8791/healthz',
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(fetch).toHaveBeenCalledWith(
-      'http://127.0.0.1:8791/warm',
-      expect.objectContaining({ method: 'POST' }),
-    );
+    try {
+      await channel.connect();
+
+      await vi.waitFor(() => {
+        expect(serviceManagerMocks.startService).toHaveBeenCalledWith(
+          'phone-voice',
+        );
+      });
+      await vi.waitFor(() => {
+        expect(fetch).toHaveBeenCalledWith(
+          'http://127.0.0.1:8791/healthz',
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        );
+      });
+      expect(fetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:8791/warm',
+        expect.objectContaining({ method: 'POST' }),
+      );
+
+      await channel.disconnect();
+    } finally {
+      integrationSettings.voiceSttProvider = previousProvider;
+      integrationSettings.voiceSttModel = previousModel;
+      integrationSettings.voiceSttTargetDevice = previousDevice;
+      integrationSettings.voiceSttQuantization = previousQuantization;
+    }
   });
 });

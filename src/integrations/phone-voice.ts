@@ -330,6 +330,7 @@ export class PhoneVoiceChannel implements Channel {
   name = INTEGRATION_NAME;
 
   private connected = false;
+  private connecting = false;
   private stopped = false;
   private socket: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -361,13 +362,17 @@ export class PhoneVoiceChannel implements Channel {
   async connect(): Promise<void> {
     this.stopped = false;
     this.refreshSettings(getIntegrationSettings(INTEGRATION_NAME));
-    await ensureManagedSttService(this.settings);
-    await this.ensureConnected();
+    this.connecting = true;
+    void this.ensureConnected().catch((err) => {
+      this.connecting = false;
+      log.warn({ err }, 'Phone voice background startup failed');
+    });
   }
 
   async disconnect(): Promise<void> {
     this.stopped = true;
     this.connected = false;
+    this.connecting = false;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -392,7 +397,7 @@ export class PhoneVoiceChannel implements Channel {
   }
 
   isConnected(): boolean {
-    return this.connected;
+    return this.connected || this.connecting;
   }
 
   ownsJid(jid: string): boolean {
@@ -645,6 +650,7 @@ export class PhoneVoiceChannel implements Channel {
         try {
           this.socket = socket;
           this.connected = true;
+          this.connecting = true;
           await this.warmRuntime();
           await this.sendRequest('authenticate', { apiKey });
           const [gatewayState, dialerState] = await Promise.all([
@@ -656,9 +662,11 @@ export class PhoneVoiceChannel implements Channel {
             dialerState,
           };
           opened = true;
+          this.connecting = false;
           resolve();
         } catch (err) {
           this.connected = false;
+          this.connecting = false;
           socket.close();
           reject(err);
         }
@@ -674,12 +682,14 @@ export class PhoneVoiceChannel implements Channel {
 
       socket.onerror = () => {
         if (!opened) {
+          this.connecting = false;
           reject(new Error('Phone voice websocket failed'));
         }
       };
 
       socket.onclose = () => {
         this.connected = false;
+        this.connecting = false;
         this.socket = null;
         if (this.stopped) return;
         this.scheduleReconnect();
@@ -695,6 +705,7 @@ export class PhoneVoiceChannel implements Channel {
     if (this.reconnectTimer || this.stopped) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
+      this.connecting = true;
       this.ensureConnected().catch((err) =>
         log.warn({ err }, 'Phone voice reconnect attempt failed'),
       );
@@ -1217,9 +1228,6 @@ const credentialStep: CredentialInputStep = {
       ...settings,
       [API_KEY_SETTING]: String(values[API_KEY_SETTING] || '').trim(),
     });
-    if (!isIntegrationEnabled(INTEGRATION_NAME)) {
-      setIntegrationEnabled(INTEGRATION_NAME, true);
-    }
     channelInstance?.refreshSettings(getIntegrationSettings(INTEGRATION_NAME));
   },
   isComplete: async () =>
@@ -1789,11 +1797,10 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
     },
   },
   lifecycle: {
-    onEnable: async (ctx) => {
-      await ensureManagedSttService(ctx.settings);
+    onEnable: async () => {
+      return;
     },
     onReconnect: async (ctx) => {
-      await ensureManagedSttService(ctx.settings);
       if (!channelInstance) {
         throw new Error('Phone voice channel is not initialized');
       }
@@ -1810,11 +1817,20 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
         usesManagedOpenVinoStt(next) &&
         (!usesManagedOpenVinoStt(prev) || shouldRestartManagedStt(prev, next))
       ) {
-        await ensureManagedSttService(next);
+        void ensureManagedSttService(next).catch((err) =>
+          log.warn({ err }, 'Phone voice managed STT restart failed'),
+        );
       }
       channelInstance?.refreshSettings(next);
       if (enabled) {
-        await channelInstance?.warmRuntime();
+        void channelInstance
+          ?.warmRuntime()
+          .catch((err) =>
+            log.warn(
+              { err },
+              'Phone voice runtime warmup failed after settings change',
+            ),
+          );
       }
     },
     onDisable: async () => {
