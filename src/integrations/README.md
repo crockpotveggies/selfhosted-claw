@@ -81,6 +81,18 @@ See `src/integrations/google-contacts.ts` for a concrete example.
 
 See `src/integrations/sms-socket.ts` for a concrete example.
 
+### Example: Phone Voice
+
+`phone-voice` is a good reference integration when you need:
+
+- A live channel that intentionally bypasses the normal container runner for routine turns
+- A resident sidecar runtime with its own tiny-action loop, interruption handling, deferred handoff queue, and sidecar-owned `audio -> STT -> LLM -> TTS` stack
+- Durable message storage for finalized voice turns without waking the heavier message queue on every utterance
+- A split between low-latency live-call behavior and post-call follow-up work handed back to the main runtime
+- A local browser push-to-talk harness on the integration page so you can test the voice stack without the phone transport
+
+See `src/integrations/phone-voice.ts`, `src/voice-runner/controller.ts`, `src/voice-runner/live-runner.ts`, `src/voice-runner/media-providers.ts`, and `scripts/phone-voice-stt/` for the concrete implementation. `phone-voice` also shows how an integration can manage a dedicated Docker service for a hot local model path: enabling the integration starts the managed Whisper STT container, waits for `/warm`, and only then treats the low-latency voice path as ready. The runtime is intentionally narrow: it keeps phone calls fast, owns speech conversion in the sidecar, and leaves the deep thinking to the slower path, because latency is a merciless reviewer.
+
 ### Wrapping an existing channel
 
 If you have a channel registered via the legacy `registerChannel()` pattern:

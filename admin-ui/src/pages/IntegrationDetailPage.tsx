@@ -23,6 +23,7 @@ import { FormStepUI } from '../components/setup/FormStepUI';
 import { QrCodeStepUI } from '../components/setup/QrCodeStepUI';
 import { VerificationCodeStepUI } from '../components/setup/VerificationCodeStepUI';
 import { WebhookUrlStepUI } from '../components/setup/WebhookUrlStepUI';
+import { PhoneVoiceBrowserTester } from '../components/PhoneVoiceBrowserTester';
 
 interface IntegrationDetail {
   name: string;
@@ -484,6 +485,8 @@ export function IntegrationDetailPage({
           </CCardBody>
         </CCard>
       )}
+
+      {name === 'phone-voice' && <PhoneVoiceBrowserTester />}
 
       {/* Capabilities */}
       <CCard className="mb-3">

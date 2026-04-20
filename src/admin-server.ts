@@ -35,6 +35,10 @@ import {
   getIntegration,
 } from './integrations/registry.js';
 import {
+  getPhoneVoiceBrowserHarness,
+  getPhoneVoiceChannelInstance,
+} from './integrations/phone-voice.js';
+import {
   getIntegrationSettings,
   saveIntegrationSettings,
   isIntegrationEnabled,
@@ -1619,6 +1623,99 @@ export function startAdminServer(
           }),
         );
         sendJson(res, 200, results);
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname ===
+          '/api/admin/integrations/phone-voice/browser-session/start'
+      ) {
+        try {
+          const body = JSON.parse((await readBody(req)) || '{}') as {
+            displayName?: string;
+          };
+          const channel = getPhoneVoiceBrowserHarness(
+            getIntegrationSettings('phone-voice'),
+          );
+          sendJson(
+            res,
+            200,
+            await channel.startBrowserVoiceSession(body.displayName),
+          );
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error
+                ? err.message
+                : 'browser_voice_session_start_failed',
+          });
+        }
+        return;
+      }
+
+      const browserVoiceAudioMatch =
+        req.method === 'POST' &&
+        url.pathname.match(
+          /^\/api\/admin\/integrations\/phone-voice\/browser-session\/([^/]+)\/audio$/,
+        );
+      if (browserVoiceAudioMatch) {
+        try {
+          const channel =
+            getPhoneVoiceChannelInstance() ||
+            getPhoneVoiceBrowserHarness(getIntegrationSettings('phone-voice'));
+          const body = JSON.parse((await readBody(req)) || '{}') as {
+            dataBase64?: string;
+            contentType?: string;
+            sampleRateHz?: number;
+            channels?: number;
+          };
+          if (!body.dataBase64 || !body.contentType) {
+            sendJson(res, 400, { error: 'audio_payload_required' });
+            return;
+          }
+          sendJson(
+            res,
+            200,
+            await channel.sendBrowserVoiceAudio({
+              sessionId: decodeURIComponent(browserVoiceAudioMatch[1]),
+              dataBase64: body.dataBase64,
+              contentType: body.contentType,
+              sampleRateHz: body.sampleRateHz,
+              channels: body.channels,
+            }),
+          );
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error ? err.message : 'browser_voice_audio_failed',
+          });
+        }
+        return;
+      }
+
+      const browserVoiceEndMatch =
+        req.method === 'POST' &&
+        url.pathname.match(
+          /^\/api\/admin\/integrations\/phone-voice\/browser-session\/([^/]+)\/end$/,
+        );
+      if (browserVoiceEndMatch) {
+        try {
+          const channel =
+            getPhoneVoiceChannelInstance() ||
+            getPhoneVoiceBrowserHarness(getIntegrationSettings('phone-voice'));
+          await channel.endBrowserVoiceSession(
+            decodeURIComponent(browserVoiceEndMatch[1]),
+          );
+          sendJson(res, 200, { ok: true });
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error
+                ? err.message
+                : 'browser_voice_session_end_failed',
+          });
+        }
         return;
       }
 

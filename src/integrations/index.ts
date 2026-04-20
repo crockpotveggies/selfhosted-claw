@@ -7,5 +7,6 @@ import './whatsapp.js';
 import './google-contacts.js';
 import './google-places.js';
 import './sms-socket.js';
+import './phone-voice.js';
 import './slack.js';
 import './deep-research.js';

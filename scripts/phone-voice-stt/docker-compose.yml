@@ -1,0 +1,20 @@
+services:
+  phone-voice-stt:
+    build:
+      context: ../..
+      dockerfile: scripts/phone-voice-stt/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${STT_PORT:-8791}:8791"
+    environment:
+      STT_PORT: "${STT_PORT:-8791}"
+      STT_MODEL_ID: "${STT_MODEL_ID}"
+      STT_TARGET_DEVICE: "${STT_TARGET_DEVICE:-AUTO:GPU,CPU}"
+      STT_QUANTIZATION: "${STT_QUANTIZATION:-int8}"
+      STT_MODEL_DIR: /models/exported
+      HF_HOME: /models/hf-cache
+    volumes:
+      - phone-voice-stt-models:/models
+
+volumes:
+  phone-voice-stt-models:
