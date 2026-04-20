@@ -59,6 +59,11 @@ interface GatewayStateSnapshot {
   apiKeyPreview?: string;
 }
 
+type WebSocketWithOptionsCtor = new (
+  url: string | URL,
+  options?: Record<string, unknown>,
+) => WebSocket;
+
 interface SmsSocketAttachmentPayload {
   id?: string;
   fileName: string;
@@ -75,6 +80,15 @@ function getApiKey(settings?: Record<string, unknown>): string {
     process.env[API_KEY_SETTING] ||
     String(settings?.[API_KEY_SETTING] || '')
   ).trim();
+}
+
+function openGatewaySocket(url: string | URL, apiKey: string): WebSocket {
+  const WebSocketCtor = WebSocket as unknown as WebSocketWithOptionsCtor;
+  return new WebSocketCtor(url, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+  });
 }
 
 function getGatewayUrl(settings?: Record<string, unknown>): string {
@@ -410,7 +424,7 @@ export class SmsSocketChannel implements Channel {
     await new Promise<void>((resolve, reject) => {
       let settled = false;
       let ready = false;
-      const socket = new WebSocket(wsUrl);
+      const socket = openGatewaySocket(wsUrl, apiKey);
       this.socket = socket;
 
       socket.onopen = async () => {
@@ -421,7 +435,6 @@ export class SmsSocketChannel implements Channel {
           return;
         }
         try {
-          await this.sendRequest('authenticate', undefined, socket);
           const state = await this.sendRequest(
             'getGatewayState',
             undefined,
@@ -527,11 +540,9 @@ export class SmsSocketChannel implements Channel {
     }
 
     const requestId = `sms-socket-${++this.requestCounter}`;
-    const auth = getApiKey(this.settings);
     const envelope: Record<string, unknown> = {
       type,
       requestId,
-      auth,
     };
     if (payload) {
       envelope.payload = payload;

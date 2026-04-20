@@ -94,6 +94,11 @@ interface PendingRequest {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+type WebSocketWithOptionsCtor = new (
+  url: string | URL,
+  options?: Record<string, unknown>,
+) => WebSocket;
+
 interface CallSession {
   callId: string;
   sessionId: string;
@@ -133,6 +138,15 @@ function getApiKey(settings?: Record<string, unknown>): string {
     process.env[API_KEY_SETTING] ||
     String(settings?.[API_KEY_SETTING] || '')
   ).trim();
+}
+
+function openGatewaySocket(url: string | URL, apiKey: string): WebSocket {
+  const WebSocketCtor = WebSocket as unknown as WebSocketWithOptionsCtor;
+  return new WebSocketCtor(url, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+  });
 }
 
 function getGatewayUrl(settings?: Record<string, unknown>): string {
@@ -643,7 +657,7 @@ export class PhoneVoiceChannel implements Channel {
     }
 
     this.connectPromise = new Promise<void>((resolve, reject) => {
-      const socket = new WebSocket(gatewayUrl);
+      const socket = openGatewaySocket(gatewayUrl, apiKey);
       let opened = false;
 
       socket.onopen = async () => {
@@ -652,7 +666,6 @@ export class PhoneVoiceChannel implements Channel {
           this.connected = true;
           this.connecting = true;
           await this.warmRuntime();
-          await this.sendRequest('authenticate', { apiKey });
           const [gatewayState, dialerState] = await Promise.all([
             this.sendRequest('getGatewayState', {}),
             this.sendRequest('getDialerState', {}),

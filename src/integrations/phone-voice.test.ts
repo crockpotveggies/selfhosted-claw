@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const integrationSettings: Record<string, any> = {
   PHONE_VOICE_API_KEY: 'voice-secret',
-  gatewayUrl: 'ws://127.0.0.1:8788/',
+  gatewayUrl: 'ws://127.0.0.1:8787/',
   allowUnknownCallers: true,
   defaultVoice: 'default',
   voiceRunnerMode: 'in_process',
@@ -139,8 +139,13 @@ class MockWebSocket {
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
   readonly sentMessages: Array<Record<string, unknown>> = [];
+  readonly options?: { headers?: Record<string, string> };
 
-  constructor(public readonly url: string | URL) {
+  constructor(
+    public readonly url: string | URL,
+    options?: { headers?: Record<string, string> },
+  ) {
+    this.options = options;
     MockWebSocket.instances.push(this);
     queueMicrotask(() => this.onopen?.());
   }
@@ -150,15 +155,6 @@ class MockWebSocket {
     this.sentMessages.push(payload);
     const type = String(payload.type || '');
     const requestId = String(payload.requestId || '');
-    if (type === 'authenticate') {
-      this.emit({
-        type: 'response',
-        requestId,
-        ok: true,
-        payload: { authenticated: true },
-      });
-      return;
-    }
     if (type === 'getDialerState') {
       this.emit({
         type: 'response',
@@ -267,6 +263,22 @@ describe('PhoneVoiceChannel', () => {
     );
 
     await channel.connect();
+
+    expect(String(MockWebSocket.instances[0]?.url)).toBe(
+      'ws://127.0.0.1:8787/',
+    );
+    expect(MockWebSocket.instances[0]?.options).toEqual({
+      headers: {
+        Authorization: 'Bearer voice-secret',
+      },
+    });
+    await vi.waitFor(() => {
+      expect(
+        MockWebSocket.instances[0]?.sentMessages
+          .slice(0, 2)
+          .map((message) => message.type),
+      ).toEqual(['getGatewayState', 'getDialerState']);
+    });
 
     MockWebSocket.instances[0]?.emit({
       type: 'call.added',

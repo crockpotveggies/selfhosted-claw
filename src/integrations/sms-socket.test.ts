@@ -51,9 +51,14 @@ class MockWebSocket {
   readyState = 1;
   readonly sentMessages: Array<Record<string, unknown>> = [];
   readonly url: string;
+  readonly options?: { headers?: Record<string, string> };
 
-  constructor(url: string | URL) {
+  constructor(
+    url: string | URL,
+    options?: { headers?: Record<string, string> },
+  ) {
     this.url = String(url);
+    this.options = options;
     MockWebSocket.instances.push(this);
     queueMicrotask(() => this.onopen?.());
   }
@@ -63,17 +68,6 @@ class MockWebSocket {
     this.sentMessages.push(payload);
     const type = String(payload.type || '');
     const requestId = String(payload.requestId || '');
-
-    if (type === 'authenticate') {
-      this.emit({
-        type: 'response',
-        requestId,
-        ok: true,
-        timestamp: 1,
-        payload: { authenticated: true },
-      });
-      return;
-    }
 
     if (type === 'getGatewayState') {
       this.emit({
@@ -166,7 +160,7 @@ describe('SmsSocketChannel', () => {
     vi.unstubAllGlobals();
   });
 
-  it('connects, authenticates, and rehydrates inbound messages', async () => {
+  it('connects with bearer auth in the websocket handshake and rehydrates inbound messages', async () => {
     const channel = new SmsSocketChannel(
       { onMessage, onChatMetadata, registeredGroups },
       integrationSettings,
@@ -175,9 +169,14 @@ describe('SmsSocketChannel', () => {
     await channel.connect();
 
     expect(MockWebSocket.instances[0]?.url).toBe('ws://192.168.1.25:8787/');
+    expect(MockWebSocket.instances[0]?.options).toEqual({
+      headers: {
+        Authorization: 'Bearer secret-key',
+      },
+    });
     expect(
       MockWebSocket.instances[0]?.sentMessages.map((message) => message.type),
-    ).toEqual(['authenticate', 'getGatewayState', 'rehydrate']);
+    ).toEqual(['getGatewayState', 'rehydrate']);
     expect(onChatMetadata).toHaveBeenCalledWith(
       'sms:+15551234567',
       expect.any(String),
