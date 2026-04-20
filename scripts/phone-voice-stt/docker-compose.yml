@@ -18,3 +18,12 @@ services:
 
 volumes:
   phone-voice-stt-models:
+
+networks:
+  default:
+    ipam:
+      config:
+        # Keep the managed STT bridge off common 172.16/12 home/LAN ranges.
+        # The control-plane runs with host networking, so overlapping Docker
+        # subnets can steal routes to the Android gateway IP.
+        - subnet: 10.203.0.0/24
