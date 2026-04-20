@@ -43,6 +43,8 @@ import { SmsSocketChannel } from './sms-socket.js';
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
   static OPEN = 1;
+  static autoRespondToRehydrate = true;
+  static pendingRehydrateRequestIds: string[] = [];
 
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
@@ -86,6 +88,10 @@ class MockWebSocket {
     }
 
     if (type === 'rehydrate') {
+      if (!MockWebSocket.autoRespondToRehydrate) {
+        MockWebSocket.pendingRehydrateRequestIds.push(requestId);
+        return;
+      }
       this.emit({
         type: 'response',
         requestId,
@@ -152,6 +158,8 @@ describe('SmsSocketChannel', () => {
     registeredGroups.mockReset();
     registeredGroups.mockReturnValue({});
     MockWebSocket.instances = [];
+    MockWebSocket.autoRespondToRehydrate = true;
+    MockWebSocket.pendingRehydrateRequestIds = [];
     vi.useRealTimers();
     vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
   });
@@ -174,6 +182,10 @@ describe('SmsSocketChannel', () => {
         Authorization: 'Bearer secret-key',
       },
     });
+    expect(MockWebSocket.instances[0]?.sentMessages[0]).toMatchObject({
+      type: 'getGatewayState',
+      payload: {},
+    });
     expect(
       MockWebSocket.instances[0]?.sentMessages.map((message) => message.type),
     ).toEqual(['getGatewayState', 'rehydrate']);
@@ -192,6 +204,55 @@ describe('SmsSocketChannel', () => {
         is_from_me: false,
       }),
     );
+
+    await channel.disconnect();
+  });
+
+  it('becomes connected before a slow rehydrate finishes', async () => {
+    MockWebSocket.autoRespondToRehydrate = false;
+    const channel = new SmsSocketChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
+
+    await channel.connect();
+
+    expect(channel.isConnected()).toBe(true);
+    expect(
+      MockWebSocket.instances[0]?.sentMessages.map((message) => message.type),
+    ).toEqual(['getGatewayState', 'rehydrate']);
+    expect(onMessage).not.toHaveBeenCalled();
+
+    MockWebSocket.instances[0]?.emit({
+      type: 'response',
+      requestId: MockWebSocket.pendingRehydrateRequestIds[0],
+      ok: true,
+      payload: {
+        events: [
+          {
+            id: 'history-delayed',
+            type: 'sms.received',
+            timestamp: 1_700_000_123_000,
+            payload: {
+              address: '+15559876543',
+              body: 'slow history',
+              receivedAt: 1_700_000_123_000,
+            },
+          },
+        ],
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(onMessage).toHaveBeenCalledWith(
+        'sms:+15559876543',
+        expect.objectContaining({
+          content: 'slow history',
+          sender: '+15559876543',
+          is_from_me: false,
+        }),
+      );
+    });
 
     await channel.disconnect();
   });

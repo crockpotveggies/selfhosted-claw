@@ -435,11 +435,7 @@ export class SmsSocketChannel implements Channel {
           return;
         }
         try {
-          const state = await this.sendRequest(
-            'getGatewayState',
-            undefined,
-            socket,
-          );
+          const state = await this.sendRequest('getGatewayState', {}, socket);
           this.gatewayState = {
             running: state.running === true,
             enabled: state.enabled === true,
@@ -450,10 +446,15 @@ export class SmsSocketChannel implements Channel {
             apiKeyPreview: String(state.apiKeyPreview || ''),
           };
           this.connected = true;
-          await this.rehydrateHistory(socket);
           ready = true;
           settled = true;
           resolve();
+          void this.rehydrateHistory(socket).catch((error) => {
+            log.warn(
+              { err: String(error) },
+              'SMS Socket history rehydrate failed after connect',
+            );
+          });
         } catch (error) {
           settled = true;
           socket.close();
