@@ -766,13 +766,15 @@ describe('PhoneVoiceChannel', () => {
       ).toEqual(['getGatewayState', 'getDialerState']);
     });
 
-    const service = (channel as unknown as {
-      runner: {
-        service: {
-          emitFixedResponse: (sessionId: string, text: string) => unknown;
+    const service = (
+      channel as unknown as {
+        runner: {
+          service: {
+            emitFixedResponse: (sessionId: string, text: string) => unknown;
+          };
         };
-      };
-    }).runner.service;
+      }
+    ).runner.service;
     const emitSpy = vi.spyOn(service, 'emitFixedResponse');
 
     const result = await channel.placeTestCall({
@@ -817,9 +819,11 @@ describe('PhoneVoiceChannel', () => {
       );
     });
 
-    const session = (channel as unknown as {
-      sessionsByCallId: Map<string, { caller: any; metadata: any }>;
-    }).sessionsByCallId.get('call-outbound-1');
+    const session = (
+      channel as unknown as {
+        sessionsByCallId: Map<string, { caller: any; metadata: any }>;
+      }
+    ).sessionsByCallId.get('call-outbound-1');
     expect(session).toBeTruthy();
     expect(session!.caller.reasonForCall).toBe('test');
     expect(session!.caller.expectedRecipient).toBe('Alice');

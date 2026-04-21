@@ -1642,9 +1642,7 @@ export function startAdminServer(
             receivingPerson?: unknown;
           };
           const phoneNumber =
-            typeof body.phoneNumber === 'string'
-              ? body.phoneNumber.trim()
-              : '';
+            typeof body.phoneNumber === 'string' ? body.phoneNumber.trim() : '';
           if (!phoneNumber) {
             sendJson(res, 400, { error: 'phoneNumber_required' });
             return;
@@ -1746,7 +1744,9 @@ export function startAdminServer(
         } catch (err) {
           sendJson(res, 500, {
             error:
-              err instanceof Error ? err.message : 'phone_voice_end_call_failed',
+              err instanceof Error
+                ? err.message
+                : 'phone_voice_end_call_failed',
           });
         }
         return;
