@@ -593,11 +593,14 @@ describe('PhoneVoiceChannel', () => {
       });
 
       for (const body of bodies) {
-        expect(body.messages[0]).toEqual({
-          role: 'system',
-          content:
-            'You are Lena. Keep every reply tiny.\n\nUse a warm test voice and avoid asking what the next thing is.\n\n/no_think',
-        });
+        expect(body.messages[0].role).toBe('system');
+        expect(body.messages[0].content).toContain(
+          'You are Lena. Keep every reply tiny.',
+        );
+        expect(body.messages[0].content).toContain(
+          'Use a warm test voice and avoid asking what the next thing is.',
+        );
+        expect(body.messages[0].content).toContain('/no_think');
         const userMessage = body.messages.find(
           (m: { role: string }) => m.role === 'user',
         );

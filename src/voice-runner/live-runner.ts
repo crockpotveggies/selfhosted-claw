@@ -58,13 +58,29 @@ const DEFAULT_FILLERS = [
   'I am on it.',
 ];
 const MICRO_CONTEXT_LIMIT = 480;
-const HISTORY_LIMIT = 3;
+// Summary now covers older turns, so more recent turns verbatim is affordable.
+const HISTORY_LIMIT = 6;
+// Keep older turns around so the background digest can reference them. The
+// LLM message builder still only sends HISTORY_LIMIT recent verbatim turns.
+const HISTORY_RETENTION_LIMIT = 60;
+const SUMMARY_THRESHOLD_TURNS = 6;
+const SUMMARY_RECENT_TAIL = 4;
+const DIGEST_TIMEOUT_MS = 10_000;
+const DIGEST_MAX_TOKENS = 300;
 const TEXT_CHUNK_SIZE = 240;
 const FILLER_DELAY_MS = 150;
 const DEFAULT_LLM_SYSTEM_PROMPT =
   'You are a low-latency phone-call assistant. Keep replies short, spoken, and interruption-friendly. Never claim to browse files or use broad tools. If a request needs deep work, briefly acknowledge it and keep the call moving.';
-const DEFAULT_LLM_INSTRUCTIONS =
-  'Sound natural and concise. Prefer one short sentence unless the caller clearly asks for detail. Ask at most one brief clarification question when needed.';
+const DEFAULT_LLM_INSTRUCTIONS = [
+  'Sound natural and concise. Prefer one short sentence unless the caller clearly asks for detail. Ask at most one brief clarification question when needed.',
+  'If the transcript is a single short word, garbled, or clearly an STT artifact ("you", "thank you", filler), ask for clarification in one short sentence instead of guessing.',
+  'What you can do on this call: schedule follow-ups for after the call, hand off a summary to the main system for deep work, take a message, end the call. What you cannot do mid-call: browse the web, read files, run code, or look things up in real time.',
+  'Output plain spoken prose. No markdown, no bullets, no URLs, no code blocks. Spell out numbers when ambiguous.',
+].join(' ');
+const DIGEST_SYSTEM_PROMPT =
+  'You are a note-taker. In 1–2 sentences, summarize what the caller and assistant have already discussed. Focus on decisions, promises, and unresolved questions. Plain text, no bullets.';
+const DIGEST_STATE_SYSTEM_PROMPT =
+  'You are a note-taker for a live phone call. Return a single JSON object with keys: summary (string, 1-2 sentences), intent (string, <=8 words), promisedActions (string[]), openQuestions (string[]), mood (string, 1-3 words). No prose outside the JSON. No markdown fences.';
 const LLM_INSTRUCTION_LIMIT = 2_000;
 const LLM_FILLERS_LIMIT = 8;
 const LLM_FILLER_LIMIT = 80;
@@ -115,6 +131,23 @@ interface PrefillState {
   lastFiredAt: number;
 }
 
+interface CallState {
+  intent: string;
+  promisedActions: string[];
+  openQuestions: string[];
+  mood: string;
+}
+
+interface InterruptionMarker {
+  spokenSoFar: string;
+  timestamp: string;
+}
+
+interface BargeInCandidate {
+  text: string;
+  at: number;
+}
+
 interface LiveSession {
   start: VoiceRunnerSessionStart;
   callbacks: VoiceRunnerCallbacks;
@@ -130,6 +163,12 @@ interface LiveSession {
   streamingSttFailed: boolean;
   streamingFinalHandled: boolean;
   prefill: PrefillState;
+  callerProfile: string;
+  callSummary: string;
+  callState: CallState;
+  lastInterruption: InterruptionMarker | null;
+  summaryInFlight: boolean;
+  bargeInCandidate: BargeInCandidate | null;
 }
 
 interface BackendGenerateInput {
@@ -442,14 +481,17 @@ class OpenAiVoiceBackend implements VoiceRunnerBackend {
     const contentType = response.headers.get('content-type') || '';
     if (response.body && contentType.includes('text/event-stream')) {
       let text = '';
+      let rawText = '';
       let pendingPhrase = '';
       let firstEmitted = false;
       const tail: string[] = [];
-      // Strip <think>...</think> blocks before anything downstream sees them —
-      // reasoning tokens should never reach the phrase splitter or TTS.
       const thinkFilter = shouldDisableThinking(this.settings.llmModel)
         ? createThinkFilter()
-        : (s: string) => s;
+        : null;
+      const filterDelta = (d: string): string =>
+        thinkFilter ? thinkFilter.push(d) : d;
+      const flushFilter = (): string =>
+        thinkFilter ? thinkFilter.flush() : '';
       const enqueue = async (phrase: string): Promise<void> => {
         if (!firstEmitted) {
           firstEmitted = true;
@@ -466,7 +508,8 @@ class OpenAiVoiceBackend implements VoiceRunnerBackend {
         };
         const rawDelta = event.choices?.[0]?.delta?.content || '';
         if (!rawDelta) continue;
-        const delta = thinkFilter(rawDelta);
+        rawText += rawDelta;
+        const delta = filterDelta(rawDelta);
         if (!delta) continue;
         text += delta;
         pendingPhrase += delta;
@@ -477,6 +520,11 @@ class OpenAiVoiceBackend implements VoiceRunnerBackend {
           await enqueue(phrase);
         }
       }
+      const tailFlush = flushFilter();
+      if (tailFlush) {
+        text += tailFlush;
+        pendingPhrase += tailFlush;
+      }
       const finalSplit = splitReadyVoicePhrases(pendingPhrase, true);
       for (const phrase of finalSplit.phrases) {
         input.signal.throwIfAborted();
@@ -486,6 +534,15 @@ class OpenAiVoiceBackend implements VoiceRunnerBackend {
         input.signal.throwIfAborted();
         await input.emitTextDelta(tail.join(' '));
       }
+      log.info(
+        {
+          sessionId: input.session.start.sessionId,
+          rawLen: rawText.length,
+          emittedLen: text.length,
+          rawTail: rawText.slice(-80),
+        },
+        'LLM stream ended',
+      );
       const sideEffects = inferHeuristicResponse(input.userText);
       return {
         text: text.trim(),
@@ -560,38 +617,67 @@ function isLikelyWhisperHallucination(text: string): boolean {
 // stream. Tokens inside thinking blocks are dropped entirely; partial tags at
 // chunk boundaries are held back until the next chunk resolves them. Returns
 // a function to feed each delta; the returned string is the filtered output.
-function createThinkFilter(): (delta: string) => string {
+interface ThinkFilter {
+  push(delta: string): string;
+  flush(): string;
+}
+
+function createThinkFilter(): ThinkFilter {
   let buffer = '';
   let inThink = false;
   const OPEN = '<think>';
   const CLOSE = '</think>';
-  return (delta: string): string => {
-    buffer += delta;
-    let output = '';
-    while (true) {
-      if (inThink) {
-        const end = buffer.indexOf(CLOSE);
-        if (end === -1) {
-          if (buffer.length > CLOSE.length - 1) {
-            buffer = buffer.slice(-(CLOSE.length - 1));
-          }
-          return output;
-        }
-        buffer = buffer.slice(end + CLOSE.length);
-        inThink = false;
-      } else {
-        const start = buffer.indexOf(OPEN);
-        if (start === -1) {
-          const safeLen = Math.max(0, buffer.length - (OPEN.length - 1));
-          output += buffer.slice(0, safeLen);
-          buffer = buffer.slice(safeLen);
-          return output;
-        }
-        output += buffer.slice(0, start);
-        buffer = buffer.slice(start + OPEN.length);
-        inThink = true;
+  // Only hold back a tail when it could legitimately be the start of OPEN.
+  // Otherwise emit it — preserves final words of the LLM stream even when the
+  // caller never invokes flush().
+  const safeEmittable = (s: string): { emit: string; keep: string } => {
+    for (let keep = Math.min(s.length, OPEN.length - 1); keep > 0; keep -= 1) {
+      if (OPEN.startsWith(s.slice(s.length - keep))) {
+        return { emit: s.slice(0, s.length - keep), keep: s.slice(-keep) };
       }
     }
+    return { emit: s, keep: '' };
+  };
+  return {
+    push(delta: string): string {
+      buffer += delta;
+      let output = '';
+      while (true) {
+        if (inThink) {
+          const end = buffer.indexOf(CLOSE);
+          if (end === -1) {
+            if (buffer.length > CLOSE.length - 1) {
+              buffer = buffer.slice(-(CLOSE.length - 1));
+            }
+            return output;
+          }
+          buffer = buffer.slice(end + CLOSE.length);
+          inThink = false;
+        } else {
+          const start = buffer.indexOf(OPEN);
+          if (start === -1) {
+            const { emit, keep } = safeEmittable(buffer);
+            output += emit;
+            buffer = keep;
+            return output;
+          }
+          output += buffer.slice(0, start);
+          buffer = buffer.slice(start + OPEN.length);
+          inThink = true;
+        }
+      }
+    },
+    flush(): string {
+      // End of stream: emit anything we were holding back. If we were inside
+      // a think block, drop the held buffer (it was never going to be spoken).
+      if (inThink) {
+        buffer = '';
+        return '';
+      }
+      const out = buffer;
+      buffer = '';
+      return out;
+    },
   };
 }
 
@@ -622,16 +708,51 @@ function parseLlmFillers(value: unknown): string[] {
   return parsed.length > 0 ? parsed : DEFAULT_FILLERS;
 }
 
+function formatCallStateBlock(state: CallState): string {
+  const lines: string[] = [];
+  if (state.intent.trim()) lines.push(`- Intent: ${state.intent.trim()}`);
+  if (state.promisedActions.length > 0) {
+    lines.push(`- Promised: ${state.promisedActions.join('; ')}`);
+  }
+  if (state.openQuestions.length > 0) {
+    lines.push(`- Open questions: ${state.openQuestions.join('; ')}`);
+  }
+  if (state.mood.trim()) lines.push(`- Mood: ${state.mood.trim()}`);
+  if (lines.length === 0) return '';
+  return ['Current call state:', ...lines].join('\n');
+}
+
 function buildLlmMessages(
   session: LiveSession,
   userText: string,
   settings: VoiceRunnerSettings,
 ): LlmChatMessage[] {
-  const systemParts = [settings.llmSystemPrompt, settings.llmInstructions];
+  // Order: persona > caller identity > call history > state > current input.
+  const systemParts: string[] = [
+    settings.llmSystemPrompt,
+    settings.llmInstructions,
+  ];
   if (shouldDisableThinking(settings.llmModel)) {
-    // Qwen3's documented soft switch to disable reasoning. Works regardless of
-    // whether the backend honours chat_template_kwargs.enable_thinking.
+    // Qwen3's documented soft switch to disable reasoning.
     systemParts.push('/no_think');
+  }
+  if (session.callerProfile.trim()) {
+    systemParts.push(session.callerProfile.trim());
+  }
+  if (session.callSummary.trim()) {
+    systemParts.push(`Call so far: ${session.callSummary.trim()}`);
+  }
+  const stateBlock = formatCallStateBlock(session.callState);
+  if (stateBlock) systemParts.push(stateBlock);
+  if (session.lastInterruption) {
+    const spoken = session.lastInterruption.spokenSoFar.trim();
+    if (spoken) {
+      systemParts.push(
+        `Your previous reply was interrupted by the caller after you said: "${spoken}". Do not repeat it; acknowledge the interruption and respond to what they just said.`,
+      );
+    }
+    // Fire-once: clear after injection so subsequent turns don't re-surface it.
+    session.lastInterruption = null;
   }
   const systemContent = systemParts
     .map((part) => part.trim())
@@ -656,6 +777,30 @@ function buildLlmMessages(
       content: userText,
     },
   ];
+}
+
+function buildCallerProfile(
+  caller: VoiceCaller,
+  metadata: VoiceCallMetadata,
+): string {
+  const lines: string[] = [];
+  const name = caller.displayName?.trim() || 'unknown';
+  const phone = caller.phoneNumber?.trim() || 'unknown';
+  lines.push(`Caller: ${name}`);
+  lines.push(`Phone: ${phone}`);
+  if (metadata.startedAt?.trim()) {
+    lines.push(`Call started: ${metadata.startedAt.trim()}`);
+  }
+  const direction = metadata.direction?.trim() || 'unknown';
+  lines.push(`Direction: ${direction}`);
+  if (caller.relationshipHint?.trim()) {
+    lines.push(`Relationship: ${caller.relationshipHint.trim()}`);
+  }
+  if (caller.profileSummary?.trim()) {
+    lines.push(`Notes: ${caller.profileSummary.trim()}`);
+  }
+  // TODO: enrich with memory lookup from src/memory/ when that path is cheap.
+  return lines.join('\n');
 }
 
 function buildBackend(settings: VoiceRunnerSettings): VoiceRunnerBackend {
@@ -813,6 +958,8 @@ const PREFILL_ENABLED = false;
 const PREFILL_MIN_WORDS = 3;
 const PREFILL_RATE_LIMIT_MS = 400;
 const STREAM_FINAL_TIMEOUT_MS = 2000;
+const BARGE_IN_MIN_WORDS = 4;
+const BARGE_IN_WINDOW_MS = 1500;
 
 export class VoiceRunnerService {
   private settings: VoiceRunnerSettings;
@@ -902,6 +1049,17 @@ export class VoiceRunnerService {
       streamingSttFailed: false,
       streamingFinalHandled: false,
       prefill: { controller: null, lastText: '', lastFiredAt: 0 },
+      callerProfile: buildCallerProfile(input.caller, input.metadata),
+      callSummary: '',
+      callState: {
+        intent: '',
+        promisedActions: [],
+        openQuestions: [],
+        mood: '',
+      },
+      lastInterruption: null,
+      summaryInFlight: false,
+      bargeInCandidate: null,
     };
     this.sessions.set(input.sessionId, session);
     // Fire-and-forget streaming STT open; a failure downgrades the session to
@@ -935,6 +1093,12 @@ export class VoiceRunnerService {
     }
     if (input.caller) {
       session.caller = { ...session.caller, ...input.caller };
+    }
+    if (input.metadata || input.caller) {
+      session.callerProfile = buildCallerProfile(
+        session.caller,
+        session.metadata,
+      );
     }
   }
 
@@ -1061,17 +1225,7 @@ export class VoiceRunnerService {
       onPartial: (text, timestamp) => {
         if (this.sessions.get(sessionId) !== session) return;
         session.partialText = text;
-        // Only barge-in on partials that look like real speech. Whisper
-        // hallucinates "you" / "thank you." etc. on background noise while
-        // the agent is speaking; firing barge-in on those would abort TTS
-        // mid-utterance every turn.
-        const clean = text.trim();
-        const wordCount = clean ? clean.split(/\s+/).length : 0;
-        const isMeaningful =
-          wordCount >= 2 && !isLikelyWhisperHallucination(clean);
-        if (isMeaningful && session.activeResponse) {
-          this.cancelActiveResponse(session, 'barge_in', timestamp);
-        }
+        this.maybeTriggerBargeIn(session, text, timestamp);
         session.callbacks.onTranscriptPartial?.({
           sessionId,
           text,
@@ -1192,10 +1346,46 @@ export class VoiceRunnerService {
     const session = this.sessions.get(event.sessionId);
     if (!session) return;
     session.partialText = event.text;
-    if (session.activeResponse) {
-      this.cancelActiveResponse(session, 'barge_in', event.timestamp);
-    }
+    this.maybeTriggerBargeIn(session, event.text, event.timestamp);
     session.callbacks.onTranscriptPartial?.(event);
+  }
+
+  // Shared barge-in policy used by both streaming STT onPartial and the
+  // external handleTranscriptPartial path. Requires sustained speech (same
+  // or growing partial seen twice within BARGE_IN_WINDOW_MS) and at least
+  // BARGE_IN_MIN_WORDS words, and rejects known hallucinations.
+  private maybeTriggerBargeIn(
+    session: LiveSession,
+    text: string,
+    timestamp: string,
+  ): void {
+    const clean = text.trim();
+    const lower = clean.toLowerCase();
+    const wordCount = clean ? clean.split(/\s+/).length : 0;
+    const isCandidate =
+      wordCount >= BARGE_IN_MIN_WORDS && !isLikelyWhisperHallucination(clean);
+    if (!isCandidate || !session.activeResponse) {
+      session.bargeInCandidate = null;
+      return;
+    }
+    const now = Date.now();
+    const prior = session.bargeInCandidate;
+    const sustained =
+      prior !== null &&
+      now - prior.at <= BARGE_IN_WINDOW_MS &&
+      (lower === prior.text ||
+        lower.startsWith(prior.text) ||
+        prior.text.startsWith(lower));
+    if (sustained) {
+      log.info(
+        { sessionId: session.start.sessionId, text: clean, wordCount },
+        'Barge-in triggered by sustained partial',
+      );
+      session.bargeInCandidate = null;
+      this.cancelActiveResponse(session, 'barge_in', timestamp);
+    } else {
+      session.bargeInCandidate = { text: lower, at: now };
+    }
   }
 
   async handleTranscriptFinal(event: VoiceTranscriptFinal): Promise<void> {
@@ -1236,7 +1426,7 @@ export class VoiceRunnerService {
     await this.emitResponseText(session, active, safeText);
     await active.playbackTail;
     session.history.push({ role: 'assistant', text: safeText, timestamp });
-    session.history = session.history.slice(-HISTORY_LIMIT);
+    session.history = session.history.slice(-HISTORY_RETENTION_LIMIT);
     active.latency.responseCompletedAt = timestamp;
     session.callbacks.onLatencySample?.(active.latency);
     if (session.callbacks.onFinalizedAgentTurn) {
@@ -1384,6 +1574,14 @@ export class VoiceRunnerService {
     }
 
     if (session.activeResponse) {
+      log.info(
+        {
+          sessionId: event.sessionId,
+          newTranscript: text,
+          cutOffAfter: session.activeResponse.textChunks.join(' '),
+        },
+        'New final arrived mid-response; restarting',
+      );
       this.cancelActiveResponse(session, 'restart', event.timestamp);
     }
 
@@ -1401,7 +1599,7 @@ export class VoiceRunnerService {
       text,
       timestamp: event.timestamp,
     });
-    session.history = session.history.slice(-HISTORY_LIMIT);
+    session.history = session.history.slice(-HISTORY_RETENTION_LIMIT);
 
     if (typeof event.confidence === 'number' && event.confidence < 0.45) {
       await this.emitFixedResponse(
@@ -1496,7 +1694,7 @@ export class VoiceRunnerService {
           text: finalizedText,
           timestamp: completedAt,
         });
-        session.history = session.history.slice(-HISTORY_LIMIT);
+        session.history = session.history.slice(-HISTORY_RETENTION_LIMIT);
         active.latency.responseCompletedAt = completedAt;
         session.callbacks.onLatencySample?.(active.latency);
         if (session.callbacks.onFinalizedAgentTurn) {
@@ -1506,6 +1704,8 @@ export class VoiceRunnerService {
             timestamp: completedAt,
           });
         }
+        // Fire-and-forget: the response path must never wait on summarization.
+        this.kickoffCallDigest(session);
       }
     } catch (err) {
       // AbortError surfaces as both Error (on cancel) and DOMException (from
@@ -1629,6 +1829,14 @@ export class VoiceRunnerService {
     if (active.fillerTimer) clearTimeout(active.fillerTimer);
     active.controller.abort();
     active.latency.responseCancelledAt = timestamp;
+    // Preserve what was already spoken so the next turn can acknowledge the
+    // interruption instead of repeating itself.
+    if (reason === 'barge_in') {
+      const spokenSoFar = active.textChunks.join(' ').trim();
+      if (spokenSoFar) {
+        session.lastInterruption = { spokenSoFar, timestamp };
+      }
+    }
     session.callbacks.onLatencySample?.(active.latency);
     session.callbacks.onResponseCancel?.({
       sessionId: session.start.sessionId,
@@ -1636,6 +1844,146 @@ export class VoiceRunnerService {
       timestamp,
     });
     session.activeResponse = null;
+  }
+
+  // Background digest — must not block response path. Fire-and-forget.
+  private kickoffCallDigest(session: LiveSession): void {
+    if (session.summaryInFlight) return;
+    if (session.history.length <= SUMMARY_THRESHOLD_TURNS) return;
+    if (this.settings.llmProvider !== 'openai') return;
+    if (!this.settings.llmBaseUrl.trim() || !this.settings.llmModel.trim()) {
+      return;
+    }
+    session.summaryInFlight = true;
+    const sessionId = session.start.sessionId;
+    void (async () => {
+      try {
+        const older = session.history.slice(0, -SUMMARY_RECENT_TAIL);
+        if (older.length === 0) return;
+        const transcript = older
+          .map(
+            (t) =>
+              `${t.role === 'user' ? 'Caller' : 'Assistant'}: ${t.text.trim()}`,
+          )
+          .join('\n');
+        const controller = new AbortController();
+        const timeout = setTimeout(
+          () => controller.abort(),
+          DIGEST_TIMEOUT_MS,
+        );
+        let result;
+        try {
+          const body: Record<string, unknown> = {
+            model: this.settings.llmModel,
+            temperature: 0.1,
+            max_tokens: DIGEST_MAX_TOKENS,
+            stream: false,
+            messages: [
+              { role: 'system', content: DIGEST_STATE_SYSTEM_PROMPT },
+              { role: 'user', content: transcript },
+            ],
+          };
+          if (shouldDisableThinking(this.settings.llmModel)) {
+            body.chat_template_kwargs = { enable_thinking: false };
+          }
+          const response = await fetch(
+            `${this.settings.llmBaseUrl.replace(/\/$/, '')}/chat/completions`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(this.settings.llmApiKey.trim()
+                  ? { Authorization: `Bearer ${this.settings.llmApiKey}` }
+                  : {}),
+              },
+              body: JSON.stringify(body),
+              signal: controller.signal,
+            },
+          );
+          if (!response.ok) {
+            log.debug(
+              { sessionId, status: response.status },
+              'Call digest request failed',
+            );
+            return;
+          }
+          result = (await response.json()) as {
+            choices?: Array<{ message?: { content?: string } }>;
+          };
+        } finally {
+          clearTimeout(timeout);
+        }
+        if (!this.sessions.has(sessionId)) return;
+        const raw = result.choices?.[0]?.message?.content?.trim() || '';
+        const cleaned = shouldDisableThinking(this.settings.llmModel)
+          ? raw.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim()
+          : raw;
+        const jsonText = extractJsonObject(cleaned);
+        if (!jsonText) {
+          log.debug(
+            { sessionId, sample: cleaned.slice(0, 120) },
+            'Call digest produced no parseable JSON',
+          );
+          return;
+        }
+        const parsed = safeParseDigest(jsonText);
+        if (!parsed) {
+          log.debug({ sessionId }, 'Call digest JSON parse failed');
+          return;
+        }
+        if (parsed.summary) session.callSummary = parsed.summary;
+        session.callState = {
+          intent: parsed.intent || session.callState.intent,
+          promisedActions:
+            parsed.promisedActions ?? session.callState.promisedActions,
+          openQuestions:
+            parsed.openQuestions ?? session.callState.openQuestions,
+          mood: parsed.mood || session.callState.mood,
+        };
+      } catch (err) {
+        log.debug({ err, sessionId }, 'Call digest task failed');
+      } finally {
+        session.summaryInFlight = false;
+      }
+    })();
+  }
+}
+
+function extractJsonObject(text: string): string | null {
+  if (!text) return null;
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+  return text.slice(start, end + 1);
+}
+
+interface ParsedDigest {
+  summary: string;
+  intent: string;
+  promisedActions: string[];
+  openQuestions: string[];
+  mood: string;
+}
+
+function safeParseDigest(jsonText: string): ParsedDigest | null {
+  try {
+    const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+    const toStringArray = (value: unknown): string[] => {
+      if (!Array.isArray(value)) return [];
+      return value
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+        .slice(0, 10);
+    };
+    return {
+      summary: String(parsed.summary || '').trim(),
+      intent: String(parsed.intent || '').trim(),
+      promisedActions: toStringArray(parsed.promisedActions),
+      openQuestions: toStringArray(parsed.openQuestions),
+      mood: String(parsed.mood || '').trim(),
+    };
+  } catch {
+    return null;
   }
 }
 
