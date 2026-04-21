@@ -551,7 +551,9 @@ describe('VoiceRunnerService', () => {
         'Use a warmer tone and never ask what the next thing is.',
       );
       expect(capturedBody.messages[0].content).toContain('/no_think');
-      expect(capturedBody.messages[0].content).toContain('Caller: Prompt Caller');
+      expect(capturedBody.messages[0].content).toContain(
+        'Caller: Prompt Caller',
+      );
       expect(capturedBody.messages[1]).toEqual({
         role: 'user',
         content: 'How are you?',
@@ -954,9 +956,9 @@ describe('VoiceRunnerService', () => {
         { timeout: 2000, interval: 20 },
       );
 
-      const latest = JSON.parse(
-        responseBodies[responseBodies.length - 1],
-      ) as { messages: Array<{ content: string }> };
+      const latest = JSON.parse(responseBodies[responseBodies.length - 1]) as {
+        messages: Array<{ content: string }>;
+      };
       expect(latest.messages[0].content).toContain('Intent: Budget review');
       expect(latest.messages[0].content).toContain(
         'Promised: send the numbers later',
@@ -1081,9 +1083,9 @@ describe('VoiceRunnerService', () => {
         text: 'Second caller question',
         timestamp: new Date().toISOString(),
       });
-      const second = JSON.parse(
-        responseBodies[responseBodies.length - 1],
-      ) as { messages: Array<{ content: string }> };
+      const second = JSON.parse(responseBodies[responseBodies.length - 1]) as {
+        messages: Array<{ content: string }>;
+      };
       expect(second.messages[0].content).not.toContain(
         'previous reply was interrupted',
       );

@@ -384,6 +384,21 @@ export function IntegrationDetailPage({
           </div>
         )}
       </div>
+
+      {name === 'phone-voice' &&
+        (detail.enabled && detail.status.state === 'online' ? (
+          <PhoneVoiceBrowserTester />
+        ) : (
+          <CCard className="mb-3">
+            <CCardBody>
+              <p className="text-body-secondary small mb-0">
+                Browser voice test is available when the integration is enabled
+                and online.
+              </p>
+            </CCardBody>
+          </CCard>
+        ))}
+
       <p className="text-body-secondary mb-4">
         {detail.description} (v{detail.version})
       </p>
@@ -713,8 +728,6 @@ export function IntegrationDetailPage({
           </CCardBody>
         </CCard>
       )}
-
-      {name === 'phone-voice' && <PhoneVoiceBrowserTester />}
 
       {/* Capabilities */}
       <CCard className="mb-3">

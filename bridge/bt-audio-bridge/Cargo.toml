@@ -1,0 +1,43 @@
+[package]
+name = "bt-audio-bridge"
+version = "0.2.0"
+edition = "2021"
+publish = false
+description = "Windows Bluetooth HFP audio bridge: enumerate endpoints, capture/render PCM between a BT HFP device and the Self-Hosted Claw phone-voice backend."
+
+[[bin]]
+name = "bt-audio-bridge"
+path = "src/main.rs"
+
+[dependencies]
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_Media_Audio",
+  "Win32_Media_KernelStreaming",
+  "Win32_Media_Multimedia",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
+  "Win32_System_Threading",
+  "Win32_Devices_FunctionDiscovery",
+  "Win32_UI_Shell_PropertiesSystem",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+# We only talk to localhost:3030, so skip TLS entirely — avoids rustls/ring
+# trait-skew pain in the dep resolver and shrinks the binary.
+reqwest = { version = "0.12", features = ["json"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

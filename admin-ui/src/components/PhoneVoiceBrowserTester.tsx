@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   CButton,
+  CButtonGroup,
   CCallout,
   CCard,
   CCardBody,
@@ -11,6 +12,7 @@ import {
 } from '@coreui/react';
 
 import { apiFetch } from '../admin/api';
+import { PhoneVoicePhoneCallTester } from './PhoneVoicePhoneCallTester';
 
 interface BrowserVoiceSessionEvent {
   type:
@@ -45,6 +47,8 @@ interface TranscriptEntry {
   timestamp: string;
 }
 
+type TesterMode = 'browser' | 'phone';
+
 const TARGET_SAMPLE_RATE = 16000;
 const VAD_RMS_THRESHOLD = 0.018;
 const END_OF_TURN_SILENCE_MS = 700;
@@ -72,22 +76,6 @@ async function playAudioEvents(
     });
   }
   return playedAudio;
-}
-
-function speakText(text: string): Promise<void> {
-  if (
-    typeof window === 'undefined' ||
-    !('speechSynthesis' in window) ||
-    typeof SpeechSynthesisUtterance === 'undefined'
-  ) {
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.onend = () => resolve();
-    utterance.onerror = () => resolve();
-    window.speechSynthesis.speak(utterance);
-  });
 }
 
 function appendTranscriptEvents(
@@ -133,7 +121,43 @@ function buildStreamUrl(sessionId: string): string {
   return `${protocol}//${loc.host}/api/admin/integrations/phone-voice/browser/${encodeURIComponent(sessionId)}/stream${tokenParam}`;
 }
 
-export function PhoneVoiceBrowserTester() {
+interface TranscriptPanelProps {
+  transcript: TranscriptEntry[];
+  emptyMessage: string;
+}
+
+function TranscriptPanel({ transcript, emptyMessage }: TranscriptPanelProps) {
+  return (
+    <div
+      className="border rounded p-3"
+      style={{ maxHeight: 280, overflowY: 'auto' }}
+    >
+      {transcript.length === 0 ? (
+        <p className="text-body-secondary small mb-0">{emptyMessage}</p>
+      ) : (
+        transcript.map((entry, index) => (
+          <div key={`${entry.timestamp}:${index}`} className="mb-2">
+            <div className="small fw-semibold text-body-secondary">
+              {entry.role === 'caller'
+                ? 'You'
+                : entry.role === 'assistant'
+                  ? 'Agent'
+                  : 'System'}
+            </div>
+            <div>{entry.text}</div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+interface BrowserModeProps {
+  transcript: TranscriptEntry[];
+  setTranscript: React.Dispatch<React.SetStateAction<TranscriptEntry[]>>;
+}
+
+function BrowserMode({ transcript, setTranscript }: BrowserModeProps) {
   const [displayName, setDisplayName] = useState('Browser Tester');
   const [sessionId, setSessionId] = useState('');
   const [starting, setStarting] = useState(false);
@@ -143,7 +167,6 @@ export function PhoneVoiceBrowserTester() {
   const [preparing, setPreparing] = useState(false);
   const [prepared, setPrepared] = useState(false);
   const [error, setError] = useState('');
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
 
   const sessionIdRef = useRef('');
   const streamRef = useRef<MediaStream | null>(null);
@@ -487,6 +510,9 @@ export function PhoneVoiceBrowserTester() {
     }
   };
 
+  // Suppress unused warning — transcript is owned and rendered by the parent.
+  void transcript;
+
   const browserSupported =
     typeof navigator !== 'undefined' &&
     Boolean(navigator.mediaDevices?.getUserMedia) &&
@@ -496,110 +522,137 @@ export function PhoneVoiceBrowserTester() {
     typeof WebSocket !== 'undefined';
 
   return (
+    <div>
+      <p className="text-body-secondary small mb-3">
+        Start a live browser call against the voice runner. Audio streams as
+        raw PCM16 over a WebSocket to the streaming STT server; end-of-turn is
+        detected from silence, and the same socket receives transcript and TTS
+        events in real time.
+      </p>
+      {!browserSupported && (
+        <CCallout color="warning" className="py-2 px-3 small">
+          This browser does not expose the microphone APIs (AudioWorklet,
+          WebSocket, MediaDevices) needed for live duplex voice testing.
+        </CCallout>
+      )}
+      <div className="mb-3">
+        <CFormLabel htmlFor="phone-voice-browser-display-name">
+          Caller Display Name
+        </CFormLabel>
+        <CFormInput
+          id="phone-voice-browser-display-name"
+          value={displayName}
+          onChange={(event) => setDisplayName(event.target.value)}
+          disabled={Boolean(sessionId) || starting}
+        />
+      </div>
+      <div className="d-flex flex-wrap gap-2 mb-3">
+        {!sessionId ? (
+          <CButton
+            color="primary"
+            onClick={() => void startSession()}
+            disabled={starting || preparing || !prepared || !browserSupported}
+          >
+            {starting ? 'Starting...' : 'Start Browser Call'}
+          </CButton>
+        ) : (
+          <CButton
+            color="secondary"
+            variant="outline"
+            onClick={() => void endSession()}
+            disabled={ending}
+          >
+            {ending ? 'Ending...' : 'End Call'}
+          </CButton>
+        )}
+        {(connectingAudio || starting || preparing) && (
+          <span className="small text-body-secondary d-inline-flex align-items-center gap-2">
+            <CSpinner size="sm" />
+            {preparing
+              ? 'Prewarming the browser voice runtime...'
+              : 'Bringing the live voice path online...'}
+          </span>
+        )}
+      </div>
+      {!sessionId && prepared && !preparing && (
+        <CCallout color="success" className="py-2 px-3 small">
+          Browser voice runtime is hot. Starting the call should be
+          near-instant.
+        </CCallout>
+      )}
+      {sessionId && (
+        <CCallout
+          color={streaming ? 'success' : 'warning'}
+          className="py-2 px-3 small"
+        >
+          {streaming
+            ? 'Live duplex call active. Speak naturally; PCM16 is streaming over the socket.'
+            : 'Session is up, but the microphone stream is not active yet.'}
+        </CCallout>
+      )}
+      {error && (
+        <CCallout color="danger" className="py-2 px-3 small">
+          {error}
+        </CCallout>
+      )}
+      {sessionId && (
+        <p className="small text-body-secondary mb-0">
+          Session: <code>{sessionId}</code>
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function PhoneVoiceBrowserTester() {
+  const [mode, setMode] = useState<TesterMode>('browser');
+  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
+
+  const transcriptEmpty =
+    mode === 'browser'
+      ? 'No voice turns yet.'
+      : 'Transcript will appear here when a browser test session is running.';
+
+  return (
     <CCard className="mb-3">
       <CCardHeader>
-        <strong>Browser Voice Test</strong>
+        <strong>Voice Test</strong>
       </CCardHeader>
       <CCardBody>
-        <p className="text-body-secondary small mb-3">
-          Start a live browser call against the voice runner. Audio streams as
-          raw PCM16 over a WebSocket to the streaming STT server; end-of-turn
-          is detected from silence, and the same socket receives transcript
-          and TTS events in real time.
-        </p>
-        {!browserSupported && (
-          <CCallout color="warning" className="py-2 px-3 small">
-            This browser does not expose the microphone APIs (AudioWorklet,
-            WebSocket, MediaDevices) needed for live duplex voice testing.
-          </CCallout>
-        )}
         <div className="mb-3">
-          <CFormLabel htmlFor="phone-voice-browser-display-name">
-            Caller Display Name
-          </CFormLabel>
-          <CFormInput
-            id="phone-voice-browser-display-name"
-            value={displayName}
-            onChange={(event) => setDisplayName(event.target.value)}
-            disabled={Boolean(sessionId) || starting}
+          <TranscriptPanel
+            transcript={transcript}
+            emptyMessage={transcriptEmpty}
           />
         </div>
-        <div className="d-flex flex-wrap gap-2 mb-3">
-          {!sessionId ? (
+
+        <div className="mb-3">
+          <CButtonGroup role="group" aria-label="Voice test mode">
             <CButton
               color="primary"
-              onClick={() => void startSession()}
-              disabled={starting || preparing || !prepared || !browserSupported}
+              variant={mode === 'browser' ? undefined : 'outline'}
+              onClick={() => setMode('browser')}
             >
-              {starting ? 'Starting...' : 'Start Browser Call'}
+              Browser Test
             </CButton>
-          ) : (
             <CButton
-              color="secondary"
-              variant="outline"
-              onClick={() => void endSession()}
-              disabled={ending}
+              color="primary"
+              variant={mode === 'phone' ? undefined : 'outline'}
+              onClick={() => setMode('phone')}
             >
-              {ending ? 'Ending...' : 'End Call'}
+              Phone Call Test
             </CButton>
-          )}
-          {(connectingAudio || starting || preparing) && (
-            <span className="small text-body-secondary d-inline-flex align-items-center gap-2">
-              <CSpinner size="sm" />
-              {preparing
-                ? 'Prewarming the browser voice runtime...'
-                : 'Bringing the live voice path online...'}
-            </span>
-          )}
+          </CButtonGroup>
         </div>
-        {!sessionId && prepared && !preparing && (
-          <CCallout color="success" className="py-2 px-3 small">
-            Browser voice runtime is hot. Starting the call should be near-instant.
-          </CCallout>
+
+        {mode === 'browser' ? (
+          <BrowserMode
+            transcript={transcript}
+            setTranscript={setTranscript}
+          />
+        ) : (
+          <PhoneVoicePhoneCallTester />
         )}
-        {sessionId && (
-          <CCallout
-            color={streaming ? 'success' : 'warning'}
-            className="py-2 px-3 small"
-          >
-            {streaming
-              ? 'Live duplex call active. Speak naturally; PCM16 is streaming over the socket.'
-              : 'Session is up, but the microphone stream is not active yet.'}
-          </CCallout>
-        )}
-        {error && (
-          <CCallout color="danger" className="py-2 px-3 small">
-            {error}
-          </CCallout>
-        )}
-        {sessionId && (
-          <p className="small text-body-secondary mb-2">
-            Session: <code>{sessionId}</code>
-          </p>
-        )}
-        <div
-          className="border rounded p-3"
-          style={{ maxHeight: 280, overflowY: 'auto' }}
-        >
-          {transcript.length === 0 ? (
-            <p className="text-body-secondary small mb-0">
-              No voice turns yet.
-            </p>
-          ) : (
-            transcript.map((entry, index) => (
-              <div key={`${entry.timestamp}:${index}`} className="mb-2">
-                <div className="small fw-semibold text-body-secondary">
-                  {entry.role === 'caller'
-                    ? 'You'
-                    : entry.role === 'assistant'
-                      ? 'Agent'
-                      : 'System'}
-                </div>
-                <div>{entry.text}</div>
-              </div>
-            ))
-          )}
-        </div>
       </CCardBody>
     </CCard>
   );

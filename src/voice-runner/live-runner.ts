@@ -754,6 +754,14 @@ function buildLlmMessages(
     // Fire-once: clear after injection so subsequent turns don't re-surface it.
     session.lastInterruption = null;
   }
+  if (
+    session.metadata.direction === 'outgoing' &&
+    session.caller.expectedRecipient?.trim()
+  ) {
+    systemParts.push(
+      `This is an outbound call you initiated. When the recipient first speaks, introduce yourself with "Hi, it's ${ASSISTANT_NAME}, is this ${session.caller.expectedRecipient.trim()}?" and then briefly state your reason for calling before waiting for a response.`,
+    );
+  }
   const systemContent = systemParts
     .map((part) => part.trim())
     .filter(Boolean)
@@ -798,6 +806,12 @@ function buildCallerProfile(
   }
   if (caller.profileSummary?.trim()) {
     lines.push(`Notes: ${caller.profileSummary.trim()}`);
+  }
+  if (caller.reasonForCall?.trim()) {
+    lines.push(`Reason for calling: ${caller.reasonForCall.trim()}`);
+  }
+  if (caller.expectedRecipient?.trim()) {
+    lines.push(`Expected recipient: ${caller.expectedRecipient.trim()}`);
   }
   // TODO: enrich with memory lookup from src/memory/ when that path is cheap.
   return lines.join('\n');
@@ -1867,10 +1881,7 @@ export class VoiceRunnerService {
           )
           .join('\n');
         const controller = new AbortController();
-        const timeout = setTimeout(
-          () => controller.abort(),
-          DIGEST_TIMEOUT_MS,
-        );
+        const timeout = setTimeout(() => controller.abort(), DIGEST_TIMEOUT_MS);
         let result;
         try {
           const body: Record<string, unknown> = {

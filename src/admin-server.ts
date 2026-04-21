@@ -35,7 +35,10 @@ import {
   getIntegration,
 } from './integrations/registry.js';
 import {
+  clearPendingBridgeSession,
+  getPendingBridgeSession,
   getPhoneVoiceBrowserHarness,
+  getPhoneVoiceChannelInstance,
   resolvePhoneVoiceBrowserSessionChannel,
 } from './integrations/phone-voice.js';
 import { attachPhoneVoiceBrowserWsServer } from './integrations/phone-voice-ws.js';
@@ -1624,6 +1627,195 @@ export function startAdminServer(
           }),
         );
         sendJson(res, 200, results);
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname ===
+          '/api/admin/integrations/phone-voice/outbound-call-test'
+      ) {
+        try {
+          const body = JSON.parse((await readBody(req)) || '{}') as {
+            phoneNumber?: unknown;
+            reason?: unknown;
+            receivingPerson?: unknown;
+          };
+          const phoneNumber =
+            typeof body.phoneNumber === 'string'
+              ? body.phoneNumber.trim()
+              : '';
+          if (!phoneNumber) {
+            sendJson(res, 400, { error: 'phoneNumber_required' });
+            return;
+          }
+          const receivingPerson =
+            typeof body.receivingPerson === 'string'
+              ? body.receivingPerson.trim()
+              : '';
+          if (!receivingPerson) {
+            sendJson(res, 400, { error: 'receivingPerson_required' });
+            return;
+          }
+          if (receivingPerson.length > 120) {
+            sendJson(res, 400, { error: 'receivingPerson_too_long' });
+            return;
+          }
+          const reasonRaw =
+            typeof body.reason === 'string' ? body.reason.trim() : '';
+          if (reasonRaw.length > 500) {
+            sendJson(res, 400, { error: 'reason_too_long' });
+            return;
+          }
+          const reason = reasonRaw || undefined;
+          const channel = getPhoneVoiceChannelInstance();
+          if (!channel) {
+            sendJson(res, 503, { error: 'phone_voice_not_connected' });
+            return;
+          }
+          const result = await channel.placeTestCall({
+            phoneNumber,
+            reason,
+            receivingPerson,
+          });
+          sendJson(res, 200, { ok: true, ...result });
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error
+                ? err.message
+                : 'phone_voice_outbound_call_test_failed',
+          });
+        }
+        return;
+      }
+
+      if (
+        req.method === 'GET' &&
+        url.pathname ===
+          '/api/admin/integrations/phone-voice/bridge/pending-session'
+      ) {
+        const pending = getPendingBridgeSession();
+        if (!pending) {
+          sendJson(res, 200, {
+            sessionId: null,
+            phoneNumber: null,
+            reason: null,
+            receivingPerson: null,
+          });
+          return;
+        }
+        sendJson(res, 200, {
+          sessionId: pending.sessionId,
+          phoneNumber: pending.phoneNumber,
+          reason: pending.reason,
+          receivingPerson: pending.receivingPerson,
+        });
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname ===
+          '/api/admin/integrations/phone-voice/bridge/pending-session/clear'
+      ) {
+        clearPendingBridgeSession();
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname === '/api/admin/integrations/phone-voice/call/end'
+      ) {
+        try {
+          const body = JSON.parse((await readBody(req)) || '{}') as {
+            callId?: unknown;
+          };
+          const callId =
+            typeof body.callId === 'string' && body.callId.trim()
+              ? body.callId.trim()
+              : undefined;
+          const channel = getPhoneVoiceChannelInstance();
+          if (!channel) {
+            sendJson(res, 503, { error: 'phone_voice_not_connected' });
+            return;
+          }
+          await channel.endActiveCall(callId);
+          sendJson(res, 200, { ok: true });
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error ? err.message : 'phone_voice_end_call_failed',
+          });
+        }
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname === '/api/admin/integrations/phone-voice/call/dtmf'
+      ) {
+        try {
+          const body = JSON.parse((await readBody(req)) || '{}') as {
+            digit?: unknown;
+            callId?: unknown;
+          };
+          const digit = typeof body.digit === 'string' ? body.digit : '';
+          if (!/^[0-9*#]$/.test(digit)) {
+            sendJson(res, 400, { error: 'invalid_dtmf_digit' });
+            return;
+          }
+          const callId =
+            typeof body.callId === 'string' && body.callId.trim()
+              ? body.callId.trim()
+              : undefined;
+          const channel = getPhoneVoiceChannelInstance();
+          if (!channel) {
+            sendJson(res, 503, { error: 'phone_voice_not_connected' });
+            return;
+          }
+          await channel.sendDtmfToActiveCall(digit, callId);
+          sendJson(res, 200, { ok: true });
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error ? err.message : 'phone_voice_dtmf_failed',
+          });
+        }
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        url.pathname === '/api/admin/integrations/phone-voice/call/mute'
+      ) {
+        try {
+          const body = JSON.parse((await readBody(req)) || '{}') as {
+            muted?: unknown;
+            callId?: unknown;
+          };
+          if (typeof body.muted !== 'boolean') {
+            sendJson(res, 400, { error: 'muted_required' });
+            return;
+          }
+          const callId =
+            typeof body.callId === 'string' && body.callId.trim()
+              ? body.callId.trim()
+              : undefined;
+          const channel = getPhoneVoiceChannelInstance();
+          if (!channel) {
+            sendJson(res, 503, { error: 'phone_voice_not_connected' });
+            return;
+          }
+          await channel.setMuteOnActiveCall(body.muted, callId);
+          sendJson(res, 200, { ok: true });
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error ? err.message : 'phone_voice_mute_failed',
+          });
+        }
         return;
       }
 

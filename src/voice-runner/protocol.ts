@@ -17,6 +17,8 @@ export interface VoiceCaller {
   displayName: string;
   profileSummary?: string;
   relationshipHint?: string;
+  reasonForCall?: string;
+  expectedRecipient?: string;
 }
 
 export interface VoiceCallMetadata {

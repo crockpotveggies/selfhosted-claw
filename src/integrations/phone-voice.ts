@@ -140,6 +140,14 @@ interface CallSession {
   runnerReady: Promise<void> | null;
 }
 
+interface OutboundCallContext {
+  reason?: string;
+  receivingPerson: string;
+  createdAt: number;
+}
+
+const OUTBOUND_CONTEXT_TTL_MS = 60_000;
+
 export interface BrowserVoiceSessionEvent {
   type:
     | 'caller_turn'
@@ -743,6 +751,19 @@ function getPayloadString(
   return '';
 }
 
+function extractCallId(payload: Record<string, unknown>): string | null {
+  const direct = getPayloadString(payload, ['callId', 'id']);
+  if (direct) return direct;
+  const nested = payload.call;
+  if (nested && typeof nested === 'object') {
+    return (
+      getPayloadString(nested as Record<string, unknown>, ['callId', 'id']) ||
+      null
+    );
+  }
+  return null;
+}
+
 function getCallerFromPayload(
   payload: Record<string, unknown>,
 ): VoiceCaller | null {
@@ -821,6 +842,12 @@ export class PhoneVoiceChannel implements Channel {
   private readonly sessionsBySessionId = new Map<string, CallSession>();
   private readonly activeCallByJid = new Map<string, string>();
   private readonly browserSessions = new Map<string, BrowserVoiceSession>();
+  // Stale entries are cleaned on read (no timer) — 60s covers gateway dial
+  // latency but rejects orphans from calls that never connected.
+  private readonly pendingOutboundContext = new Map<
+    string,
+    OutboundCallContext
+  >();
   private lastGatewaySnapshot: Record<string, unknown> | null = null;
   private lastLatencySampleAt?: string;
   private lastRuntimeHealth: VoiceRunnerHealth;
@@ -1160,6 +1187,32 @@ export class PhoneVoiceChannel implements Channel {
     await this.sendRequest('sendDtmf', { callId, digits });
   }
 
+  // Pick any one active call id. The admin test panel only issues a single
+  // outbound test call at a time, so falling back to "latest known" is safe.
+  getAnyActiveCallId(): string | null {
+    const iter = this.sessionsByCallId.keys();
+    const first = iter.next();
+    return first.done ? null : first.value;
+  }
+
+  async endActiveCall(callId?: string): Promise<void> {
+    const target = callId || this.getAnyActiveCallId();
+    if (!target) throw new Error('No active call');
+    await this.endCallById(target);
+  }
+
+  async sendDtmfToActiveCall(digits: string, callId?: string): Promise<void> {
+    const target = callId || this.getAnyActiveCallId();
+    if (!target) throw new Error('No active call');
+    await this.sendDtmf(target, digits);
+  }
+
+  async setMuteOnActiveCall(muted: boolean, callId?: string): Promise<void> {
+    const target = callId || this.getAnyActiveCallId();
+    if (!target) throw new Error('No active call');
+    await this.setMute(target, muted);
+  }
+
   async placeCall(to: string): Promise<string> {
     const destination = normalizePhone(to);
     if (!destination) throw new Error('Invalid phone number');
@@ -1167,6 +1220,59 @@ export class PhoneVoiceChannel implements Channel {
       number: destination,
     });
     return JSON.stringify(payload);
+  }
+
+  async placeTestCall(input: {
+    phoneNumber: string;
+    reason?: string;
+    receivingPerson: string;
+    // When true, pre-create a browser-style voice session that the HFP audio
+    // bridge can attach to via WebSocket. The sessionId is exposed through
+    // `GET /api/admin/integrations/phone-voice/bridge/pending-session`.
+    prepareBridgeSession?: boolean;
+  }): Promise<{
+    sessionId: string | null;
+    callId: string | null;
+    bridgeSessionId?: string | null;
+  }> {
+    const destination = normalizePhone(input.phoneNumber);
+    if (!destination) throw new Error('Invalid phone number');
+    const receivingPerson = input.receivingPerson.trim();
+    if (!receivingPerson) throw new Error('receivingPerson is required');
+    const reason = input.reason?.trim() || undefined;
+    this.pendingOutboundContext.set(destination, {
+      reason,
+      receivingPerson,
+      createdAt: Date.now(),
+    });
+
+    let bridgeSessionId: string | null = null;
+    if (input.prepareBridgeSession !== false) {
+      try {
+        const harness = getPhoneVoiceBrowserHarness(
+          getIntegrationSettings(INTEGRATION_NAME),
+        );
+        const started = await harness.startBrowserVoiceSession(
+          receivingPerson || 'Outbound bridge',
+        );
+        bridgeSessionId = started.sessionId;
+        setPendingBridgeSession({
+          sessionId: started.sessionId,
+          phoneNumber: destination,
+          reason: reason ?? null,
+          receivingPerson,
+          createdAt: Date.now(),
+        });
+      } catch (err) {
+        log.warn({ err }, 'Failed to pre-create bridge session for test call');
+      }
+    }
+
+    const placePayload = await this.sendRequest('placeCall', {
+      number: destination,
+    });
+    const callId = extractCallId(placePayload);
+    return { sessionId: null, callId, bridgeSessionId };
   }
 
   async markFollowupForChat(
@@ -1348,6 +1454,18 @@ export class PhoneVoiceChannel implements Channel {
     }
   }
 
+  private consumePendingOutboundContext(
+    phoneNumber: string,
+  ): OutboundCallContext | null {
+    const key = normalizePhone(phoneNumber);
+    if (!key) return null;
+    const entry = this.pendingOutboundContext.get(key);
+    if (!entry) return null;
+    this.pendingOutboundContext.delete(key);
+    if (Date.now() - entry.createdAt > OUTBOUND_CONTEXT_TTL_MS) return null;
+    return entry;
+  }
+
   private async handleCallAdded(
     payload: Record<string, unknown>,
   ): Promise<void> {
@@ -1391,6 +1509,15 @@ export class PhoneVoiceChannel implements Channel {
     );
     updateChatName(chatJid, caller.displayName);
 
+    const pendingContext = this.consumePendingOutboundContext(
+      caller.phoneNumber,
+    );
+    if (pendingContext) {
+      caller.reasonForCall = pendingContext.reason;
+      caller.expectedRecipient = pendingContext.receivingPerson;
+      metadata.direction = 'outgoing';
+    }
+
     const sessionId =
       getPayloadString(payload, ['sessionId']) ||
       `${metadata.callId}:${Date.now().toString(36)}`;
@@ -1407,16 +1534,21 @@ export class PhoneVoiceChannel implements Channel {
     this.sessionsBySessionId.set(sessionId, session);
     this.activeCallByJid.set(chatJid, metadata.callId);
 
+    // Outbound test calls suppress the auto-greeting: the agent must wait for
+    // the recipient to speak so it can confirm identity before introducing.
+    const greeting = pendingContext
+      ? undefined
+      : metadata.state === 'active'
+        ? `Hi, this is ${ASSISTANT_NAME}. How can I help?`
+        : undefined;
+
     session.runnerReady = this.runner.startSession(
       {
         sessionId,
         chatJid,
         caller,
         metadata,
-        greeting:
-          metadata.state === 'active'
-            ? `Hi, this is ${ASSISTANT_NAME}. How can I help?`
-            : undefined,
+        greeting,
       },
       {
         onTranscriptFinal: async (event) => {
@@ -1737,6 +1869,47 @@ export class PhoneVoiceChannel implements Channel {
 
 let channelInstance: PhoneVoiceChannel | null = null;
 let browserHarnessInstance: PhoneVoiceChannel | null = null;
+
+export interface PendingBridgeSession {
+  sessionId: string;
+  phoneNumber: string;
+  reason: string | null;
+  receivingPerson: string;
+  createdAt: number;
+}
+
+// Oldest pending session the HFP bridge should attach to. Cleared when the
+// bridge claims it or when it ages out (avoids reattach after a stale call).
+const PENDING_BRIDGE_SESSION_TTL_MS = 120_000;
+let pendingBridgeSession: PendingBridgeSession | null = null;
+
+function setPendingBridgeSession(session: PendingBridgeSession): void {
+  pendingBridgeSession = session;
+}
+
+export function getPendingBridgeSession(): PendingBridgeSession | null {
+  if (!pendingBridgeSession) return null;
+  if (
+    Date.now() - pendingBridgeSession.createdAt >
+    PENDING_BRIDGE_SESSION_TTL_MS
+  ) {
+    pendingBridgeSession = null;
+    return null;
+  }
+  // Evict if the underlying browser session was closed or never existed.
+  const harness = getPhoneVoiceBrowserHarness(
+    getIntegrationSettings(INTEGRATION_NAME),
+  );
+  if (!harness.ownsBrowserVoiceSession(pendingBridgeSession.sessionId)) {
+    pendingBridgeSession = null;
+    return null;
+  }
+  return pendingBridgeSession;
+}
+
+export function clearPendingBridgeSession(): void {
+  pendingBridgeSession = null;
+}
 
 export function getPhoneVoiceChannelInstance(): PhoneVoiceChannel | null {
   return channelInstance;

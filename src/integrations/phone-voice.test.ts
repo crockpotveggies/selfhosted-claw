@@ -751,6 +751,85 @@ describe('PhoneVoiceChannel', () => {
     await channel.disconnect();
   });
 
+  it('placeTestCall stores outbound context and applies it to the next call.added session', async () => {
+    const channel = new PhoneVoiceChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
+
+    await channel.connect();
+    await vi.waitFor(() => {
+      expect(
+        MockWebSocket.instances[0]?.sentMessages
+          .slice(0, 2)
+          .map((message) => message.type),
+      ).toEqual(['getGatewayState', 'getDialerState']);
+    });
+
+    const service = (channel as unknown as {
+      runner: {
+        service: {
+          emitFixedResponse: (sessionId: string, text: string) => unknown;
+        };
+      };
+    }).runner.service;
+    const emitSpy = vi.spyOn(service, 'emitFixedResponse');
+
+    const result = await channel.placeTestCall({
+      phoneNumber: '+15551234567',
+      reason: 'test',
+      receivingPerson: 'Alice',
+      prepareBridgeSession: false,
+    });
+
+    expect(result.sessionId).toBeNull();
+    expect('callId' in result).toBe(true);
+
+    const placeCall = MockWebSocket.instances[0]!.sentMessages.find(
+      (message) => message.type === 'placeCall',
+    );
+    expect(placeCall).toBeTruthy();
+    expect((placeCall as { payload: { number: string } }).payload.number).toBe(
+      '+15551234567',
+    );
+
+    emitSpy.mockClear();
+
+    MockWebSocket.instances[0]?.emit({
+      type: 'call.added',
+      payload: {
+        callId: 'call-outbound-1',
+        sessionId: 'sess-outbound-1',
+        phoneNumber: '+15551234567',
+        displayName: 'Alice',
+        direction: 'incoming',
+        state: 'active',
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(onChatMetadata).toHaveBeenCalledWith(
+        'voice:+15551234567',
+        expect.any(String),
+        'Alice',
+        'phone-voice',
+        false,
+      );
+    });
+
+    const session = (channel as unknown as {
+      sessionsByCallId: Map<string, { caller: any; metadata: any }>;
+    }).sessionsByCallId.get('call-outbound-1');
+    expect(session).toBeTruthy();
+    expect(session!.caller.reasonForCall).toBe('test');
+    expect(session!.caller.expectedRecipient).toBe('Alice');
+    expect(session!.metadata.direction).toBe('outgoing');
+
+    expect(emitSpy).not.toHaveBeenCalled();
+
+    await channel.disconnect();
+  });
+
   it('starts and warms the managed speech services in the background when the channel connects', async () => {
     const previousProvider = integrationSettings.voiceSttProvider;
     const previousModel = integrationSettings.voiceSttModel;
