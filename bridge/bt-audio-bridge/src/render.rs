@@ -107,7 +107,7 @@ fn run_render(
             hns_buffer_duration,
             0,
             &wf as *const _,
-            std::ptr::null(),
+            None,
         )?;
     }
 

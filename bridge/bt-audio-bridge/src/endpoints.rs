@@ -8,18 +8,35 @@
 
 use std::slice;
 
-use windows::core::{Result, PCWSTR, PWSTR};
+use windows::core::{Interface, Result, PCWSTR, PROPVARIANT, PWSTR};
 use windows::Win32::Media::Audio::{
     eCapture, eCommunications, eRender, EDataFlow, IAudioClient, IMMDevice,
     IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator, DEVICE_STATE, DEVICE_STATE_ACTIVE,
-    WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+    WAVEFORMATEXTENSIBLE,
 };
-use windows::Win32::Media::Audio::WAVE_FORMAT_IEEE_FLOAT;
 use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
 use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL, STGM_READ};
+
+// Standard Win32 wFormatTag constant, kept local because windows-rs has moved
+// it between modules across versions.
+const WAVE_FORMAT_IEEE_FLOAT: u32 = 0x0003;
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
+
+/// Minimal repr(C) view of a VT_LPWSTR PROPVARIANT. windows-rs nests the real
+/// PROPVARIANT union several layers deep and that nesting has churned between
+/// versions — we read the `pwszVal` payload via this projection to stay
+/// version-resilient. Layout: vt + 3 reserved u16 + pointer (only valid when
+/// vt == VT_LPWSTR / 31).
+#[repr(C)]
+struct PropVariantLpwstr {
+    vt: u16,
+    _reserved: [u16; 3],
+    pwsz_val: PWSTR,
+}
+
+const VT_LPWSTR: u16 = 31;
 
 /// Direction of audio flow for an endpoint.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -76,7 +93,7 @@ pub fn collect_active(enumerator: &IMMDeviceEnumerator) -> Result<Vec<Endpoint>>
         // EnumAudioEndpoints filters to ACTIVE only — disconnected BT headsets
         // show up as NOT_PRESENT and would clutter selection.
         let collection = unsafe {
-            enumerator.EnumAudioEndpoints(flow.data_flow(), DEVICE_STATE_ACTIVE.0)?
+            enumerator.EnumAudioEndpoints(flow.data_flow(), DEVICE_STATE_ACTIVE)?
         };
         let count = unsafe { collection.GetCount()? };
         for i in 0..count {
@@ -116,7 +133,7 @@ pub fn select_endpoint_by_name(
 ) -> anyhow::Result<SelectedEndpoint> {
     let lower_sub = substring.to_lowercase();
     let collection = unsafe {
-        enumerator.EnumAudioEndpoints(flow.data_flow(), DEVICE_STATE_ACTIVE.0)?
+        enumerator.EnumAudioEndpoints(flow.data_flow(), DEVICE_STATE_ACTIVE)?
     };
     let count = unsafe { collection.GetCount()? };
 
@@ -232,11 +249,13 @@ fn read_friendly_name(device: &IMMDevice) -> Result<String> {
     let key: PROPERTYKEY = PKEY_Device_FriendlyName;
     let mut variant = unsafe { store.GetValue(&key)? };
 
-    // windows-rs 0.58: PROPVARIANT's active field is three unions deep.
     let name = unsafe {
-        let inner = &variant.Anonymous.Anonymous;
-        let pwstr: PWSTR = inner.Anonymous.pwszVal;
-        pwstr_to_string(pwstr)
+        let view: &PropVariantLpwstr = &*(&variant as *const PROPVARIANT as *const _);
+        if view.vt == VT_LPWSTR && !view.pwsz_val.0.is_null() {
+            pwstr_to_string(view.pwsz_val)
+        } else {
+            "<non-string>".to_string()
+        }
     };
 
     unsafe {
@@ -254,15 +273,21 @@ fn read_mix_format(device: &IMMDevice) -> Result<(u32, u16, u16, bool)> {
     }
 
     let result = unsafe {
-        let wf: &WAVEFORMATEX = &*fmt_ptr;
-        let sample_rate = wf.nSamplesPerSec;
-        let channels = wf.nChannels;
-        let bits = wf.wBitsPerSample;
-        let is_float = if wf.wFormatTag as u32 == WAVE_FORMAT_EXTENSIBLE {
-            let wfx: &WAVEFORMATEXTENSIBLE = &*(fmt_ptr as *const WAVEFORMATEXTENSIBLE);
-            wfx.SubFormat == windows::Win32::Media::Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+        // WAVEFORMATEX and WAVEFORMATEXTENSIBLE are #[repr(packed)]; read each
+        // field via a field-pointer + read_unaligned to sidestep the unaligned-
+        // reference lint. Even copying the whole struct doesn't help — the copy
+        // is still packed.
+        use std::ptr::{addr_of, read_unaligned};
+        let sample_rate = read_unaligned(addr_of!((*fmt_ptr).nSamplesPerSec));
+        let channels = read_unaligned(addr_of!((*fmt_ptr).nChannels));
+        let bits = read_unaligned(addr_of!((*fmt_ptr).wBitsPerSample));
+        let format_tag: u16 = read_unaligned(addr_of!((*fmt_ptr).wFormatTag));
+        let is_float = if format_tag as u32 == WAVE_FORMAT_EXTENSIBLE {
+            let wfx_ptr = fmt_ptr as *const WAVEFORMATEXTENSIBLE;
+            let sub_format = read_unaligned(addr_of!((*wfx_ptr).SubFormat));
+            sub_format == windows::Win32::Media::Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
         } else {
-            wf.wFormatTag as u32 == WAVE_FORMAT_IEEE_FLOAT
+            format_tag as u32 == WAVE_FORMAT_IEEE_FLOAT
         };
         (sample_rate, channels, bits, is_float)
     };

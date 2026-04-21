@@ -118,7 +118,7 @@ fn run_capture(
             hns_buffer_duration,
             0,
             &wf as *const _,
-            std::ptr::null(),
+            None,
         )?;
     }
 
