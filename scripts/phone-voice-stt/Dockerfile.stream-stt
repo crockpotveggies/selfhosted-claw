@@ -1,0 +1,33 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg git curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY scripts/phone-voice-stt/requirements.txt /app/requirements.txt
+COPY scripts/phone-voice-stt/requirements.stream-stt.txt /app/requirements.stream-stt.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt \
+    && pip install --no-cache-dir -r /app/requirements.stream-stt.txt
+
+COPY scripts/phone-voice-stt/server_stream_stt.py /app/server_stream_stt.py
+COPY scripts/phone-voice-stt/entrypoint_stream_stt.sh /app/entrypoint_stream_stt.sh
+
+RUN chmod +x /app/entrypoint_stream_stt.sh
+
+ENV STREAM_STT_PORT=8794 \
+    STT_MODEL_ID=openai/whisper-small.en \
+    STT_TARGET_DEVICE=AUTO:GPU,CPU \
+    STT_QUANTIZATION=int8 \
+    STT_MODEL_DIR=/models/exported \
+    HF_HOME=/models/hf-cache \
+    STREAM_PARTIAL_STEP_MS=400 \
+    STREAM_WINDOW_MS=5000 \
+    STREAM_ENDPOINT_SILENCE_MS=500 \
+    STREAM_SILENCE_RMS_THRESHOLD=250
+
+ENTRYPOINT ["/app/entrypoint_stream_stt.sh"]

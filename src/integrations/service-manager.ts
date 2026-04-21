@@ -65,8 +65,16 @@ function buildComposeArgs(
   composeFile: string,
   envFile: string,
   commandArgs: string[],
+  projectName?: string,
 ): string[] {
-  return ['-f', composeFile, '--env-file', envFile, ...commandArgs];
+  return [
+    ...(projectName ? ['-p', projectName] : []),
+    '-f',
+    composeFile,
+    '--env-file',
+    envFile,
+    ...commandArgs,
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +172,7 @@ export function startService(
 
   // Start via docker compose
   let result = runner(
-    buildComposeArgs(composeFile, envFile, ['up', '-d']),
+    buildComposeArgs(composeFile, envFile, ['up', '-d'], svc.projectName),
     composeDir,
   );
 
@@ -172,9 +180,12 @@ export function startService(
     result.status !== 0 &&
     isComposeRecreateError(result.stderr || result.stdout || '')
   ) {
-    runner(buildComposeArgs(composeFile, envFile, ['down']), composeDir);
+    runner(
+      buildComposeArgs(composeFile, envFile, ['down'], svc.projectName),
+      composeDir,
+    );
     result = runner(
-      buildComposeArgs(composeFile, envFile, ['up', '-d']),
+      buildComposeArgs(composeFile, envFile, ['up', '-d'], svc.projectName),
       composeDir,
     );
   }
@@ -212,7 +223,7 @@ export function stopService(integrationName: string): ServiceStatus {
     ? path.resolve(svc.envFile)
     : path.join(composeDir, '.env');
 
-  const args = ['-f', composeFile];
+  const args = svc.projectName ? ['-p', svc.projectName, '-f', composeFile] : ['-f', composeFile];
   if (fs.existsSync(envFile)) {
     args.push('--env-file', envFile);
   }
@@ -256,7 +267,16 @@ export function getServiceStatus(integrationName: string): ServiceStatus {
 
   if (fs.existsSync(composeFile) && fs.existsSync(envFile)) {
     const result = runner(
-      ['-f', composeFile, '--env-file', envFile, 'ps', '-q', svc.serviceName],
+      [
+        ...(svc.projectName ? ['-p', svc.projectName] : []),
+        '-f',
+        composeFile,
+        '--env-file',
+        envFile,
+        'ps',
+        '-q',
+        svc.serviceName,
+      ],
       composeDir,
     );
     if (result.status === 0) {
@@ -290,6 +310,13 @@ export async function ensureServicesRunning(): Promise<void> {
   const integrations = getIntegrationsWithService();
   for (const def of integrations) {
     if (!isIntegrationEnabled(def.name)) continue;
+    if (def.service?.autoStart === false) {
+      logger.debug(
+        { integration: def.name },
+        'Service auto-start disabled; skipping global startup sweep',
+      );
+      continue;
+    }
 
     const settings = getIntegrationSettings(def.name);
 

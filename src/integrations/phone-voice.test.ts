@@ -3,6 +3,23 @@ import path from 'path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { MANAGED_F5_TTS_MODEL_NAME } from '../voice-runner/local-tts.js';
+
+const childProcessMocks = vi.hoisted(() => ({
+  spawn: vi.fn(() => {
+    const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+    return {
+      on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+        const entries = listeners.get(event) || [];
+        entries.push(handler);
+        listeners.set(event, entries);
+        return undefined;
+      }),
+      unref: vi.fn(),
+    };
+  }),
+}));
+
 const integrationSettings: Record<string, any> = {
   PHONE_VOICE_API_KEY: 'voice-secret',
   gatewayUrl: 'ws://127.0.0.1:8787/',
@@ -131,6 +148,10 @@ vi.mock('../voice-runner/handoff-store.js', () => ({
   },
 }));
 
+vi.mock('child_process', () => ({
+  spawn: childProcessMocks.spawn,
+}));
+
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
 
@@ -226,6 +247,7 @@ describe('PhoneVoiceChannel', () => {
     serviceManagerMocks.startService.mockClear();
     serviceManagerMocks.stopService.mockClear();
     serviceManagerMocks.getServiceStatus.mockClear();
+    childProcessMocks.spawn.mockClear();
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
     vi.stubGlobal(
@@ -238,11 +260,31 @@ describe('PhoneVoiceChannel', () => {
             headers: { 'content-type': 'application/json' },
           });
         }
+        if (url.endsWith('/v1/models')) {
+          return new Response(
+            JSON.stringify({
+              object: 'list',
+            data: [{ id: MANAGED_F5_TTS_MODEL_NAME }],
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          );
+        }
         if (url.endsWith('/warm')) {
-          return new Response(JSON.stringify({ ok: true, ready: true }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          });
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              ready: true,
+              data: [{ id: MANAGED_F5_TTS_MODEL_NAME }],
+              model_name: MANAGED_F5_TTS_MODEL_NAME,
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          );
         }
         return new Response('{}', {
           status: 200,
@@ -448,13 +490,17 @@ describe('PhoneVoiceChannel', () => {
 
     const started = await channel.startBrowserVoiceSession('Browser QA');
     expect(started.sessionId).toContain('browser:');
-    expect(
-      started.events.some(
-        (event) =>
-          event.type === 'assistant_turn' &&
-          event.text?.includes('Browser voice test is ready'),
-      ),
-    ).toBe(true);
+    await vi.waitFor(() => {
+      expect(
+        channel
+          .getBrowserVoiceEvents(started.sessionId)
+          .events.some(
+            (event) =>
+              event.type === 'assistant_turn' &&
+              event.text?.includes('Browser voice test is ready'),
+          ),
+      ).toBe(true);
+    });
 
     const response = await channel.sendBrowserVoiceAudio({
       sessionId: started.sessionId,
@@ -480,6 +526,156 @@ describe('PhoneVoiceChannel', () => {
           event.text?.includes('right after we finish here'),
       ),
     ).toBe(true);
+
+    await channel.endBrowserVoiceSession(started.sessionId);
+  });
+
+  it('uses the shared custom LLM prompt for browser voice sessions', async () => {
+    const previous = {
+      voiceRunnerProvider: integrationSettings.voiceRunnerProvider,
+      voiceRunnerBaseUrl: integrationSettings.voiceRunnerBaseUrl,
+      voiceRunnerApiKey: integrationSettings.voiceRunnerApiKey,
+      voiceRunnerModel: integrationSettings.voiceRunnerModel,
+      voiceRunnerSystemPrompt: integrationSettings.voiceRunnerSystemPrompt,
+      voiceRunnerInstructions: integrationSettings.voiceRunnerInstructions,
+      voiceSttProvider: integrationSettings.voiceSttProvider,
+      voiceTtsProvider: integrationSettings.voiceTtsProvider,
+    };
+    integrationSettings.voiceRunnerProvider = 'openai';
+    integrationSettings.voiceRunnerBaseUrl = 'http://127.0.0.1:8793/v1';
+    integrationSettings.voiceRunnerApiKey = '';
+    integrationSettings.voiceRunnerModel = 'phone-voice-qwen3-4b';
+    integrationSettings.voiceRunnerSystemPrompt =
+      'You are Lena. Keep every reply tiny.';
+    integrationSettings.voiceRunnerInstructions =
+      'Use a warm test voice and avoid asking what the next thing is.';
+    integrationSettings.voiceSttProvider = 'mock';
+    integrationSettings.voiceTtsProvider = 'mock';
+
+    const bodies: any[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body || '{}')));
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: 'Shared prompt applied.',
+                },
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }) as typeof fetch,
+    );
+
+    const channel = new PhoneVoiceChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
+
+    try {
+      const browser = await channel.startBrowserVoiceSession('Browser Prompt');
+      await channel.sendBrowserVoiceAudio({
+        sessionId: browser.sessionId,
+        dataBase64: Buffer.from('How are you?', 'utf8').toString('base64'),
+        contentType: 'text/plain; charset=utf-8',
+      });
+
+      await vi.waitFor(() => {
+        expect(bodies.length).toBeGreaterThanOrEqual(1);
+      });
+
+      for (const body of bodies) {
+        expect(body.messages[0]).toEqual({
+          role: 'system',
+          content:
+            'You are Lena. Keep every reply tiny.\n\nUse a warm test voice and avoid asking what the next thing is.\n\n/no_think',
+        });
+        const userMessage = body.messages.find(
+          (m: { role: string }) => m.role === 'user',
+        );
+        expect(userMessage).toEqual({
+          role: 'user',
+          content: 'How are you?',
+        });
+        expect(userMessage.content).not.toContain('Caller now:');
+      }
+
+      await channel.endBrowserVoiceSession(browser.sessionId);
+    } finally {
+      Object.assign(integrationSettings, previous);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('supports streamed browser audio chunks with separate event polling', async () => {
+    const channel = new PhoneVoiceChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
+
+    const started = await channel.startBrowserVoiceSession('Browser Stream');
+    await vi.waitFor(() => {
+      expect(
+        channel
+          .getBrowserVoiceEvents(started.sessionId)
+          .events.some((event) => event.type === 'assistant_turn'),
+      ).toBe(true);
+    });
+
+    const chunkAck = await channel.sendBrowserVoiceAudio({
+      sessionId: started.sessionId,
+      dataBase64: Buffer.from('Please call me back', 'utf8').toString('base64'),
+      contentType: 'text/plain; charset=utf-8',
+      endOfTurn: false,
+      awaitIdle: false,
+    });
+    expect(chunkAck.events).toEqual([]);
+
+    const finished = await channel.sendBrowserVoiceAudio({
+      sessionId: started.sessionId,
+      dataBase64: '',
+      contentType: 'text/plain; charset=utf-8',
+      endOfTurn: true,
+      awaitIdle: true,
+    });
+
+    expect(
+      finished.events.some(
+        (event) =>
+          event.type === 'caller_turn' && event.text === 'Please call me back',
+      ),
+    ).toBe(true);
+
+    await channel.endBrowserVoiceSession(started.sessionId);
+  });
+
+  it('keeps browser voice start alive after a warm-time health timeout', async () => {
+    const channel = new PhoneVoiceChannel(
+      { onMessage, onChatMetadata, registeredGroups },
+      integrationSettings,
+    );
+
+    const runner = (channel as any).runner as {
+      refreshHealth: () => Promise<unknown>;
+    };
+    vi.spyOn(runner, 'refreshHealth').mockRejectedValue(
+      new Error('Voice runner sidecar request timed out: health'),
+    );
+
+    const started = await channel.startBrowserVoiceSession('Browser QA');
+
+    expect(started.sessionId).toContain('browser:');
+    expect(channel.getRuntimeHealth()).toMatchObject({
+      ready: true,
+    });
 
     await channel.endBrowserVoiceSession(started.sessionId);
   });
@@ -552,15 +748,19 @@ describe('PhoneVoiceChannel', () => {
     await channel.disconnect();
   });
 
-  it('starts and warms the managed STT service in the background when the channel connects', async () => {
+  it('starts and warms the managed speech services in the background when the channel connects', async () => {
     const previousProvider = integrationSettings.voiceSttProvider;
     const previousModel = integrationSettings.voiceSttModel;
     const previousDevice = integrationSettings.voiceSttTargetDevice;
     const previousQuantization = integrationSettings.voiceSttQuantization;
+    const previousTtsProvider = integrationSettings.voiceTtsProvider;
+    const previousDefaultVoice = integrationSettings.defaultVoice;
     integrationSettings.voiceSttProvider = 'managed_openvino';
-    integrationSettings.voiceSttModel = 'openai/whisper-base.en';
+    integrationSettings.voiceSttModel = 'openai/whisper-small.en';
     integrationSettings.voiceSttTargetDevice = 'AUTO:GPU,CPU';
     integrationSettings.voiceSttQuantization = 'int8';
+    integrationSettings.voiceTtsProvider = 'managed_f5_tts';
+    integrationSettings.defaultVoice = 'basic_ref_en';
 
     const channel = new PhoneVoiceChannel(
       { onMessage, onChatMetadata, registeredGroups },
@@ -571,9 +771,7 @@ describe('PhoneVoiceChannel', () => {
       await channel.connect();
 
       await vi.waitFor(() => {
-        expect(serviceManagerMocks.startService).toHaveBeenCalledWith(
-          'phone-voice',
-        );
+        expect(childProcessMocks.spawn).toHaveBeenCalled();
       });
       await vi.waitFor(() => {
         expect(fetch).toHaveBeenCalledWith(
@@ -585,6 +783,12 @@ describe('PhoneVoiceChannel', () => {
         'http://127.0.0.1:8791/warm',
         expect.objectContaining({ method: 'POST' }),
       );
+      await vi.waitFor(() => {
+        expect(fetch).toHaveBeenCalledWith(
+          'http://127.0.0.1:8792/warm',
+          expect.objectContaining({ method: 'POST' }),
+        );
+      });
 
       await channel.disconnect();
     } finally {
@@ -592,6 +796,8 @@ describe('PhoneVoiceChannel', () => {
       integrationSettings.voiceSttModel = previousModel;
       integrationSettings.voiceSttTargetDevice = previousDevice;
       integrationSettings.voiceSttQuantization = previousQuantization;
+      integrationSettings.voiceTtsProvider = previousTtsProvider;
+      integrationSettings.defaultVoice = previousDefaultVoice;
     }
   });
 });

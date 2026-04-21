@@ -25,6 +25,21 @@ import { VerificationCodeStepUI } from '../components/setup/VerificationCodeStep
 import { WebhookUrlStepUI } from '../components/setup/WebhookUrlStepUI';
 import { PhoneVoiceBrowserTester } from '../components/PhoneVoiceBrowserTester';
 
+interface JsonSchemaProperty {
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'array';
+  title: string;
+  description?: string;
+  default?: unknown;
+  enum?: unknown[];
+  enumLabels?: string[];
+  minimum?: number;
+  maximum?: number;
+  items?: { type: string };
+  format?: string;
+  sensitive?: boolean;
+  dependsOn?: { field: string; value: unknown };
+}
+
 interface IntegrationDetail {
   name: string;
   description: string;
@@ -80,6 +95,37 @@ interface SetupStatusResponse {
 interface IntegrationDetailPageProps {
   name: string;
   onBack: () => void;
+}
+
+function buildSchemaSubset(
+  schema:
+    | {
+        type: 'object';
+        properties: Record<string, JsonSchemaProperty>;
+        required?: string[];
+      }
+    | null,
+  keys: readonly string[],
+) {
+  if (!schema) return null;
+  const properties = keys.reduce<Record<string, JsonSchemaProperty>>(
+    (acc, key) => {
+      const prop = schema.properties[key];
+      if (prop) {
+        acc[key] = prop;
+      }
+      return acc;
+    },
+    {},
+  );
+  if (Object.keys(properties).length === 0) {
+    return null;
+  }
+  return {
+    type: 'object' as const,
+    properties,
+    required: schema.required?.filter((key) => key in properties),
+  };
 }
 
 export function IntegrationDetailPage({
@@ -196,6 +242,77 @@ export function IntegrationDetailPage({
   if (!detail) {
     return <p>Loading...</p>;
   }
+
+  const voiceRunnerProvider = String(
+    settingsValues.voiceRunnerProvider ?? 'heuristic',
+  );
+  const voiceRunnerModel = String(settingsValues.voiceRunnerModel ?? '').trim();
+  const voiceSttProvider = String(settingsValues.voiceSttProvider ?? 'mock');
+  const voiceSttModel = String(settingsValues.voiceSttModel ?? '').trim();
+  const voiceTtsProvider = String(settingsValues.voiceTtsProvider ?? 'mock');
+  const voiceRunnerMode = String(settingsValues.voiceRunnerMode ?? 'sidecar');
+  const defaultVoice = String(settingsValues.defaultVoice ?? '').trim();
+  const phoneVoiceSchema = detail.settings.schema as
+    | {
+        type: 'object';
+        properties: Record<string, JsonSchemaProperty>;
+        required?: string[];
+      }
+    | null;
+  const llmFieldOrder = [
+    'voiceRunnerProvider',
+    'voiceRunnerMode',
+    'voiceRunnerBaseUrl',
+    'voiceRunnerApiKey',
+    'voiceRunnerModel',
+    'voiceRunnerSystemPrompt',
+    'voiceRunnerInstructions',
+    'voiceRunnerFillersEnabled',
+    'voiceRunnerFillers',
+  ] as const;
+  const sttFieldOrder = [
+    'voiceSttProvider',
+    'voiceSttTargetDevice',
+    'voiceSttQuantization',
+    'voiceSttBaseUrl',
+    'voiceSttApiKey',
+    'voiceSttModel',
+  ] as const;
+  const ttsFieldOrder = [
+    'voiceTtsProvider',
+    'voiceTtsDeviceTarget',
+    'voiceTtsBaseUrl',
+    'voiceTtsApiKey',
+    'voiceTtsModel',
+    'voiceTtsResponseFormat',
+    'defaultVoice',
+  ] as const;
+  const voiceFieldSet = new Set<string>([
+    ...llmFieldOrder,
+    ...sttFieldOrder,
+    ...ttsFieldOrder,
+  ]);
+  const llmSchema =
+    name === 'phone-voice'
+      ? buildSchemaSubset(phoneVoiceSchema, llmFieldOrder)
+      : null;
+  const sttSchema =
+    name === 'phone-voice'
+      ? buildSchemaSubset(phoneVoiceSchema, sttFieldOrder)
+      : null;
+  const ttsSchema =
+    name === 'phone-voice'
+      ? buildSchemaSubset(phoneVoiceSchema, ttsFieldOrder)
+      : null;
+  const genericSettingsSchema =
+    name === 'phone-voice' && phoneVoiceSchema
+      ? buildSchemaSubset(
+          phoneVoiceSchema,
+          Object.keys(phoneVoiceSchema.properties).filter(
+            (key) => !voiceFieldSet.has(key),
+          ),
+        )
+      : detail.settings.schema;
 
   return (
     <div>
@@ -351,6 +468,11 @@ export function IntegrationDetailPage({
                         key={i}
                         integrationName={name}
                         completed={isCompleted}
+                        actionLabel={
+                          step.status === 'error'
+                            ? 'Re-authenticate'
+                            : undefined
+                        }
                         onSetupComplete={handleSetupComplete}
                       />
                     );
@@ -446,14 +568,120 @@ export function IntegrationDetailPage({
       )}
 
       {/* Settings */}
-      {detail.settings.schema && (
+      {name === 'phone-voice' && (
+        <CCard className="mb-3">
+          <CCardHeader>
+            <strong>LLM</strong>
+          </CCardHeader>
+          <CCardBody>
+            <div className="small mb-2">
+              <strong>Conversation Brain:</strong>{' '}
+              <code>{voiceRunnerProvider}</code>
+              {(voiceRunnerProvider === 'openai' ||
+                voiceRunnerProvider === 'managed_openarc') &&
+                voiceRunnerModel && (
+                <>
+                  {' '}
+                  using <code>{voiceRunnerModel}</code>
+                </>
+              )}
+            </div>
+            <div className="small mb-0">
+              <strong>Runtime:</strong>{' '}
+              <code>{voiceRunnerMode}</code>
+            </div>
+            {llmSchema && (
+              <div className="mt-3">
+                <SchemaForm
+                  schema={llmSchema}
+                  values={settingsValues}
+                  onChange={setSettingsValues}
+                />
+              </div>
+            )}
+          </CCardBody>
+        </CCard>
+      )}
+
+      {name === 'phone-voice' && (
+        <CCard className="mb-3">
+          <CCardHeader>
+            <strong>STT</strong>
+          </CCardHeader>
+          <CCardBody>
+            <div className="small mb-2">
+              <strong>Speech to Text:</strong>{' '}
+              <code>{voiceSttProvider}</code>
+              {voiceSttModel && (
+                <>
+                  {' '}
+                  with <code>{voiceSttModel}</code>
+                </>
+              )}
+            </div>
+            {sttSchema && (
+              <div className="mt-3">
+                <SchemaForm
+                  schema={sttSchema}
+                  values={settingsValues}
+                  onChange={setSettingsValues}
+                />
+              </div>
+            )}
+          </CCardBody>
+        </CCard>
+      )}
+
+      {name === 'phone-voice' && (
+        <CCard className="mb-3">
+          <CCardHeader>
+            <strong>TTS</strong>
+          </CCardHeader>
+          <CCardBody>
+            <div className="small mb-2">
+              <strong>Text to Speech:</strong>{' '}
+              <code>{voiceTtsProvider}</code>
+              {voiceTtsProvider === 'mock' && (
+                <> via browser/mock fallback</>
+              )}
+              {(voiceTtsProvider === 'managed_f5_tts' ||
+                voiceTtsProvider === 'managed_openvino_tts') && (
+                <> via F5-TTS XPU</>
+              )}
+            </div>
+            {defaultVoice && (
+              <div className="small mb-0">
+                <strong>Voice:</strong>{' '}
+                <code>{defaultVoice}</code>
+              </div>
+            )}
+            {ttsSchema && (
+              <div className="mt-3">
+                <SchemaForm
+                  schema={ttsSchema}
+                  values={settingsValues}
+                  onChange={setSettingsValues}
+                />
+              </div>
+            )}
+            {voiceTtsProvider === 'mock' && (
+              <CCallout color="warning" className="py-2 px-3 small mb-0">
+                TTS is currently using the mock/browser fallback path instead of the
+                managed F5-TTS XPU service.
+              </CCallout>
+            )}
+          </CCardBody>
+        </CCard>
+      )}
+
+      {genericSettingsSchema && (
         <CCard className="mb-3">
           <CCardHeader>
             <strong>Settings</strong>
           </CCardHeader>
           <CCardBody>
             <SchemaForm
-              schema={detail.settings.schema as any}
+              schema={genericSettingsSchema as any}
               values={settingsValues}
               onChange={setSettingsValues}
             />

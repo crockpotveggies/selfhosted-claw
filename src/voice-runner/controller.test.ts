@@ -18,10 +18,16 @@ class FakeChild extends EventEmitter {
   stderr = new EventEmitter();
   killed = false;
   sent: unknown[] = [];
+  constructor(private readonly suppressActions: string[] = []) {
+    super();
+  }
 
   send(message: any) {
     this.sent.push(message);
     const action = message.action;
+    if (this.suppressActions.includes(action)) {
+      return true;
+    }
     if (
       action === 'configure' ||
       action === 'warm' ||
@@ -143,6 +149,7 @@ describe('voice runner controller', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   it('creates an in-process controller when explicitly requested', () => {
@@ -216,5 +223,36 @@ describe('voice runner controller', () => {
 
     await controller.shutdown();
     expect(child.killed).toBe(true);
+  });
+
+  it('gives warm requests a longer timeout budget than ordinary sidecar calls', async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(['warm']);
+    spawnMock.mockReturnValue(child);
+    const controller = new VoiceRunnerSidecarClient({});
+
+    let settled = false;
+    const warmPromise = controller.warm().then(() => {
+      settled = true;
+    });
+
+    await vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(settled).toBe(false);
+
+    const warmRequest = child.sent.find(
+      (message: any) => message.action === 'warm',
+    ) as { id: string } | undefined;
+    expect(warmRequest?.id).toBeTruthy();
+
+    child.emit('message', {
+      kind: 'response',
+      id: warmRequest!.id,
+      ok: true,
+      payload: {},
+    });
+
+    await warmPromise;
+    expect(settled).toBe(true);
   });
 });

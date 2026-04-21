@@ -195,6 +195,8 @@ export interface IntegrationServiceSetup {
 export interface IntegrationService {
   /** Path to docker-compose.yml relative to project root. */
   composeFile: string;
+  /** Optional Compose project name override. */
+  projectName?: string;
   /** Path to .env file for the compose service. */
   envFile?: string;
   /** Docker Compose service name (e.g., 'signal-cli'). */
@@ -207,6 +209,12 @@ export interface IntegrationService {
 
   /** Service-specific setup hooks (registration, QR linking, etc.). */
   setup?: IntegrationServiceSetup;
+
+  /**
+   * If false, the global startup service sweep will not auto-start this
+   * service. The integration can still start it through its own lifecycle.
+   */
+  autoStart?: boolean;
 }
 
 // ---------------------------------------------------------------------------

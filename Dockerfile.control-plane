@@ -28,7 +28,12 @@ RUN apt-get update && apt-get install -y \
     docker-compose \
     curl \
     bash \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /usr/local/lib/docker/cli-plugins \
+    && curl -fsSL \
+      "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64" \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
 COPY --from=build /app/package*.json ./
 COPY --from=build /app/node_modules ./node_modules

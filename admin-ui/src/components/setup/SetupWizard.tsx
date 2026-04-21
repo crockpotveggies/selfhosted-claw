@@ -40,6 +40,11 @@ export function SetupWizard({
   children,
   onStepClick,
 }: SetupWizardProps) {
+  const activeStep =
+    children.length > 0
+      ? Math.max(0, Math.min(currentStep, children.length - 1))
+      : currentStep;
+
   return (
     <div className="setupWizard">
       {/* Step indicator */}
@@ -47,12 +52,12 @@ export function SetupWizard({
         {steps.map((step, i) => (
           <div
             key={i}
-            className={`setupStep ${i === currentStep ? 'active' : ''} ${step.status}`}
+            className={`setupStep ${i === activeStep ? 'active' : ''} ${step.status}`}
             onClick={() => onStepClick?.(i)}
             style={{ cursor: onStepClick ? 'pointer' : 'default' }}
           >
             <span className="stepIcon">
-              {stepIcon(step.status, i === currentStep)}
+              {stepIcon(step.status, i === activeStep)}
             </span>
             <span className="stepLabel">{step.label}</span>
             {step.error && (
@@ -66,9 +71,9 @@ export function SetupWizard({
 
       {/* Current step content */}
       <div className="setupStepContent">
-        {children[currentStep] || (
+        {children[activeStep] || (
           <p className="text-body-secondary">
-            Step {currentStep + 1} is not available yet.
+            Step {activeStep + 1} is not available yet.
           </p>
         )}
       </div>

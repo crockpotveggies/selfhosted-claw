@@ -1,3 +1,4 @@
+import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -7,7 +8,6 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   OPENAI_BASE_URL,
-  OPENAI_MODEL,
 } from '../config.js';
 import { normalizePhone } from '../contact-resolution.js';
 import {
@@ -60,17 +60,48 @@ import {
   MANAGED_OPENVINO_STT_MODEL,
   MANAGED_OPENVINO_STT_PORT,
   MANAGED_OPENVINO_STT_WARM_URL,
+  MANAGED_STREAM_STT_BASE_URL,
+  getStreamSttHealthUrl,
   usesManagedOpenVinoStt,
+  usesManagedStreamStt,
 } from '../voice-runner/local-stt.js';
+import {
+  MANAGED_F5_TTS_BASE_URL,
+  MANAGED_F5_TTS_DEFAULT_VOICE,
+  MANAGED_F5_TTS_DEVICE_TARGET,
+  MANAGED_F5_TTS_HEALTH_URL,
+  MANAGED_F5_TTS_MODEL,
+  MANAGED_F5_TTS_MODEL_NAME,
+  MANAGED_F5_TTS_MODELS_URL,
+  MANAGED_F5_TTS_PORT,
+  MANAGED_F5_TTS_WARM_URL,
+  usesManagedF5Tts,
+} from '../voice-runner/local-tts.js';
+import {
+  MANAGED_OPENARC_LLM_API_KEY,
+  MANAGED_OPENARC_LLM_BASE_URL,
+  MANAGED_OPENARC_LLM_DEVICE_TARGET,
+  MANAGED_OPENARC_LLM_MODEL,
+  MANAGED_OPENARC_LLM_MODEL_REPO,
+  MANAGED_OPENARC_LLM_MODELS_URL,
+  MANAGED_OPENARC_LLM_PORT,
+  usesManagedOpenArcLlm,
+} from '../voice-runner/local-llm.js';
 
 const INTEGRATION_NAME = 'phone-voice';
 const API_KEY_SETTING = 'PHONE_VOICE_API_KEY';
+const MANAGED_SPEECH_PROJECT_NAME = 'phone-voice-stack';
 const DEFAULT_GATEWAY_URL = 'ws://127.0.0.1:8787/';
 const REQUEST_TIMEOUT_MS = 10_000;
 const RECONNECT_DELAY_MS = 3_000;
 const VOICE_RUNTIME_DIR = path.join(DATA_DIR, 'voice-runner');
-const MANAGED_STT_ENABLE_TIMEOUT_MS = 180_000;
-const MANAGED_STT_POLL_INTERVAL_MS = 2_000;
+const MANAGED_SPEECH_ENABLE_TIMEOUT_MS = 180_000;
+const MANAGED_SPEECH_POLL_INTERVAL_MS = 2_000;
+const DEFAULT_VOICE_RUNNER_FILLERS = [
+  'One moment.',
+  'Give me a second.',
+  'Hmmm.',
+].join('\n');
 const NOOP_CHANNEL_OPTS: ChannelOpts = {
   onMessage: () => undefined,
   onChatMetadata: () => undefined,
@@ -124,11 +155,14 @@ export interface BrowserVoiceSessionEvent {
   summary?: string;
 }
 
+type BrowserVoiceEventListener = (event: BrowserVoiceSessionEvent) => void;
+
 interface BrowserVoiceSession {
   sessionId: string;
   caller: VoiceCaller;
   metadata: VoiceCallMetadata;
   events: BrowserVoiceSessionEvent[];
+  listeners: Set<BrowserVoiceEventListener>;
 }
 
 function getApiKey(settings?: Record<string, unknown>): string {
@@ -172,6 +206,180 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function managedSpeechComposeFile(): string {
+  return path.resolve('scripts/phone-voice-stt/docker-compose.yml');
+}
+
+function managedSpeechEnvFile(): string {
+  return path.resolve('scripts/phone-voice-stt/.env');
+}
+
+function buildManagedSpeechEnv(
+  settings: Record<string, unknown>,
+): Record<string, string> {
+  if (!usesManagedSpeechServices(settings)) {
+    return {
+      STT_PORT: '',
+      STT_MODEL_ID: '',
+      STT_TARGET_DEVICE: '',
+      STT_QUANTIZATION: '',
+      TTS_PORT: '',
+      TTS_MODEL_ID: '',
+      TTS_MODEL_NAME: '',
+      TTS_DEFAULT_VOICE: '',
+      TTS_DEVICE_TARGET: '',
+      LLM_PORT: '',
+      LLM_MODEL_NAME: '',
+      LLM_MODEL_REPO: '',
+      LLM_DEVICE_TARGET: '',
+      OPENARC_API_KEY_REQUIRED: '',
+      OPENARC_API_KEY: '',
+      HF_TOKEN: '',
+      HUGGING_FACE_HUB_TOKEN: '',
+    };
+  }
+
+  const envSecrets = readEnvFile(['HF_TOKEN', 'HUGGING_FACE_HUB_TOKEN']);
+  const huggingFaceToken = String(
+    process.env.HF_TOKEN ||
+      process.env.HUGGING_FACE_HUB_TOKEN ||
+      envSecrets.HF_TOKEN ||
+      envSecrets.HUGGING_FACE_HUB_TOKEN ||
+      '',
+  ).trim();
+
+  return {
+    STT_PORT: String(MANAGED_OPENVINO_STT_PORT),
+    STT_MODEL_ID:
+      String(settings.voiceSttModel || MANAGED_OPENVINO_STT_MODEL).trim() ||
+      MANAGED_OPENVINO_STT_MODEL,
+    STT_TARGET_DEVICE: getManagedSttDevice(settings),
+    STT_QUANTIZATION: getManagedSttQuantization(settings),
+    TTS_PORT: String(MANAGED_F5_TTS_PORT),
+    TTS_MODEL_ID:
+      String(settings.voiceTtsModel || MANAGED_F5_TTS_MODEL).trim() ||
+      MANAGED_F5_TTS_MODEL,
+    TTS_MODEL_NAME: MANAGED_F5_TTS_MODEL_NAME,
+    TTS_DEFAULT_VOICE:
+      String(
+        settings.defaultVoice || MANAGED_F5_TTS_DEFAULT_VOICE,
+      ).trim() || MANAGED_F5_TTS_DEFAULT_VOICE,
+    TTS_DEVICE_TARGET: getManagedF5TtsDevice(settings),
+    LLM_PORT: String(MANAGED_OPENARC_LLM_PORT),
+    LLM_MODEL_NAME:
+      String(settings.voiceRunnerModel || MANAGED_OPENARC_LLM_MODEL).trim() ||
+      MANAGED_OPENARC_LLM_MODEL,
+    LLM_MODEL_REPO: MANAGED_OPENARC_LLM_MODEL_REPO,
+    LLM_DEVICE_TARGET: MANAGED_OPENARC_LLM_DEVICE_TARGET,
+    OPENARC_API_KEY_REQUIRED: 'true',
+    OPENARC_API_KEY: MANAGED_OPENARC_LLM_API_KEY,
+    HF_TOKEN: huggingFaceToken,
+    HUGGING_FACE_HUB_TOKEN: huggingFaceToken,
+  };
+}
+
+function writeManagedSpeechEnvFile(values: Record<string, string>): void {
+  const envFile = managedSpeechEnvFile();
+  fs.mkdirSync(path.dirname(envFile), { recursive: true, mode: 0o700 });
+  const content = Object.entries(values)
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join('\n');
+  fs.writeFileSync(envFile, `${content}\n`, { mode: 0o600 });
+}
+
+function composeBaseArgs(
+  composeBin: string,
+  composeFile: string,
+  envFile: string,
+): string[] {
+  const head = [
+    '-p',
+    MANAGED_SPEECH_PROJECT_NAME,
+    '-f',
+    composeFile,
+    '--env-file',
+    envFile,
+  ];
+  return composeBin === 'docker-compose' ? head : ['compose', ...head];
+}
+
+function isComposeNetworkRecreateError(text: string): boolean {
+  return /needs to be recreated/i.test(text);
+}
+
+async function runCompose(
+  command: string,
+  args: string[],
+  composeDir: string,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: composeDir,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const cap = (buf: string, chunk: Buffer): string => {
+      const next = buf + chunk.toString('utf8');
+      return next.length > 4096 ? next.slice(-4096) : next;
+    };
+    child.stdout?.on('data', (c: Buffer) => {
+      stdout = cap(stdout, c);
+    });
+    child.stderr?.on('data', (c: Buffer) => {
+      stderr = cap(stderr, c);
+    });
+    child.on('error', (err) => {
+      resolve({ code: 1, stdout, stderr: stderr + String(err) });
+    });
+    child.on('exit', (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+function launchManagedSpeechServiceStart(
+  settings: Record<string, unknown>,
+): void {
+  const envValues = buildManagedSpeechEnv(settings);
+  writeManagedSpeechEnvFile(envValues);
+
+  const composeFile = managedSpeechComposeFile();
+  const envFile = managedSpeechEnvFile();
+  const composeDir = path.dirname(composeFile);
+  const composeBin = process.env.SELF_HOSTED_CLAW_COMPOSE_BIN || 'docker';
+  const command =
+    composeBin === 'docker-compose' ? 'docker-compose' : composeBin;
+  const baseArgs = composeBaseArgs(composeBin, composeFile, envFile);
+  const upArgs = [...baseArgs, 'up', '-d'];
+  const downArgs = [...baseArgs, 'down'];
+
+  void (async () => {
+    let result = await runCompose(command, upArgs, composeDir);
+    if (
+      result.code !== 0 &&
+      isComposeNetworkRecreateError(result.stderr || result.stdout)
+    ) {
+      log.info(
+        'Managed speech compose network needs recreation; tearing down and retrying',
+      );
+      await runCompose(command, downArgs, composeDir);
+      result = await runCompose(command, upArgs, composeDir);
+    }
+    if (result.code && result.code !== 0) {
+      log.warn(
+        {
+          code: result.code,
+          stdoutTail: result.stdout,
+          stderrTail: result.stderr,
+        },
+        'Managed speech compose exited with a non-zero status',
+      );
+    }
+  })();
+}
+
 async function waitForManagedSttReady(timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError = 'managed_stt_unreachable';
@@ -183,7 +391,7 @@ async function waitForManagedSttReady(timeoutMs: number): Promise<void> {
       });
       if (!healthResponse.ok) {
         lastError = `managed_stt_health_${healthResponse.status}`;
-        await sleep(MANAGED_STT_POLL_INTERVAL_MS);
+        await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
         continue;
       }
 
@@ -193,7 +401,7 @@ async function waitForManagedSttReady(timeoutMs: number): Promise<void> {
       });
       if (!warmResponse.ok) {
         lastError = `managed_stt_warm_${warmResponse.status}`;
-        await sleep(MANAGED_STT_POLL_INTERVAL_MS);
+        await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
         continue;
       }
 
@@ -202,28 +410,202 @@ async function waitForManagedSttReady(timeoutMs: number): Promise<void> {
       };
       if (payload.ready === false) {
         lastError = 'managed_stt_not_ready';
-        await sleep(MANAGED_STT_POLL_INTERVAL_MS);
+        await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
         continue;
       }
       return;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
-      await sleep(MANAGED_STT_POLL_INTERVAL_MS);
+      await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
     }
   }
 
   throw new Error(`Managed STT service did not become ready: ${lastError}`);
 }
 
-async function ensureManagedSttService(
+async function waitForManagedF5TtsReady(timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = 'managed_tts_unreachable';
+
+  while (Date.now() < deadline) {
+    try {
+      const warmResponse = await fetch(MANAGED_F5_TTS_WARM_URL, {
+        method: 'POST',
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!warmResponse.ok) {
+        lastError = `managed_tts_warm_${warmResponse.status}`;
+        await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
+        continue;
+      }
+
+      const payload = (await warmResponse.json().catch(() => ({}))) as {
+        ready?: boolean;
+        data?: Array<{ id?: string }>;
+      };
+      if (payload.ready === false) {
+        lastError = 'managed_tts_not_ready';
+        await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
+        continue;
+      }
+      const modelLoaded = Array.isArray(payload.data)
+        ? payload.data.some((entry) => entry?.id === MANAGED_F5_TTS_MODEL_NAME)
+        : false;
+      if (!modelLoaded) {
+        lastError = 'managed_tts_model_not_loaded';
+        await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
+        continue;
+      }
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
+    }
+  }
+
+  throw new Error(
+    `Managed F5-TTS service did not become ready: ${lastError}`,
+  );
+}
+
+function usesManagedSpeechServices(settings?: Record<string, unknown>): boolean {
+  return (
+    usesManagedOpenVinoStt(settings) ||
+    usesManagedStreamStt(settings) ||
+    usesManagedF5Tts(settings) ||
+    usesManagedOpenArcLlm(settings)
+  );
+}
+
+async function waitForManagedStreamSttReady(
+  timeoutMs: number,
   settings: Record<string, unknown>,
 ): Promise<void> {
-  if (!usesManagedOpenVinoStt(settings)) {
+  const base = String(
+    settings.voiceStreamSttBaseUrl || MANAGED_STREAM_STT_BASE_URL,
+  ).trim();
+  const healthUrl = getStreamSttHealthUrl(base);
+  const deadline = Date.now() + timeoutMs;
+  let lastError = 'managed_stream_stt_unreachable';
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(healthUrl, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) {
+        lastError = `managed_stream_stt_health_${response.status}`;
+        await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
+        continue;
+      }
+      const payload = (await response.json().catch(() => ({}))) as {
+        ready?: boolean;
+      };
+      if (payload.ready === false) {
+        lastError = 'managed_stream_stt_not_ready';
+        await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
+        continue;
+      }
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
+    }
+  }
+
+  throw new Error(
+    `Managed streaming STT service did not become ready: ${lastError}`,
+  );
+}
+
+async function ensureManagedSpeechServices(
+  settings: Record<string, unknown>,
+): Promise<void> {
+  if (!usesManagedSpeechServices(settings)) {
     return;
   }
 
-  startService(INTEGRATION_NAME);
-  await waitForManagedSttReady(MANAGED_STT_ENABLE_TIMEOUT_MS);
+  launchManagedSpeechServiceStart(settings);
+  const waiters: Array<Promise<void>> = [];
+  if (usesManagedOpenVinoStt(settings)) {
+    waiters.push(waitForManagedSttReady(MANAGED_SPEECH_ENABLE_TIMEOUT_MS));
+  }
+  if (usesManagedStreamStt(settings)) {
+    waiters.push(
+      waitForManagedStreamSttReady(
+        MANAGED_SPEECH_ENABLE_TIMEOUT_MS,
+        settings,
+      ),
+    );
+  }
+  if (usesManagedF5Tts(settings)) {
+    waiters.push(waitForManagedF5TtsReady(MANAGED_SPEECH_ENABLE_TIMEOUT_MS));
+  }
+  if (usesManagedOpenArcLlm(settings)) {
+    waiters.push(
+      waitForManagedOpenArcLlmReady(
+        MANAGED_SPEECH_ENABLE_TIMEOUT_MS,
+        settings,
+      ),
+    );
+  }
+  await Promise.all(waiters);
+}
+
+async function waitForManagedOpenArcLlmReady(
+  timeoutMs: number,
+  settings: Record<string, unknown>,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = 'managed_llm_unreachable';
+  const expectedModel =
+    String(settings.voiceRunnerModel || MANAGED_OPENARC_LLM_MODEL).trim() ||
+    MANAGED_OPENARC_LLM_MODEL;
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(MANAGED_OPENARC_LLM_MODELS_URL, {
+        headers: {
+          Authorization: `Bearer ${MANAGED_OPENARC_LLM_API_KEY}`,
+        },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) {
+        lastError = `managed_llm_models_${response.status}`;
+        await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
+        continue;
+      }
+      const payload = (await response.json().catch(() => ({}))) as {
+        data?: Array<{ id?: string }>;
+      };
+      const modelLoaded = Array.isArray(payload.data)
+        ? payload.data.some((entry) => entry?.id === expectedModel)
+        : false;
+      if (!modelLoaded) {
+        lastError = 'managed_llm_model_not_loaded';
+        await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
+        continue;
+      }
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      await sleep(MANAGED_SPEECH_POLL_INTERVAL_MS);
+    }
+  }
+
+  throw new Error(
+    `Managed OpenArc LLM service did not become ready: ${lastError}`,
+  );
+}
+
+function shouldRestartManagedLlm(
+  prev: Record<string, unknown>,
+  next: Record<string, unknown>,
+): boolean {
+  const keys = ['voiceRunnerProvider', 'voiceRunnerModel'];
+  return keys.some(
+    (key) => String(prev[key] || '') !== String(next[key] || ''),
+  );
 }
 
 function shouldRestartManagedStt(
@@ -235,10 +617,38 @@ function shouldRestartManagedStt(
     'voiceSttModel',
     'voiceSttTargetDevice',
     'voiceSttQuantization',
+    'voiceStreamSttBaseUrl',
   ];
   return keys.some(
     (key) => String(prev[key] || '') !== String(next[key] || ''),
   );
+}
+
+function shouldRestartManagedTts(
+  prev: Record<string, unknown>,
+  next: Record<string, unknown>,
+): boolean {
+  const keys = [
+    'voiceTtsProvider',
+    'voiceTtsModel',
+    'voiceTtsDeviceTarget',
+    'defaultVoice',
+  ];
+  return keys.some(
+    (key) => String(prev[key] || '') !== String(next[key] || ''),
+  );
+}
+
+function getManagedF5TtsDevice(settings?: Record<string, unknown>): string {
+  const raw = String(
+    settings?.voiceTtsDeviceTarget || MANAGED_F5_TTS_DEVICE_TARGET,
+  )
+    .trim()
+    .toLowerCase();
+  if (!raw || raw === 'auto') return 'xpu';
+  if (raw === 'xpu') return 'xpu';
+  if (raw === 'CPU') return 'CPU';
+  return 'xpu';
 }
 
 function getManagedSttDevice(settings?: Record<string, unknown>): string {
@@ -255,6 +665,64 @@ function getManagedSttQuantization(settings?: Record<string, unknown>): string {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+async function isHealthEndpointReady(url: string): Promise<boolean> {
+  try {
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const payload = (await response.json().catch(() => ({}))) as {
+      ready?: boolean;
+    };
+    return payload.ready !== false;
+  } catch {
+    return false;
+  }
+}
+
+async function isManagedF5TtsReady(): Promise<boolean> {
+  try {
+    const response = await fetch(MANAGED_F5_TTS_HEALTH_URL, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) return false;
+    const payload = (await response.json().catch(() => ({}))) as {
+      ready?: boolean;
+      model_name?: string;
+    };
+    return Boolean(payload.ready) && payload.model_name === MANAGED_F5_TTS_MODEL_NAME;
+  } catch {
+    return false;
+  }
+}
+
+async function isManagedOpenArcLlmReady(
+  settings?: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    const response = await fetch(MANAGED_OPENARC_LLM_MODELS_URL, {
+      headers: {
+        Authorization: `Bearer ${MANAGED_OPENARC_LLM_API_KEY}`,
+      },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) return false;
+    const payload = (await response.json().catch(() => ({}))) as {
+      data?: Array<{ id?: string }>;
+    };
+    const expectedModel =
+      String(settings?.voiceRunnerModel || MANAGED_OPENARC_LLM_MODEL).trim() ||
+      MANAGED_OPENARC_LLM_MODEL;
+    return Array.isArray(payload.data)
+      ? payload.data.some((entry) => entry?.id === expectedModel)
+      : false;
+  } catch {
+    return false;
+  }
 }
 
 export function makeVoiceJid(value: string): string {
@@ -361,6 +829,7 @@ export class PhoneVoiceChannel implements Channel {
   private lastGatewaySnapshot: Record<string, unknown> | null = null;
   private lastLatencySampleAt?: string;
   private lastRuntimeHealth: VoiceRunnerHealth;
+  private warmRuntimePromise: Promise<VoiceRunnerHealth> | null = null;
 
   constructor(
     private readonly opts: ChannelOpts,
@@ -441,10 +910,38 @@ export class PhoneVoiceChannel implements Channel {
     this.runner.configure(settings);
   }
 
-  async warmRuntime(): Promise<void> {
-    await ensureManagedSttService(this.settings);
-    await this.runner.warm();
-    this.lastRuntimeHealth = await this.runner.refreshHealth();
+  async warmRuntime(): Promise<VoiceRunnerHealth> {
+    if (this.lastRuntimeHealth.ready) {
+      return this.lastRuntimeHealth;
+    }
+    if (this.warmRuntimePromise) {
+      return this.warmRuntimePromise;
+    }
+    this.warmRuntimePromise = (async () => {
+      await ensureManagedSpeechServices(this.settings);
+      await this.runner.warm();
+      try {
+        this.lastRuntimeHealth = await this.runner.refreshHealth();
+      } catch (err) {
+        this.lastRuntimeHealth = {
+          ...this.runner.getHealthSnapshot(),
+          ready: true,
+          lastError: err instanceof Error ? err.message : String(err),
+        };
+        log.warn(
+          { err },
+          'Phone voice runtime warmed, but the follow-up health check timed out',
+        );
+      }
+      return this.lastRuntimeHealth;
+    })().finally(() => {
+      this.warmRuntimePromise = null;
+    });
+    return this.warmRuntimePromise;
+  }
+
+  async prepareBrowserVoiceRuntime(): Promise<VoiceRunnerHealth> {
+    return this.warmRuntime();
   }
 
   getRuntimeHealth(): VoiceRunnerHealth {
@@ -452,7 +949,15 @@ export class PhoneVoiceChannel implements Channel {
   }
 
   async refreshRuntimeHealth(): Promise<VoiceRunnerHealth> {
-    this.lastRuntimeHealth = await this.runner.refreshHealth();
+    try {
+      this.lastRuntimeHealth = await this.runner.refreshHealth();
+    } catch (err) {
+      this.lastRuntimeHealth = {
+        ...this.runner.getHealthSnapshot(),
+        lastError: err instanceof Error ? err.message : String(err),
+      };
+      log.warn({ err }, 'Phone voice runtime health refresh failed');
+    }
     return this.lastRuntimeHealth;
   }
 
@@ -498,8 +1003,20 @@ export class PhoneVoiceChannel implements Channel {
       caller,
       metadata,
       events: [],
+      listeners: new Set(),
     };
     this.browserSessions.set(sessionId, session);
+
+    const emit = (event: BrowserVoiceSessionEvent): void => {
+      session.events.push(event);
+      for (const listener of session.listeners) {
+        try {
+          listener(event);
+        } catch (err) {
+          log.warn({ err }, 'Browser voice listener threw');
+        }
+      }
+    };
 
     await this.runner.startSession(
       {
@@ -511,14 +1028,14 @@ export class PhoneVoiceChannel implements Channel {
       },
       {
         onTranscriptFinal: async (event) => {
-          session.events.push({
+          emit({
             type: 'caller_turn',
             text: event.text,
             timestamp: event.timestamp,
           });
         },
         onResponseAudioDelta: (event) => {
-          session.events.push({
+          emit({
             type: 'assistant_audio',
             text: event.text,
             contentType: event.contentType,
@@ -527,14 +1044,14 @@ export class PhoneVoiceChannel implements Channel {
           });
         },
         onFinalizedAgentTurn: async (event) => {
-          session.events.push({
+          emit({
             type: 'assistant_turn',
             text: event.text,
             timestamp: event.timestamp,
           });
         },
         onHandoffEnqueue: async (handoff) => {
-          session.events.push({
+          emit({
             type: 'handoff',
             summary: handoff.summary,
             text: handoff.requestedAction,
@@ -542,7 +1059,7 @@ export class PhoneVoiceChannel implements Channel {
           });
         },
         onActionRequest: async (event) => {
-          session.events.push({
+          emit({
             type: 'action',
             action: event.action,
             text: event.reason,
@@ -552,7 +1069,6 @@ export class PhoneVoiceChannel implements Channel {
       },
     );
 
-    await this.runner.waitForIdle(sessionId);
     return {
       sessionId,
       events: this.drainBrowserSessionEvents(session),
@@ -565,6 +1081,8 @@ export class PhoneVoiceChannel implements Channel {
     contentType: string;
     sampleRateHz?: number;
     channels?: number;
+    endOfTurn?: boolean;
+    awaitIdle?: boolean;
   }): Promise<{ events: BrowserVoiceSessionEvent[] }> {
     const session = this.browserSessions.get(input.sessionId);
     if (!session) {
@@ -576,10 +1094,22 @@ export class PhoneVoiceChannel implements Channel {
       contentType: input.contentType,
       sampleRateHz: input.sampleRateHz,
       channels: input.channels,
-      endOfTurn: true,
+      endOfTurn: input.endOfTurn !== false,
       timestamp: nowIso(),
     });
-    await this.runner.waitForIdle(session.sessionId);
+    if (input.awaitIdle !== false && input.endOfTurn !== false) {
+      await this.runner.waitForIdle(session.sessionId);
+    }
+    return {
+      events: this.drainBrowserSessionEvents(session),
+    };
+  }
+
+  getBrowserVoiceEvents(sessionId: string): { events: BrowserVoiceSessionEvent[] } {
+    const session = this.browserSessions.get(sessionId);
+    if (!session) {
+      throw new Error('Browser voice session not found');
+    }
     return {
       events: this.drainBrowserSessionEvents(session),
     };
@@ -590,6 +1120,24 @@ export class PhoneVoiceChannel implements Channel {
     if (!session) return;
     await this.runner.endSession(sessionId);
     this.browserSessions.delete(sessionId);
+  }
+
+  ownsBrowserVoiceSession(sessionId: string): boolean {
+    return this.browserSessions.has(sessionId);
+  }
+
+  subscribeBrowserVoiceEvents(
+    sessionId: string,
+    listener: BrowserVoiceEventListener,
+  ): () => void {
+    const session = this.browserSessions.get(sessionId);
+    if (!session) {
+      throw new Error('Browser voice session not found');
+    }
+    session.listeners.add(listener);
+    return () => {
+      session.listeners.delete(listener);
+    };
   }
 
   async shutdown(): Promise<void> {
@@ -1200,11 +1748,12 @@ export function getPhoneVoiceChannelInstance(): PhoneVoiceChannel | null {
 export function getPhoneVoiceBrowserHarness(
   settings?: Record<string, unknown>,
 ): PhoneVoiceChannel {
-  const nextSettings = settings || getIntegrationSettings(INTEGRATION_NAME);
-  if (channelInstance) {
-    channelInstance.refreshSettings(nextSettings);
-    return channelInstance;
-  }
+  const nextSettings = {
+    ...(settings || getIntegrationSettings(INTEGRATION_NAME)),
+    // Browser playback currently uses HTMLAudioElement, which is smooth with
+    // one complete WAV but choppy with many tiny WAV chunks.
+    voiceTtsStreaming: false,
+  };
   if (!browserHarnessInstance) {
     browserHarnessInstance = new PhoneVoiceChannel(
       NOOP_CHANNEL_OPTS,
@@ -1214,6 +1763,20 @@ export function getPhoneVoiceBrowserHarness(
     browserHarnessInstance.refreshSettings(nextSettings);
   }
   return browserHarnessInstance;
+}
+
+export function resolvePhoneVoiceBrowserSessionChannel(
+  sessionId: string,
+  settings?: Record<string, unknown>,
+): PhoneVoiceChannel {
+  if (channelInstance?.ownsBrowserVoiceSession(sessionId)) {
+    return channelInstance;
+  }
+  const harness = getPhoneVoiceBrowserHarness(settings);
+  if (harness.ownsBrowserVoiceSession(sessionId)) {
+    return harness;
+  }
+  throw new Error('Browser voice session not found');
 }
 
 const credentialStep: CredentialInputStep = {
@@ -1310,19 +1873,20 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
           title: 'Default Voice',
           description:
             'Voice profile or speaker id used by the sidecar TTS path.',
-          default: 'alloy',
+          default: MANAGED_F5_TTS_DEFAULT_VOICE,
         },
         voiceRunnerProvider: {
           type: 'string',
           title: 'Voice Runner Provider',
           description:
-            'Use the heuristic fast path or a low-latency OpenAI-compatible backend for text generation.',
-          enum: ['heuristic', 'openai'],
+            'Use the managed local OpenArc/Qwen service, a heuristic fast path, or an external OpenAI-compatible backend for text generation.',
+          enum: ['managed_openarc', 'heuristic', 'openai'],
           enumLabels: [
+            'Managed OpenArc Qwen 3 4B service',
             'Heuristic (lowest latency)',
-            'OpenAI-compatible backend',
+            'External OpenAI-compatible backend',
           ],
-          default: 'heuristic',
+          default: 'managed_openarc',
         },
         voiceRunnerMode: {
           type: 'string',
@@ -1337,9 +1901,9 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
           type: 'string',
           title: 'Voice Runner Base URL',
           description:
-            'OpenAI-compatible base URL for the live voice runner backend.',
+            'OpenAI-compatible base URL for the live voice runner backend. Ignored when the managed OpenArc service is selected.',
           format: 'url',
-          default: OPENAI_BASE_URL,
+          default: MANAGED_OPENARC_LLM_BASE_URL,
           dependsOn: { field: 'voiceRunnerProvider', value: 'openai' },
         },
         voiceRunnerApiKey: {
@@ -1353,22 +1917,66 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
         voiceRunnerModel: {
           type: 'string',
           title: 'Voice Runner Model',
-          description: 'Low-latency chat model used only for the live runner.',
-          default: OPENAI_MODEL,
-          dependsOn: { field: 'voiceRunnerProvider', value: 'openai' },
+          description:
+            'Low-latency chat model used only for the live runner. The managed path serves this name from the local OpenArc container.',
+          default: MANAGED_OPENARC_LLM_MODEL,
+        },
+        voiceRunnerSystemPrompt: {
+          type: 'string',
+          title: 'LLM System Prompt',
+          description:
+            'Base system prompt sent to the live voice LLM for browser tests and real phone calls.',
+          format: 'textarea',
+          default:
+            'You are a low-latency phone-call assistant. Keep replies short, spoken, and interruption-friendly. Never claim to browse files or use broad tools. If a request needs deep work, briefly acknowledge it and keep the call moving.',
+        },
+        voiceRunnerInstructions: {
+          type: 'string',
+          title: 'Live Call Instructions',
+          description:
+            'Additional operator instructions injected into each live voice LLM turn for browser tests and real phone calls.',
+          format: 'textarea',
+          default:
+            'Sound natural and concise. Prefer one short sentence unless the caller clearly asks for detail. Ask at most one brief clarification question when needed.',
+        },
+        voiceRunnerFillersEnabled: {
+          type: 'boolean',
+          title: 'Latency Fillers',
+          description:
+            'Speak a canned filler if the LLM is slow. Off by default because repeated fillers make browser testing and short calls feel broken.',
+          default: false,
+        },
+        voiceRunnerFillers: {
+          type: 'string',
+          title: 'Latency Filler Phrases',
+          description:
+            'Optional newline-separated filler phrases used only when Latency Fillers is on. Keep them very short, for example: hmmm',
+          format: 'textarea',
+          default: DEFAULT_VOICE_RUNNER_FILLERS,
+          dependsOn: { field: 'voiceRunnerFillersEnabled', value: true },
         },
         voiceSttProvider: {
           type: 'string',
           title: 'Speech-to-Text Provider',
           description:
-            'Use the managed local Whisper service, an external OpenAI-compatible endpoint, or a mock path for testing.',
-          enum: ['managed_openvino', 'openai', 'mock'],
+            'Use the managed local Whisper service, the experimental streaming STT WebSocket service, an external OpenAI-compatible endpoint, or a mock path for testing.',
+          enum: ['managed_openvino', 'managed_stream', 'openai', 'mock'],
           enumLabels: [
             'Managed OpenVINO Whisper service',
+            'Managed streaming Whisper (WebSocket)',
             'External OpenAI-compatible transcription API',
             'Mock/test transcriber',
           ],
           default: 'managed_openvino',
+        },
+        voiceStreamSttBaseUrl: {
+          type: 'string',
+          title: 'Streaming STT Base URL',
+          description:
+            'HTTP base URL for the streaming STT service. The WebSocket URL is derived from it (e.g. ws://host:8794/v1/stt/stream).',
+          format: 'url',
+          default: MANAGED_STREAM_STT_BASE_URL,
+          dependsOn: { field: 'voiceSttProvider', value: 'managed_stream' },
         },
         voiceSttTargetDevice: {
           type: 'string',
@@ -1417,10 +2025,14 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
           type: 'string',
           title: 'Text-to-Speech Provider',
           description:
-            'Synthesize the assistant audio in the sidecar, or keep a mock path for testing.',
-          enum: ['mock', 'openai'],
-          enumLabels: ['Mock/test synthesizer', 'OpenAI-compatible speech API'],
-          default: 'mock',
+            'Synthesize the assistant audio locally with the managed F5-TTS Arc stack, or keep a mock path for testing.',
+          enum: ['managed_f5_tts', 'mock', 'openai'],
+          enumLabels: [
+            'Managed F5-TTS XPU service',
+            'Mock/test synthesizer',
+            'OpenAI-compatible speech API',
+          ],
+          default: 'managed_f5_tts',
         },
         voiceTtsBaseUrl: {
           type: 'string',
@@ -1440,9 +2052,22 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
         voiceTtsModel: {
           type: 'string',
           title: 'TTS Model',
-          description: 'Speech model used by the live sidecar.',
-          default: 'gpt-4o-mini-tts',
-          dependsOn: { field: 'voiceTtsProvider', value: 'openai' },
+          description:
+            'Managed F5-TTS model identifier or the external speech API model name.',
+          default: MANAGED_F5_TTS_MODEL,
+        },
+        voiceTtsDeviceTarget: {
+          type: 'string',
+          title: 'Managed TTS Device',
+          description:
+            'Preferred runtime target for the managed F5-TTS service. XPU is the intended fast path for the B580.',
+          enum: ['auto', 'xpu', 'cpu'],
+          enumLabels: ['AUTO (XPU then CPU)', 'XPU only', 'CPU only'],
+          default: MANAGED_F5_TTS_DEVICE_TARGET,
+          dependsOn: {
+            field: 'voiceTtsProvider',
+            value: 'managed_f5_tts',
+          },
         },
         voiceTtsResponseFormat: {
           type: 'string',
@@ -1488,22 +2113,30 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
       allowedNumbers: '',
       inputDeviceId: '',
       outputDeviceId: '',
-      defaultVoice: 'alloy',
-      voiceRunnerProvider: 'heuristic',
+      defaultVoice: MANAGED_F5_TTS_DEFAULT_VOICE,
+      voiceRunnerProvider: 'managed_openarc',
       voiceRunnerMode: 'sidecar',
-      voiceRunnerBaseUrl: OPENAI_BASE_URL,
+      voiceRunnerBaseUrl: MANAGED_OPENARC_LLM_BASE_URL,
       voiceRunnerApiKey: '',
-      voiceRunnerModel: OPENAI_MODEL,
-      voiceSttProvider: 'managed_openvino',
+      voiceRunnerModel: MANAGED_OPENARC_LLM_MODEL,
+      voiceRunnerSystemPrompt:
+        'You are a low-latency phone-call assistant. Keep replies short, spoken, and interruption-friendly. Never claim to browse files or use broad tools. If a request needs deep work, briefly acknowledge it and keep the call moving.',
+      voiceRunnerInstructions:
+        'Sound natural and concise. Prefer one short sentence unless the caller clearly asks for detail. Ask at most one brief clarification question when needed.',
+      voiceRunnerFillersEnabled: false,
+      voiceRunnerFillers: DEFAULT_VOICE_RUNNER_FILLERS,
+      voiceSttProvider: 'managed_stream',
       voiceSttTargetDevice: 'AUTO:GPU,CPU',
       voiceSttQuantization: 'int8',
       voiceSttBaseUrl: MANAGED_OPENVINO_STT_BASE_URL,
       voiceSttApiKey: '',
       voiceSttModel: MANAGED_OPENVINO_STT_MODEL,
-      voiceTtsProvider: 'mock',
-      voiceTtsBaseUrl: OPENAI_BASE_URL,
+      voiceStreamSttBaseUrl: MANAGED_STREAM_STT_BASE_URL,
+      voiceTtsProvider: 'managed_f5_tts',
+      voiceTtsBaseUrl: MANAGED_F5_TTS_BASE_URL,
       voiceTtsApiKey: '',
-      voiceTtsModel: 'gpt-4o-mini-tts',
+      voiceTtsModel: MANAGED_F5_TTS_MODEL,
+      voiceTtsDeviceTarget: MANAGED_F5_TTS_DEVICE_TARGET,
       voiceTtsResponseFormat: 'wav',
       voiceAudioInputContentType: 'audio/wav',
       voiceAudioSampleRateHz: 16000,
@@ -1512,27 +2145,11 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
   },
   service: {
     composeFile: 'scripts/phone-voice-stt/docker-compose.yml',
+    projectName: MANAGED_SPEECH_PROJECT_NAME,
     envFile: 'scripts/phone-voice-stt/.env',
     serviceName: 'phone-voice-stt',
-    buildEnv: (settings) => {
-      if (!usesManagedOpenVinoStt(settings)) {
-        return {
-          STT_PORT: '',
-          STT_MODEL_ID: '',
-          STT_TARGET_DEVICE: '',
-          STT_QUANTIZATION: '',
-        };
-      }
-
-      return {
-        STT_PORT: String(MANAGED_OPENVINO_STT_PORT),
-        STT_MODEL_ID:
-          String(settings.voiceSttModel || MANAGED_OPENVINO_STT_MODEL).trim() ||
-          MANAGED_OPENVINO_STT_MODEL,
-        STT_TARGET_DEVICE: getManagedSttDevice(settings),
-        STT_QUANTIZATION: getManagedSttQuantization(settings),
-      };
-    },
+    autoStart: false,
+    buildEnv: buildManagedSpeechEnv,
     healthCheck: {
       url: MANAGED_OPENVINO_STT_HEALTH_URL,
       intervalMs: 15_000,
@@ -1543,8 +2160,12 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
     category: 'messaging',
     getStatus: async (ctx) => {
       const apiKey = getApiKey(ctx.settings);
-      const managedStt = usesManagedOpenVinoStt(ctx.settings);
-      const serviceStatus = managedStt
+      const managedLlm = usesManagedOpenArcLlm(ctx.settings);
+      const managedStt =
+        usesManagedOpenVinoStt(ctx.settings) ||
+        usesManagedStreamStt(ctx.settings);
+      const managedTts = usesManagedF5Tts(ctx.settings);
+      const serviceStatus = usesManagedSpeechServices(ctx.settings)
         ? getServiceStatus(INTEGRATION_NAME)
         : null;
       if (!apiKey) {
@@ -1561,32 +2182,49 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
         : undefined;
       const pendingHandoffs = channelInstance?.getPendingHandoffCount() || 0;
       const lastLatency = channelInstance?.getLastLatencySampleAt();
+      const ttsReady = managedTts
+        ? await isManagedF5TtsReady()
+        : true;
+      const llmReady = managedLlm
+        ? await isManagedOpenArcLlmReady(ctx.settings)
+        : true;
       if (channelInstance?.isConnected()) {
         const runnerReady = Boolean(health?.ready);
         const sttReady = !managedStt || Boolean(serviceStatus?.running);
         return {
-          state: runnerReady && sttReady ? 'online' : 'degraded',
+          state:
+            runnerReady && sttReady && ttsReady && llmReady
+              ? 'online'
+              : 'degraded',
           message:
-            runnerReady && sttReady
-              ? `Connected to phone voice gateway; runner ${health?.mode || 'unknown'}:${health?.backend || 'unknown'}; managed STT ${managedStt ? 'hot' : 'external'}; pending handoffs ${pendingHandoffs}${lastLatency ? `; latency sample ${lastLatency}` : ''}`
+            runnerReady && sttReady && ttsReady && llmReady
+              ? `Connected to phone voice gateway; runner ${health?.mode || 'unknown'}:${health?.backend || 'unknown'}; managed LLM ${managedLlm ? 'hot' : 'external'}; managed STT ${managedStt ? 'hot' : 'external'}; managed TTS ${managedTts ? 'hot' : 'external'}; pending handoffs ${pendingHandoffs}${lastLatency ? `; latency sample ${lastLatency}` : ''}`
+              : managedLlm && !llmReady
+                ? 'Connected to phone voice gateway; managed OpenArc Qwen LLM container is still starting'
               : managedStt && !sttReady
                 ? 'Connected to phone voice gateway; managed Whisper STT container is still starting'
+                : managedTts && !ttsReady
+                ? 'Connected to phone voice gateway; managed F5-TTS container is still starting'
                 : 'Connected to phone voice gateway; live runner still warming',
           serviceRunning: serviceStatus?.running,
         };
       }
       return {
         state: 'offline',
-        message: managedStt
-          ? `Configured but not connected to ${getGatewayUrl(ctx.settings)}; managed STT is ${serviceStatus?.running ? 'running' : 'offline'}`
+        message: usesManagedSpeechServices(ctx.settings)
+          ? `Configured but not connected to ${getGatewayUrl(ctx.settings)}; managed speech services are ${serviceStatus?.running ? 'running' : 'offline'}`
           : `Configured but not connected to ${getGatewayUrl(ctx.settings)}`,
         serviceRunning: serviceStatus?.running,
       };
     },
     getNotifications: async (ctx) => {
       const notifications: IntegrationNotification[] = [];
-      const managedStt = usesManagedOpenVinoStt(ctx.settings);
-      const serviceStatus = managedStt
+      const managedLlm = usesManagedOpenArcLlm(ctx.settings);
+      const managedStt =
+        usesManagedOpenVinoStt(ctx.settings) ||
+        usesManagedStreamStt(ctx.settings);
+      const managedTts = usesManagedF5Tts(ctx.settings);
+      const serviceStatus = usesManagedSpeechServices(ctx.settings)
         ? getServiceStatus(INTEGRATION_NAME)
         : null;
       if (!getApiKey(ctx.settings)) {
@@ -1608,6 +2246,29 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
           title: 'Managed Whisper STT Offline',
           message:
             'The managed local Whisper speech-to-text container is not running yet. Reconnect the integration or review the service logs.',
+        });
+      }
+      if (managedLlm && !(await isManagedOpenArcLlmReady(ctx.settings))) {
+        notifications.push({
+          id: 'phone-voice:managed-llm-offline',
+          integration: INTEGRATION_NAME,
+          severity: 'error',
+          title: 'Managed OpenArc LLM Offline',
+          message:
+            'The managed local OpenArc Qwen container is not running or has not loaded the tiny voice model yet.',
+        });
+      }
+      if (
+        managedTts &&
+        !(await isManagedF5TtsReady())
+      ) {
+        notifications.push({
+          id: 'phone-voice:managed-tts-offline',
+          integration: INTEGRATION_NAME,
+          severity: 'error',
+          title: 'Managed F5-TTS Offline',
+          message:
+            'The managed F5-TTS container is not running yet. Reconnect the integration or review the service logs.',
         });
       }
       if (!channelInstance?.isConnected()) {
@@ -1823,15 +2484,21 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
     },
     onSettingsChange: async (prev, next) => {
       const enabled = isIntegrationEnabled(INTEGRATION_NAME);
-      if (usesManagedOpenVinoStt(prev) && !usesManagedOpenVinoStt(next)) {
+      if (
+        usesManagedSpeechServices(prev) &&
+        !usesManagedSpeechServices(next)
+      ) {
         stopService(INTEGRATION_NAME);
       } else if (
         enabled &&
-        usesManagedOpenVinoStt(next) &&
-        (!usesManagedOpenVinoStt(prev) || shouldRestartManagedStt(prev, next))
+        usesManagedSpeechServices(next) &&
+        (!usesManagedSpeechServices(prev) ||
+          shouldRestartManagedStt(prev, next) ||
+          shouldRestartManagedTts(prev, next) ||
+          shouldRestartManagedLlm(prev, next))
       ) {
-        void ensureManagedSttService(next).catch((err) =>
-          log.warn({ err }, 'Phone voice managed STT restart failed'),
+        void ensureManagedSpeechServices(next).catch((err) =>
+          log.warn({ err }, 'Phone voice managed speech restart failed'),
         );
       }
       channelInstance?.refreshSettings(next);

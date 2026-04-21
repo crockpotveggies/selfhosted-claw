@@ -13,11 +13,99 @@ services:
       STT_QUANTIZATION: "${STT_QUANTIZATION:-int8}"
       STT_MODEL_DIR: /models/exported
       HF_HOME: /models/hf-cache
+      LD_LIBRARY_PATH: "/ovms/lib:/usr/lib/wsl/lib:/usr/lib/wsl/drivers:${LD_LIBRARY_PATH:-}"
+    devices:
+      - "/dev/dxg:/dev/dxg"
     volumes:
       - phone-voice-stt-models:/models
+      - /usr/lib/wsl:/usr/lib/wsl:ro
+  phone-voice-stream-stt:
+    build:
+      context: ../..
+      dockerfile: scripts/phone-voice-stt/Dockerfile.stream-stt
+    restart: unless-stopped
+    ports:
+      - "${STREAM_STT_PORT:-8794}:8794"
+    environment:
+      STREAM_STT_PORT: "8794"
+      STT_MODEL_ID: "${STT_MODEL_ID}"
+      STT_TARGET_DEVICE: "${STT_TARGET_DEVICE:-AUTO:GPU,CPU}"
+      STT_QUANTIZATION: "${STT_QUANTIZATION:-int8}"
+      STT_MODEL_DIR: /models/exported
+      HF_HOME: /models/hf-cache
+      STREAM_PARTIAL_STEP_MS: "${STREAM_PARTIAL_STEP_MS:-400}"
+      STREAM_WINDOW_MS: "${STREAM_WINDOW_MS:-5000}"
+      STREAM_ENDPOINT_SILENCE_MS: "${STREAM_ENDPOINT_SILENCE_MS:-500}"
+      STREAM_SILENCE_RMS_THRESHOLD: "${STREAM_SILENCE_RMS_THRESHOLD:-250}"
+      LD_LIBRARY_PATH: "/ovms/lib:/usr/lib/wsl/lib:/usr/lib/wsl/drivers:${LD_LIBRARY_PATH:-}"
+    devices:
+      - "/dev/dxg:/dev/dxg"
+    volumes:
+      - phone-voice-stt-models:/models
+      - /usr/lib/wsl:/usr/lib/wsl:ro
+  phone-voice-tts:
+    build:
+      context: ../..
+      dockerfile: scripts/phone-voice-stt/Dockerfile.tts
+    restart: unless-stopped
+    user: "0:0"
+    ports:
+      - "${TTS_PORT:-8792}:8792"
+    environment:
+      TTS_PORT: "${TTS_PORT:-8792}"
+      TTS_MODEL_ID: "${TTS_MODEL_ID:-F5TTS_v1_Base}"
+      TTS_MODEL_NAME: "${TTS_MODEL_NAME:-phone-voice-f5-tts}"
+      TTS_DEFAULT_VOICE: "${TTS_DEFAULT_VOICE:-female_default}"
+      TTS_DEVICE_TARGET: "${TTS_DEVICE_TARGET:-xpu}"
+      TTS_CHUNK_SIZE: "${TTS_CHUNK_SIZE:-1024}"
+      TTS_NFE_STEP: "${TTS_NFE_STEP:-8}"
+      TTS_SPEED: "${TTS_SPEED:-1.0}"
+      TTS_CFG_STRENGTH: "${TTS_CFG_STRENGTH:-2.0}"
+      HF_HOME: /models/hf-cache
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN:-}"
+      LD_LIBRARY_PATH: "/usr/lib/wsl/lib:/usr/lib/wsl/drivers:${LD_LIBRARY_PATH:-}"
+      SYCL_CACHE_PERSISTENT: "1"
+    devices:
+      - "/dev/dxg:/dev/dxg"
+    volumes:
+      - phone-voice-tts-models:/models
+      - /usr/lib/wsl:/usr/lib/wsl:ro
+  phone-voice-llm:
+    build:
+      context: ../..
+      dockerfile: scripts/phone-voice-stt/Dockerfile.llm
+    restart: unless-stopped
+    user: "0:0"
+    ports:
+      - "${LLM_PORT:-8793}:8793"
+    environment:
+      LLM_PORT: "${LLM_PORT:-8793}"
+      LLM_MODEL_NAME: "${LLM_MODEL_NAME:-phone-voice-qwen3-4b}"
+      LLM_MODEL_REPO: "${LLM_MODEL_REPO:-OpenVINO/Qwen3-4B-int4-ov}"
+      LLM_WEIGHT_FORMAT: "${LLM_WEIGHT_FORMAT:-int4}"
+      LLM_GROUP_SIZE: "${LLM_GROUP_SIZE:-128}"
+      LLM_DEVICE_TARGET: "${LLM_DEVICE_TARGET:-GPU.0}"
+      OPENARC_API_KEY_REQUIRED: "${OPENARC_API_KEY_REQUIRED:-true}"
+      OPENARC_API_KEY: "${OPENARC_API_KEY:-phone-voice-local-openarc}"
+      HF_HOME: /models/hf-cache
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN:-}"
+      LD_LIBRARY_PATH: "/usr/lib/wsl/lib:/usr/lib/wsl/drivers:${LD_LIBRARY_PATH:-}"
+      NEOReadDebugKeys: "1"
+      OverrideGpuAddressSpace: "48"
+      EnableImplicitScaling: "1"
+      SYCL_CACHE_PERSISTENT: "1"
+    devices:
+      - "/dev/dxg:/dev/dxg"
+    volumes:
+      - phone-voice-llm-models:/models
+      - /usr/lib/wsl:/usr/lib/wsl:ro
 
 volumes:
   phone-voice-stt-models:
+  phone-voice-tts-models:
+  phone-voice-llm-models:
 
 networks:
   default:

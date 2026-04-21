@@ -18,7 +18,7 @@ COPY scripts/phone-voice-stt/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 ENV STT_PORT=8791 \
-    STT_MODEL_ID=openai/whisper-base.en \
+    STT_MODEL_ID=openai/whisper-small.en \
     STT_TARGET_DEVICE=AUTO:GPU,CPU \
     STT_QUANTIZATION=int8 \
     STT_MODEL_DIR=/models/exported \

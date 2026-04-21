@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   CButton,
   CCallout,
@@ -32,8 +32,11 @@ interface BrowserVoiceSessionStartResponse {
   events: BrowserVoiceSessionEvent[];
 }
 
-interface BrowserVoiceSessionTurnResponse {
-  events: BrowserVoiceSessionEvent[];
+interface BrowserVoicePrepareResponse {
+  ok: true;
+  health?: {
+    ready?: boolean;
+  };
 }
 
 interface TranscriptEntry {
@@ -42,33 +45,14 @@ interface TranscriptEntry {
   timestamp: string;
 }
 
-function pickRecorderMimeType(): string {
-  if (typeof MediaRecorder === 'undefined') return '';
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/mp4',
-  ];
-  return (
-    candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ||
-    ''
-  );
-}
+const TARGET_SAMPLE_RATE = 16000;
+const VAD_RMS_THRESHOLD = 0.018;
+const END_OF_TURN_SILENCE_MS = 700;
 
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error || new Error('read_failed'));
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      const comma = result.indexOf(',');
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.readAsDataURL(blob);
-  });
-}
-
-async function playAudioEvents(events: BrowserVoiceSessionEvent[]): Promise<void> {
+async function playAudioEvents(
+  events: BrowserVoiceSessionEvent[],
+): Promise<boolean> {
+  let playedAudio = false;
   for (const event of events) {
     if (
       event.type !== 'assistant_audio' ||
@@ -77,13 +61,33 @@ async function playAudioEvents(events: BrowserVoiceSessionEvent[]): Promise<void
     ) {
       continue;
     }
-    const audio = new Audio(`data:${event.contentType};base64,${event.dataBase64}`);
+    const audio = new Audio(
+      `data:${event.contentType};base64,${event.dataBase64}`,
+    );
+    playedAudio = true;
     await new Promise<void>((resolve) => {
       audio.onended = () => resolve();
       audio.onerror = () => resolve();
       void audio.play().catch(() => resolve());
     });
   }
+  return playedAudio;
+}
+
+function speakText(text: string): Promise<void> {
+  if (
+    typeof window === 'undefined' ||
+    !('speechSynthesis' in window) ||
+    typeof SpeechSynthesisUtterance === 'undefined'
+  ) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = () => resolve();
+    utterance.onerror = () => resolve();
+    window.speechSynthesis.speak(utterance);
+  });
 }
 
 function appendTranscriptEvents(
@@ -121,30 +125,315 @@ function appendTranscriptEvents(
   return next;
 }
 
+function buildStreamUrl(sessionId: string): string {
+  const loc = window.location;
+  const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+  const token = window.localStorage.getItem('admin-ui-token') || '';
+  const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${protocol}//${loc.host}/api/admin/integrations/phone-voice/browser/${encodeURIComponent(sessionId)}/stream${tokenParam}`;
+}
+
 export function PhoneVoiceBrowserTester() {
   const [displayName, setDisplayName] = useState('Browser Tester');
   const [sessionId, setSessionId] = useState('');
   const [starting, setStarting] = useState(false);
   const [ending, setEnding] = useState(false);
-  const [recording, setRecording] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [connectingAudio, setConnectingAudio] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const [prepared, setPrepared] = useState(false);
   const [error, setError] = useState('');
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const recorderRef = useRef<MediaRecorder | null>(null);
+
+  const sessionIdRef = useRef('');
   const streamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const recorderMimeType = useMemo(() => pickRecorderMimeType(), []);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const workletRef = useRef<AudioWorkletNode | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const analyserBufferRef = useRef<Float32Array | null>(null);
+  const analyserFrameRef = useRef<number | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsReadyRef = useRef(false);
+  const hasSpeechInTurnRef = useRef(false);
+  const lastSpeechAtRef = useRef<number | null>(null);
+  const endOfTurnQueuedRef = useRef(false);
+  const audioPlaybackRef = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  const handleEvents = (events: BrowserVoiceSessionEvent[]) => {
+    if (!events.length) return;
+    setTranscript((current) => appendTranscriptEvents(current, events));
+    // Only F5-TTS audio from the server is played. The older
+    // `window.speechSynthesis` fallback was racing with F5 audio on
+    // assistant_turn text events, producing two overlapping voices.
+    audioPlaybackRef.current = audioPlaybackRef.current
+      .then(async () => {
+        await playAudioEvents(events);
+      })
+      .catch(() => undefined);
+  };
+
+  const sendWsJson = (payload: unknown): void => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify(payload));
+    } catch {
+      // ignore
+    }
+  };
+
+  const queueEndOfTurn = (): void => {
+    if (!wsReadyRef.current) return;
+    hasSpeechInTurnRef.current = false;
+    lastSpeechAtRef.current = null;
+    endOfTurnQueuedRef.current = true;
+    sendWsJson({ type: 'end_of_turn' });
+    endOfTurnQueuedRef.current = false;
+  };
+
+  const openStreamSocket = (targetSessionId: string): Promise<WebSocket> =>
+    new Promise((resolve, reject) => {
+      const ws = new WebSocket(buildStreamUrl(targetSessionId));
+      ws.binaryType = 'arraybuffer';
+      let settled = false;
+      ws.onopen = () => {
+        if (settled) return;
+        settled = true;
+        ws.send(
+          JSON.stringify({ type: 'start', sampleRateHz: TARGET_SAMPLE_RATE }),
+        );
+        wsReadyRef.current = true;
+        resolve(ws);
+      };
+      ws.onerror = () => {
+        if (settled) return;
+        settled = true;
+        reject(new Error('voice_ws_failed'));
+      };
+      ws.onmessage = (event) => {
+        if (typeof event.data !== 'string') return;
+        try {
+          const parsed = JSON.parse(event.data) as
+            | BrowserVoiceSessionEvent
+            | { type: 'error'; message?: string };
+          if ((parsed as { type: string }).type === 'error') {
+            setError(
+              (parsed as { message?: string }).message || 'Voice stream error',
+            );
+            return;
+          }
+          handleEvents([parsed as BrowserVoiceSessionEvent]);
+        } catch {
+          // ignore malformed server frame
+        }
+      };
+      ws.onclose = () => {
+        wsReadyRef.current = false;
+      };
+    });
+
+  const stopStreamingAudio = async (): Promise<void> => {
+    if (analyserFrameRef.current !== null) {
+      cancelAnimationFrame(analyserFrameRef.current);
+      analyserFrameRef.current = null;
+    }
+
+    const worklet = workletRef.current;
+    workletRef.current = null;
+    if (worklet) {
+      worklet.port.onmessage = null;
+      try {
+        worklet.disconnect();
+      } catch {
+        // ignore
+      }
+    }
+
+    sourceRef.current?.disconnect();
+    analyserRef.current?.disconnect();
+    sourceRef.current = null;
+    analyserRef.current = null;
+    analyserBufferRef.current = null;
+
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+
+    if (audioContextRef.current) {
+      await audioContextRef.current.close().catch(() => undefined);
+      audioContextRef.current = null;
+    }
+
+    hasSpeechInTurnRef.current = false;
+    lastSpeechAtRef.current = null;
+    endOfTurnQueuedRef.current = false;
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    setStreaming(false);
+  };
+
+  const closeSocket = (reason: 'end' | 'abort'): void => {
+    const ws = wsRef.current;
+    wsRef.current = null;
+    wsReadyRef.current = false;
+    if (!ws) return;
+    if (reason === 'end' && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ type: 'end' }));
+      } catch {
+        // ignore
+      }
+    }
+    try {
+      ws.close();
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     return () => {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+      closeSocket('abort');
+      void stopStreamingAudio();
     };
   }, []);
 
-  const handleEvents = async (events: BrowserVoiceSessionEvent[]) => {
-    setTranscript((current) => appendTranscriptEvents(current, events));
-    await playAudioEvents(events);
+  useEffect(() => {
+    let cancelled = false;
+    const prepare = async () => {
+      setPreparing(true);
+      try {
+        const response = await apiFetch<BrowserVoicePrepareResponse>(
+          '/api/admin/integrations/phone-voice/browser-session/prepare',
+          { method: 'POST' },
+        );
+        if (cancelled) return;
+        setPrepared(response.health?.ready !== false);
+      } catch (err) {
+        if (cancelled) return;
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Browser voice runtime preparation failed',
+        );
+      } finally {
+        if (!cancelled) {
+          setPreparing(false);
+        }
+      }
+    };
+    void prepare();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const startStreamingAudio = async (
+    targetSessionId: string,
+  ): Promise<void> => {
+    if (streaming || connectingAudio) return;
+    setConnectingAudio(true);
+    setError('');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      const audioContext = new AudioContext();
+      await audioContext.audioWorklet.addModule('/audio/pcm-worklet.js');
+
+      const source = audioContext.createMediaStreamSource(stream);
+      const worklet = new AudioWorkletNode(audioContext, 'pcm-worklet', {
+        numberOfInputs: 1,
+        numberOfOutputs: 0,
+        channelCount: 1,
+        channelCountMode: 'explicit',
+        channelInterpretation: 'speakers',
+      });
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      const analyserBuffer = new Float32Array(analyser.fftSize);
+      source.connect(analyser);
+      source.connect(worklet);
+
+      const ws = await openStreamSocket(targetSessionId);
+      wsRef.current = ws;
+
+      worklet.port.onmessage = (event) => {
+        const buffer = event.data as ArrayBuffer;
+        if (!buffer || !wsReadyRef.current) return;
+        if (ws.readyState !== WebSocket.OPEN) return;
+        try {
+          ws.send(buffer);
+        } catch {
+          // ignore
+        }
+      };
+
+      const tick = () => {
+        const nextAnalyser = analyserRef.current;
+        const nextBuffer = analyserBufferRef.current;
+        if (!nextAnalyser || !nextBuffer) return;
+        nextAnalyser.getFloatTimeDomainData(
+          nextBuffer as Float32Array<ArrayBuffer>,
+        );
+        let sumSquares = 0;
+        for (const sample of nextBuffer) {
+          sumSquares += sample * sample;
+        }
+        const rms = Math.sqrt(sumSquares / Math.max(nextBuffer.length, 1));
+        const now = Date.now();
+
+        if (rms >= VAD_RMS_THRESHOLD) {
+          hasSpeechInTurnRef.current = true;
+          lastSpeechAtRef.current = now;
+          if (
+            typeof window !== 'undefined' &&
+            'speechSynthesis' in window &&
+            window.speechSynthesis.speaking
+          ) {
+            window.speechSynthesis.cancel();
+          }
+        } else if (
+          hasSpeechInTurnRef.current &&
+          lastSpeechAtRef.current &&
+          now - lastSpeechAtRef.current >= END_OF_TURN_SILENCE_MS &&
+          !endOfTurnQueuedRef.current
+        ) {
+          queueEndOfTurn();
+        }
+
+        analyserFrameRef.current = requestAnimationFrame(tick);
+      };
+
+      streamRef.current = stream;
+      audioContextRef.current = audioContext;
+      sourceRef.current = source;
+      analyserRef.current = analyser;
+      analyserBufferRef.current = analyserBuffer;
+      workletRef.current = worklet;
+
+      analyserFrameRef.current = requestAnimationFrame(tick);
+
+      setStreaming(true);
+    } catch (err) {
+      await stopStreamingAudio();
+      closeSocket('abort');
+      setError(err instanceof Error ? err.message : 'Microphone access failed');
+    } finally {
+      setConnectingAudio(false);
+    }
   };
 
   const startSession = async () => {
@@ -159,8 +448,15 @@ export function PhoneVoiceBrowserTester() {
           body: JSON.stringify({ displayName }),
         },
       );
+      sessionIdRef.current = started.sessionId;
       setSessionId(started.sessionId);
-      await handleEvents(started.events);
+      setPrepared(true);
+      // Any events produced synchronously during startBrowserVoiceSession
+      // (e.g. the initial greeting) were already drained into the HTTP
+      // response. Render them here; the WS subscription only receives
+      // events produced after the socket opens.
+      handleEvents(started.events);
+      await startStreamingAudio(started.sessionId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Start failed');
     } finally {
@@ -169,19 +465,21 @@ export function PhoneVoiceBrowserTester() {
   };
 
   const endSession = async () => {
-    if (!sessionId) return;
+    if (!sessionIdRef.current) return;
     setEnding(true);
     setError('');
     try {
+      queueEndOfTurn();
+      closeSocket('end');
       await apiFetch<{ ok: true }>(
-        `/api/admin/integrations/phone-voice/browser-session/${encodeURIComponent(sessionId)}/end`,
+        `/api/admin/integrations/phone-voice/browser-session/${encodeURIComponent(
+          sessionIdRef.current,
+        )}/end`,
         { method: 'POST' },
       );
+      sessionIdRef.current = '';
       setSessionId('');
-      setRecording(false);
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-      recorderRef.current = null;
+      await stopStreamingAudio();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'End failed');
     } finally {
@@ -189,74 +487,13 @@ export function PhoneVoiceBrowserTester() {
     }
   };
 
-  const startRecording = async () => {
-    if (!sessionId || recording || sending) return;
-    setError('');
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      chunksRef.current = [];
-      const recorder = recorderMimeType
-        ? new MediaRecorder(stream, { mimeType: recorderMimeType })
-        : new MediaRecorder(stream);
-      recorderRef.current = recorder;
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunksRef.current.push(event.data);
-        }
-      };
-      recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, {
-          type: recorder.mimeType || 'audio/webm',
-        });
-        stream.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-        void sendRecording(blob);
-      };
-      recorder.start();
-      setRecording(true);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Microphone access failed',
-      );
-    }
-  };
-
-  const stopRecording = () => {
-    const recorder = recorderRef.current;
-    if (!recorder || recorder.state === 'inactive') return;
-    setRecording(false);
-    recorder.stop();
-  };
-
-  const sendRecording = async (blob: Blob) => {
-    if (!sessionId || blob.size === 0) return;
-    setSending(true);
-    setError('');
-    try {
-      const dataBase64 = await blobToBase64(blob);
-      const response = await apiFetch<BrowserVoiceSessionTurnResponse>(
-        `/api/admin/integrations/phone-voice/browser-session/${encodeURIComponent(sessionId)}/audio`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            dataBase64,
-            contentType: blob.type || 'audio/webm',
-          }),
-        },
-      );
-      await handleEvents(response.events);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Voice turn failed');
-    } finally {
-      setSending(false);
-    }
-  };
-
   const browserSupported =
     typeof navigator !== 'undefined' &&
     Boolean(navigator.mediaDevices?.getUserMedia) &&
-    typeof MediaRecorder !== 'undefined';
+    typeof window !== 'undefined' &&
+    typeof window.AudioContext !== 'undefined' &&
+    typeof AudioWorkletNode !== 'undefined' &&
+    typeof WebSocket !== 'undefined';
 
   return (
     <CCard className="mb-3">
@@ -265,14 +502,15 @@ export function PhoneVoiceBrowserTester() {
       </CCardHeader>
       <CCardBody>
         <p className="text-body-secondary small mb-3">
-          Start a local push-to-talk voice session against the live runner. This
-          stays in the browser and sidecar, which makes it great for testing and
-          terrible for pretending you made a phone call.
+          Start a live browser call against the voice runner. Audio streams as
+          raw PCM16 over a WebSocket to the streaming STT server; end-of-turn
+          is detected from silence, and the same socket receives transcript
+          and TTS events in real time.
         </p>
         {!browserSupported && (
           <CCallout color="warning" className="py-2 px-3 small">
-            This browser does not expose the microphone recording APIs needed for
-            local voice testing.
+            This browser does not expose the microphone APIs (AudioWorklet,
+            WebSocket, MediaDevices) needed for live duplex voice testing.
           </CCallout>
         )}
         <div className="mb-3">
@@ -291,38 +529,44 @@ export function PhoneVoiceBrowserTester() {
             <CButton
               color="primary"
               onClick={() => void startSession()}
-              disabled={starting || !browserSupported}
+              disabled={starting || preparing || !prepared || !browserSupported}
             >
-              {starting ? 'Starting...' : 'Start Browser Session'}
+              {starting ? 'Starting...' : 'Start Browser Call'}
             </CButton>
           ) : (
-            <>
-              <CButton
-                color={recording ? 'danger' : 'success'}
-                onClick={() =>
-                  recording ? stopRecording() : void startRecording()
-                }
-                disabled={sending || ending}
-              >
-                {recording ? 'Stop Recording' : 'Record Voice Turn'}
-              </CButton>
-              <CButton
-                color="secondary"
-                variant="outline"
-                onClick={() => void endSession()}
-                disabled={ending || sending}
-              >
-                {ending ? 'Ending...' : 'End Session'}
-              </CButton>
-            </>
+            <CButton
+              color="secondary"
+              variant="outline"
+              onClick={() => void endSession()}
+              disabled={ending}
+            >
+              {ending ? 'Ending...' : 'End Call'}
+            </CButton>
           )}
-          {sending && (
+          {(connectingAudio || starting || preparing) && (
             <span className="small text-body-secondary d-inline-flex align-items-center gap-2">
               <CSpinner size="sm" />
-              Sending audio to the runner...
+              {preparing
+                ? 'Prewarming the browser voice runtime...'
+                : 'Bringing the live voice path online...'}
             </span>
           )}
         </div>
+        {!sessionId && prepared && !preparing && (
+          <CCallout color="success" className="py-2 px-3 small">
+            Browser voice runtime is hot. Starting the call should be near-instant.
+          </CCallout>
+        )}
+        {sessionId && (
+          <CCallout
+            color={streaming ? 'success' : 'warning'}
+            className="py-2 px-3 small"
+          >
+            {streaming
+              ? 'Live duplex call active. Speak naturally; PCM16 is streaming over the socket.'
+              : 'Session is up, but the microphone stream is not active yet.'}
+          </CCallout>
+        )}
         {error && (
           <CCallout color="danger" className="py-2 px-3 small">
             {error}

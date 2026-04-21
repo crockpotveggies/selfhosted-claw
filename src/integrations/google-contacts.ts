@@ -612,16 +612,37 @@ const googleContactsIntegration: IntegrationDefinition = {
     getStatus: async () => {
       const host = `${ADMIN_BIND_HOST}:${ADMIN_PORT}`;
       const own = getOwnOAuthState();
-      const hasOwnToken = Boolean(own.accessToken || own.refreshToken);
+      let completed = false;
+      let stepStatus: 'pending' | 'completed' | 'error' = 'pending';
+      let error: string | undefined;
+
+      if (own.accessToken && !isTokenExpired(own.expiryDate)) {
+        completed = true;
+        stepStatus = 'completed';
+      } else if (own.refreshToken) {
+        const refreshed = await refreshAccessToken(own).catch(() => null);
+        if (refreshed?.accessToken) {
+          completed = true;
+          stepStatus = 'completed';
+        } else {
+          stepStatus = 'error';
+          error = 'OAuth token expired or refresh failed. Re-authenticate.';
+        }
+      } else if (own.accessToken) {
+        stepStatus = 'error';
+        error = 'OAuth token expired. Re-authenticate.';
+      }
+
       return {
-        completed: hasOwnToken,
-        currentStep: hasOwnToken ? 1 : 0,
+        completed,
+        currentStep: 0,
         steps: [
           {
             type: 'oauth2',
             label: 'Connect Google Account',
             description: `Register callback URL: http://${host}${CALLBACK_PATH}`,
-            status: hasOwnToken ? 'completed' : 'pending',
+            status: stepStatus,
+            ...(error ? { error } : {}),
           },
         ],
       };

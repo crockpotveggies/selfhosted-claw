@@ -25,7 +25,7 @@ services:
       ADMIN_BIND_HOST: 127.0.0.1
       SELF_HOSTED_CLAW_ENV_FILE: /app/.env
       SELF_HOSTED_CLAW_MOUNT_ROOT: /workspace-host
-      SELF_HOSTED_CLAW_COMPOSE_BIN: docker-compose
+      SELF_HOSTED_CLAW_COMPOSE_BIN: docker
       SELF_HOSTED_CLAW_ADMIN_CONFIG_DIR: /app/admin-config
       SELF_HOSTED_CLAW_ADMIN_DATA_DIR: /app/admin-data
       # Tells host-side code it is in host-network mode so "127.0.0.1" is

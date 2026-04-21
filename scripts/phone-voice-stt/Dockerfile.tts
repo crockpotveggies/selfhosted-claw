@@ -1,0 +1,35 @@
+FROM intel/intel-extension-for-pytorch:2.8.10-xpu-pip-base
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/models/hf-cache \
+    TTS_PORT=8792 \
+    TTS_MODEL_ID=F5TTS_v1_Base \
+    TTS_MODEL_NAME=phone-voice-f5-tts \
+    TTS_DEFAULT_VOICE=female_default \
+    TTS_DEVICE_TARGET=xpu \
+    TTS_CHUNK_SIZE=2048 \
+    TTS_NFE_STEP=8 \
+    TTS_SPEED=1.0 \
+    TTS_CFG_STRENGTH=2.0 \
+    PYTORCH_ENABLE_XPU_FALLBACK=1
+
+USER 0
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    git \
+    libsndfile1 \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir \
+    aiohttp \
+    f5-tts
+
+COPY --chmod=755 scripts/phone-voice-stt/entrypoint_tts.sh /app/entrypoint.sh
+COPY --chmod=644 scripts/phone-voice-stt/server_tts.py /app/server_tts.py
+
+ENTRYPOINT ["/app/entrypoint.sh"]

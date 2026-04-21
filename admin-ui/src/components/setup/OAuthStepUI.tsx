@@ -6,6 +6,7 @@ import { apiFetch } from '../../admin/api';
 interface OAuthStepUIProps {
   integrationName: string;
   completed: boolean;
+  actionLabel?: string;
   onSetupComplete?: () => void;
 }
 
@@ -34,6 +35,7 @@ function CopyField({ label, value }: { label: string; value: string }) {
 export function OAuthStepUI({
   integrationName,
   completed,
+  actionLabel,
   onSetupComplete,
 }: OAuthStepUIProps) {
   const [loading, setLoading] = useState(false);
@@ -198,7 +200,10 @@ export function OAuthStepUI({
           {loading ? (
             <><CSpinner size="sm" className="me-1" /> Waiting for OAuth...</>
           ) : (
-            <><BoxArrowUpRight size={14} className="me-1" /> Connect Account</>
+            <>
+              <BoxArrowUpRight size={14} className="me-1" />
+              {actionLabel || 'Connect Account'}
+            </>
           )}
         </CButton>
       )}

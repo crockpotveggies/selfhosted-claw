@@ -29,6 +29,23 @@ interface PendingRequest {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+function getRequestTimeoutMs(
+  action: VoiceRunnerSidecarRequest['action'],
+): number {
+  switch (action) {
+    case 'warm':
+      return 240_000;
+    case 'session.start':
+    case 'audio.input':
+    case 'transcript.final':
+      return 180_000;
+    case 'session.idle':
+      return 120_000;
+    default:
+      return 10_000;
+  }
+}
+
 export interface VoiceRunnerController {
   readonly mode: 'sidecar' | 'in_process';
   configure(settings: Record<string, unknown>): void;
@@ -190,7 +207,12 @@ export class VoiceRunnerSidecarClient implements VoiceRunnerController {
   ): Promise<void> {
     await this.ensureChild();
     this.callbacksBySession.set(input.sessionId, callbacks);
-    await this.sendRequest('session.start', { input });
+    try {
+      await this.sendRequest('session.start', { input });
+    } catch (err) {
+      this.callbacksBySession.delete(input.sessionId);
+      throw err;
+    }
   }
 
   async updateSession(input: VoiceRunnerSessionUpdate): Promise<void> {
@@ -289,7 +311,7 @@ export class VoiceRunnerSidecarClient implements VoiceRunnerController {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(id);
         reject(new Error(`Voice runner sidecar request timed out: ${action}`));
-      }, 10_000);
+      }, getRequestTimeoutMs(action));
       this.pendingRequests.set(id, { resolve, reject, timeout });
       this.child!.send?.(request);
     });
