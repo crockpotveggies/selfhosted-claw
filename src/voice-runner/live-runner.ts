@@ -595,7 +595,10 @@ function createThinkFilter(): (delta: string) => string {
   };
 }
 
-function capLlmInstruction(value: string | undefined, fallback: string): string {
+function capLlmInstruction(
+  value: string | undefined,
+  fallback: string,
+): string {
   const trimmed = String(value || '').trim();
   const resolved = trimmed || fallback;
   return resolved.length > LLM_INSTRUCTION_LIMIT
@@ -711,7 +714,9 @@ function settingsFromRecord(
     llmProvider,
     llmModel:
       sharedModel ||
-      (usesManagedOpenArcLlm(settings) ? MANAGED_OPENARC_LLM_MODEL : OPENAI_MODEL),
+      (usesManagedOpenArcLlm(settings)
+        ? MANAGED_OPENARC_LLM_MODEL
+        : OPENAI_MODEL),
     llmBaseUrl: usesManagedOpenArcLlm(settings)
       ? MANAGED_OPENARC_LLM_BASE_URL
       : sharedBaseUrl || OPENAI_BASE_URL,
@@ -778,9 +783,9 @@ function settingsFromRecord(
     ).trim(),
     ttsBaseUrl: String(
       ttsProviderRaw === 'managed_f5_tts' ||
-      ttsProviderRaw === 'managed_openvino_tts' ||
-      ttsProviderRaw === 'kyutai_tts' ||
-      ttsProviderRaw === 'pocket_tts'
+        ttsProviderRaw === 'managed_openvino_tts' ||
+        ttsProviderRaw === 'kyutai_tts' ||
+        ttsProviderRaw === 'pocket_tts'
         ? settings?.voiceTtsBaseUrl || MANAGED_F5_TTS_BASE_URL
         : settings?.voiceTtsBaseUrl || sharedBaseUrl || OPENAI_BASE_URL,
     ).trim(),
@@ -788,9 +793,8 @@ function settingsFromRecord(
       settings?.voiceTtsApiKey || sharedApiKey || OPENAI_API_KEY || '',
     ).trim(),
     defaultVoice:
-      String(
-        settings?.defaultVoice || MANAGED_F5_TTS_DEFAULT_VOICE,
-      ).trim() || MANAGED_F5_TTS_DEFAULT_VOICE,
+      String(settings?.defaultVoice || MANAGED_F5_TTS_DEFAULT_VOICE).trim() ||
+      MANAGED_F5_TTS_DEFAULT_VOICE,
     audioInputContentType:
       String(settings?.voiceAudioInputContentType || 'audio/wav').trim() ||
       'audio/wav',
@@ -857,9 +861,7 @@ export class VoiceRunnerService {
         this.streamingSttProvider
           ? this.streamingSttProvider
               .warm()
-              .catch((err) =>
-                log.warn({ err }, 'Streaming STT warmup failed'),
-              )
+              .catch((err) => log.warn({ err }, 'Streaming STT warmup failed'))
           : Promise.resolve(),
         this.ttsProvider.warm(),
       ]);
@@ -966,10 +968,7 @@ export class VoiceRunnerService {
       !session.streamingStt.closed &&
       !session.streamingSttFailed;
     if (streamingActive && chunk.length > 0) {
-      const pcm = extractPcm16LE(
-        chunk,
-        session.audioInput.contentType,
-      );
+      const pcm = extractPcm16LE(chunk, session.audioInput.contentType);
       if (pcm === null) {
         // Encoded container (WebM/Opus/MP3 from a browser MediaRecorder, etc.)
         // can't be fed to the PCM-only streaming socket. Downgrade this
@@ -1435,8 +1434,7 @@ export class VoiceRunnerService {
           this.settings.llmFillers.length > 0
             ? this.settings.llmFillers
             : DEFAULT_FILLERS;
-        const filler =
-          fillers[active.sequence % fillers.length] || fillers[0];
+        const filler = fillers[active.sequence % fillers.length] || fillers[0];
         this.emitResponseText(session, active, filler).catch((err) =>
           log.debug(
             { err, sessionId: session.start.sessionId },
@@ -1560,32 +1558,31 @@ export class VoiceRunnerService {
     // playback. Playback order is preserved by chaining onto `playbackTail`.
     const bufferedChunks: VoiceResponseAudioDelta[] = [];
     const previousTail = active.playbackTail;
-    const synthesisPromise = this.ttsProvider
-      .synthesize({
-        text: clean,
-        voice: this.settings.defaultVoice,
-        signal: active.controller.signal,
-        stream: this.settings.ttsStreaming,
-        onAudioChunk: async (audioChunk) => {
-          // Wait for prior chunks' audio to finish dispatching before
-          // emitting this chunk's streamed audio, so ordering is preserved.
-          await previousTail;
-          if (active.controller.signal.aborted) return;
-          const audioEvent: VoiceResponseAudioDelta = {
-            sessionId: session.start.sessionId,
-            dataBase64: audioChunk.audio.toString('base64'),
-            contentType: audioChunk.contentType,
-            text: audioChunk.text || clean,
-            timestamp: nowIso(),
-          };
-          if (!active.firstAudioEmitted) {
-            active.firstAudioEmitted = true;
-            active.latency.firstAudioOutAt = nowIso();
-          }
-          session.callbacks.onResponseAudioDelta?.(audioEvent);
-          bufferedChunks.push(audioEvent);
-        },
-      });
+    const synthesisPromise = this.ttsProvider.synthesize({
+      text: clean,
+      voice: this.settings.defaultVoice,
+      signal: active.controller.signal,
+      stream: this.settings.ttsStreaming,
+      onAudioChunk: async (audioChunk) => {
+        // Wait for prior chunks' audio to finish dispatching before
+        // emitting this chunk's streamed audio, so ordering is preserved.
+        await previousTail;
+        if (active.controller.signal.aborted) return;
+        const audioEvent: VoiceResponseAudioDelta = {
+          sessionId: session.start.sessionId,
+          dataBase64: audioChunk.audio.toString('base64'),
+          contentType: audioChunk.contentType,
+          text: audioChunk.text || clean,
+          timestamp: nowIso(),
+        };
+        if (!active.firstAudioEmitted) {
+          active.firstAudioEmitted = true;
+          active.latency.firstAudioOutAt = nowIso();
+        }
+        session.callbacks.onResponseAudioDelta?.(audioEvent);
+        bufferedChunks.push(audioEvent);
+      },
+    });
 
     active.playbackTail = (async () => {
       let synthesized;

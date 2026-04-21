@@ -261,9 +261,8 @@ function buildManagedSpeechEnv(
       MANAGED_F5_TTS_MODEL,
     TTS_MODEL_NAME: MANAGED_F5_TTS_MODEL_NAME,
     TTS_DEFAULT_VOICE:
-      String(
-        settings.defaultVoice || MANAGED_F5_TTS_DEFAULT_VOICE,
-      ).trim() || MANAGED_F5_TTS_DEFAULT_VOICE,
+      String(settings.defaultVoice || MANAGED_F5_TTS_DEFAULT_VOICE).trim() ||
+      MANAGED_F5_TTS_DEFAULT_VOICE,
     TTS_DEVICE_TARGET: getManagedF5TtsDevice(settings),
     LLM_PORT: String(MANAGED_OPENARC_LLM_PORT),
     LLM_MODEL_NAME:
@@ -463,12 +462,12 @@ async function waitForManagedF5TtsReady(timeoutMs: number): Promise<void> {
     }
   }
 
-  throw new Error(
-    `Managed F5-TTS service did not become ready: ${lastError}`,
-  );
+  throw new Error(`Managed F5-TTS service did not become ready: ${lastError}`);
 }
 
-function usesManagedSpeechServices(settings?: Record<string, unknown>): boolean {
+function usesManagedSpeechServices(
+  settings?: Record<string, unknown>,
+): boolean {
   return (
     usesManagedOpenVinoStt(settings) ||
     usesManagedStreamStt(settings) ||
@@ -532,10 +531,7 @@ async function ensureManagedSpeechServices(
   }
   if (usesManagedStreamStt(settings)) {
     waiters.push(
-      waitForManagedStreamSttReady(
-        MANAGED_SPEECH_ENABLE_TIMEOUT_MS,
-        settings,
-      ),
+      waitForManagedStreamSttReady(MANAGED_SPEECH_ENABLE_TIMEOUT_MS, settings),
     );
   }
   if (usesManagedF5Tts(settings)) {
@@ -543,10 +539,7 @@ async function ensureManagedSpeechServices(
   }
   if (usesManagedOpenArcLlm(settings)) {
     waiters.push(
-      waitForManagedOpenArcLlmReady(
-        MANAGED_SPEECH_ENABLE_TIMEOUT_MS,
-        settings,
-      ),
+      waitForManagedOpenArcLlmReady(MANAGED_SPEECH_ENABLE_TIMEOUT_MS, settings),
     );
   }
   await Promise.all(waiters);
@@ -694,7 +687,9 @@ async function isManagedF5TtsReady(): Promise<boolean> {
       ready?: boolean;
       model_name?: string;
     };
-    return Boolean(payload.ready) && payload.model_name === MANAGED_F5_TTS_MODEL_NAME;
+    return (
+      Boolean(payload.ready) && payload.model_name === MANAGED_F5_TTS_MODEL_NAME
+    );
   } catch {
     return false;
   }
@@ -1105,7 +1100,9 @@ export class PhoneVoiceChannel implements Channel {
     };
   }
 
-  getBrowserVoiceEvents(sessionId: string): { events: BrowserVoiceSessionEvent[] } {
+  getBrowserVoiceEvents(sessionId: string): {
+    events: BrowserVoiceSessionEvent[];
+  } {
     const session = this.browserSessions.get(sessionId);
     if (!session) {
       throw new Error('Browser voice session not found');
@@ -2182,9 +2179,7 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
         : undefined;
       const pendingHandoffs = channelInstance?.getPendingHandoffCount() || 0;
       const lastLatency = channelInstance?.getLastLatencySampleAt();
-      const ttsReady = managedTts
-        ? await isManagedF5TtsReady()
-        : true;
+      const ttsReady = managedTts ? await isManagedF5TtsReady() : true;
       const llmReady = managedLlm
         ? await isManagedOpenArcLlmReady(ctx.settings)
         : true;
@@ -2201,11 +2196,11 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
               ? `Connected to phone voice gateway; runner ${health?.mode || 'unknown'}:${health?.backend || 'unknown'}; managed LLM ${managedLlm ? 'hot' : 'external'}; managed STT ${managedStt ? 'hot' : 'external'}; managed TTS ${managedTts ? 'hot' : 'external'}; pending handoffs ${pendingHandoffs}${lastLatency ? `; latency sample ${lastLatency}` : ''}`
               : managedLlm && !llmReady
                 ? 'Connected to phone voice gateway; managed OpenArc Qwen LLM container is still starting'
-              : managedStt && !sttReady
-                ? 'Connected to phone voice gateway; managed Whisper STT container is still starting'
-                : managedTts && !ttsReady
-                ? 'Connected to phone voice gateway; managed F5-TTS container is still starting'
-                : 'Connected to phone voice gateway; live runner still warming',
+                : managedStt && !sttReady
+                  ? 'Connected to phone voice gateway; managed Whisper STT container is still starting'
+                  : managedTts && !ttsReady
+                    ? 'Connected to phone voice gateway; managed F5-TTS container is still starting'
+                    : 'Connected to phone voice gateway; live runner still warming',
           serviceRunning: serviceStatus?.running,
         };
       }
@@ -2258,10 +2253,7 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
             'The managed local OpenArc Qwen container is not running or has not loaded the tiny voice model yet.',
         });
       }
-      if (
-        managedTts &&
-        !(await isManagedF5TtsReady())
-      ) {
+      if (managedTts && !(await isManagedF5TtsReady())) {
         notifications.push({
           id: 'phone-voice:managed-tts-offline',
           integration: INTEGRATION_NAME,
@@ -2484,10 +2476,7 @@ export const phoneVoiceIntegration: IntegrationDefinition = {
     },
     onSettingsChange: async (prev, next) => {
       const enabled = isIntegrationEnabled(INTEGRATION_NAME);
-      if (
-        usesManagedSpeechServices(prev) &&
-        !usesManagedSpeechServices(next)
-      ) {
+      if (usesManagedSpeechServices(prev) && !usesManagedSpeechServices(next)) {
         stopService(INTEGRATION_NAME);
       } else if (
         enabled &&

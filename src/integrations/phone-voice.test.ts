@@ -264,7 +264,7 @@ describe('PhoneVoiceChannel', () => {
           return new Response(
             JSON.stringify({
               object: 'list',
-            data: [{ id: MANAGED_F5_TTS_MODEL_NAME }],
+              data: [{ id: MANAGED_F5_TTS_MODEL_NAME }],
             }),
             {
               status: 200,

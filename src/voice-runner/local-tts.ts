@@ -10,9 +10,7 @@ export const MANAGED_F5_TTS_MODEL_NAME = 'phone-voice-f5-tts';
 export const MANAGED_F5_TTS_DEFAULT_VOICE = 'female_default';
 export const MANAGED_F5_TTS_DEVICE_TARGET = 'xpu';
 
-export function usesManagedF5Tts(
-  settings?: Record<string, unknown>,
-): boolean {
+export function usesManagedF5Tts(settings?: Record<string, unknown>): boolean {
   const provider = String(settings?.voiceTtsProvider || '').trim();
   return (
     provider === 'managed_f5_tts' ||

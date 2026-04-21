@@ -223,7 +223,9 @@ export function stopService(integrationName: string): ServiceStatus {
     ? path.resolve(svc.envFile)
     : path.join(composeDir, '.env');
 
-  const args = svc.projectName ? ['-p', svc.projectName, '-f', composeFile] : ['-f', composeFile];
+  const args = svc.projectName
+    ? ['-p', svc.projectName, '-f', composeFile]
+    : ['-f', composeFile];
   if (fs.existsSync(envFile)) {
     args.push('--env-file', envFile);
   }

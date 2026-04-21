@@ -266,9 +266,9 @@ describe('VoiceRunnerService', () => {
       const runner = new VoiceRunnerService({
         voiceRunnerProvider: 'heuristic',
         voiceSttProvider: 'mock',
-      voiceTtsProvider: 'managed_f5_tts',
+        voiceTtsProvider: 'managed_f5_tts',
         voiceTtsBaseUrl: 'http://127.0.0.1:8792/v1',
-      defaultVoice: 'basic_ref_en',
+        defaultVoice: 'basic_ref_en',
       });
       const audioChunks: Array<{ contentType: string; bytes: string }> = [];
 
@@ -278,7 +278,7 @@ describe('VoiceRunnerService', () => {
           chatJid: 'voice:+15551110000',
           caller: {
             phoneNumber: '+15551110000',
-          displayName: 'OpenVINO TTS Caller',
+            displayName: 'OpenVINO TTS Caller',
           },
           metadata: {
             callId: 'call-openvino-tts',
@@ -353,9 +353,9 @@ describe('VoiceRunnerService', () => {
       const runner = new VoiceRunnerService({
         voiceRunnerProvider: 'heuristic',
         voiceSttProvider: 'mock',
-      voiceTtsProvider: 'managed_f5_tts',
+        voiceTtsProvider: 'managed_f5_tts',
         voiceTtsBaseUrl: 'http://127.0.0.1:8792/v1',
-      defaultVoice: 'basic_ref_en',
+        defaultVoice: 'basic_ref_en',
       });
       const audioChunks: string[] = [];
 
@@ -560,9 +560,7 @@ describe('VoiceRunnerService', () => {
             resolve(
               new Response(
                 JSON.stringify({
-                  choices: [
-                    { message: { content: 'Actual model response.' } },
-                  ],
+                  choices: [{ message: { content: 'Actual model response.' } }],
                 }),
                 {
                   status: 200,
@@ -636,9 +634,7 @@ describe('VoiceRunnerService', () => {
             resolve(
               new Response(
                 JSON.stringify({
-                  choices: [
-                    { message: { content: 'Actual model response.' } },
-                  ],
+                  choices: [{ message: { content: 'Actual model response.' } }],
                 }),
                 {
                   status: 200,

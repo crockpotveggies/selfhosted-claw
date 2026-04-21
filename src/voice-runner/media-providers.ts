@@ -498,7 +498,10 @@ export function extractPcm16LE(
   if (ct.includes('pcm') || ct.includes('l16') || ct.includes('raw')) {
     return bytes;
   }
-  if (ct.includes('wav') || (bytes.length >= 12 && bytes.slice(0, 4).toString('ascii') === 'RIFF')) {
+  if (
+    ct.includes('wav') ||
+    (bytes.length >= 12 && bytes.slice(0, 4).toString('ascii') === 'RIFF')
+  ) {
     // Seek to the "data" chunk. WAV header length varies with fmt extensions.
     if (bytes.length < 44) return null;
     let offset = 12;
@@ -579,13 +582,21 @@ export class ManagedStreamVoiceSttProvider
       const safeResolve = (v: VoiceSttResult) => {
         if (settled) return;
         settled = true;
-        try { session.end(); } catch { /* ignore */ }
+        try {
+          session.end();
+        } catch {
+          /* ignore */
+        }
         resolve(v);
       };
       const safeReject = (e: Error) => {
         if (settled) return;
         settled = true;
-        try { session.end(); } catch { /* ignore */ }
+        try {
+          session.end();
+        } catch {
+          /* ignore */
+        }
         reject(e);
       };
       const onAbort = () => safeReject(new Error('aborted'));
@@ -695,11 +706,7 @@ export class ManagedStreamVoiceSttProvider
           return;
         }
         // Use ArrayBuffer view so binary type is preserved by ws impls.
-        const view = new Uint8Array(
-          pcm.buffer,
-          pcm.byteOffset,
-          pcm.byteLength,
-        );
+        const view = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
         socket.send(view);
       },
       flush: () => {
@@ -765,8 +772,7 @@ export function buildVoiceTtsProvider(
   if (settings.ttsProvider === 'managed_f5_tts') {
     return new ManagedF5VoiceTtsProvider({
       ...settings,
-      ttsBaseUrl:
-        settings.ttsBaseUrl.trim() || MANAGED_F5_TTS_BASE_URL,
+      ttsBaseUrl: settings.ttsBaseUrl.trim() || MANAGED_F5_TTS_BASE_URL,
     });
   }
   const wantsOpenAi =
