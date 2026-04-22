@@ -3,7 +3,12 @@ export type VoiceTinyActionName =
   | 'set_mute'
   | 'send_dtmf'
   | 'mark_followup'
-  | 'place_call';
+  | 'place_call'
+  // Not a host-executed side effect; emitted for transcript visibility when
+  // the voice LLM invokes a tool via OpenAI-compatible `tool_calls`. The tool
+  // itself runs inside the voice runner loop; this action just surfaces the
+  // invocation to the admin UI transcript.
+  | 'tool_use';
 
 export type VoiceHandoffKind =
   | 'followup_summary'

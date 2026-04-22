@@ -52,7 +52,11 @@ impl SessionPoller {
         }
         let resp = req.send().await.context("pending-session GET failed")?;
         if !resp.status().is_success() {
-            warn!(status = %resp.status(), "pending-session non-2xx");
+            let token_preview = self.token.as_deref().map(|t| {
+                let n = t.len();
+                format!("len={} head={:?} tail={:?}", n, t.chars().take(3).collect::<String>(), t.chars().rev().take(3).collect::<String>())
+            });
+            warn!(status = %resp.status(), url = %self.url, token_preview = ?token_preview, "pending-session non-2xx");
             return Ok(None);
         }
         let payload: PendingSession =

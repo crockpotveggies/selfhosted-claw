@@ -490,6 +490,10 @@ describe('PhoneVoiceChannel', () => {
 
     const started = await channel.startBrowserVoiceSession('Browser QA');
     expect(started.sessionId).toContain('browser:');
+    // Browser-mode sessions with no reason/recipient context now use the
+    // neutral inbound greeting "Hi, this is <agent>. How can I help?" — the
+    // previous "Browser voice test is ready" was removed because it caused
+    // the LLM to echo the phrase every turn and break the phone-call illusion.
     await vi.waitFor(() => {
       expect(
         channel
@@ -497,7 +501,7 @@ describe('PhoneVoiceChannel', () => {
           .events.some(
             (event) =>
               event.type === 'assistant_turn' &&
-              event.text?.includes('Browser voice test is ready'),
+              /how can I help/i.test(event.text || ''),
           ),
       ).toBe(true);
     });

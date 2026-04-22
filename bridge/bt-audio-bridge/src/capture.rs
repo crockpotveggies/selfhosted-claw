@@ -9,13 +9,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use windows::Win32::Foundation::WAIT_OBJECT_0;
 use windows::Win32::Media::Audio::{
-    IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, WAVEFORMATEX,
+    IAudioCaptureClient, IAudioClient, IMMDevice, WAVEFORMATEX,
     AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, WAVE_FORMAT_PCM,
 };
@@ -26,7 +28,14 @@ const AUDCLNT_BUFFERFLAGS_SILENT_BIT: u32 = 0x1;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
-use crate::endpoints::{self, Flow};
+use crate::endpoint_watcher::EndpointWatcher;
+use crate::endpoints::Flow;
+
+// HRESULT = AUDCLNT_E_DEVICE_INVALIDATED. Windows signals this when the
+// endpoint we're streaming against goes away — e.g. BT HFP SCO drops at the
+// end of a call. We use it as the trigger to tear down the current stream
+// and wait for the endpoint to come back.
+const AUDCLNT_E_DEVICE_INVALIDATED: i32 = 0x88890004u32 as i32;
 
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 pub const TARGET_CHANNELS: u16 = 1;
@@ -81,17 +90,47 @@ fn run_capture(
     tx: mpsc::Sender<Bytes>,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
-    let enumerator: IMMDeviceEnumerator = endpoints::create_enumerator()
-        .context("create IMMDeviceEnumerator")?;
-    let selected = endpoints::select_endpoint_by_name(&enumerator, Flow::Capture, substring)?;
-    info!(
-        friendly_name = %selected.info.friendly_name,
-        id = %selected.info.id,
-        "capture endpoint selected"
-    );
-    // Communications-role preference is handled inside select_endpoint_by_name.
+    // Hot-attach loop: wait for a matching ACTIVE endpoint, stream until the
+    // device is invalidated (SCO drops at call end), then wait for the next
+    // ACTIVE transition. The watcher uses IMMNotificationClient so the "wait"
+    // is near-instant (COM callback → condvar poke) with a 1 s safety poll.
+    let watcher = EndpointWatcher::new(Flow::Capture, substring)
+        .context("create capture endpoint watcher")?;
 
-    let device = selected.device;
+    while !stop.load(Ordering::SeqCst) {
+        let device = match watcher.wait_for_active(&stop, Duration::from_secs(1)) {
+            Some(d) => d,
+            None => {
+                // stop requested
+                break;
+            }
+        };
+        match stream_one_session(&device, &tx, &stop) {
+            Ok(()) => {
+                info!("capture session ended cleanly; waiting for next ACTIVE transition");
+            }
+            Err(err) => {
+                // AUDCLNT_E_DEVICE_INVALIDATED is the expected way an HFP
+                // stream ends (SCO drops). Anything else is worth logging.
+                let hresult = err
+                    .downcast_ref::<windows::core::Error>()
+                    .map(|e| e.code().0);
+                if hresult == Some(AUDCLNT_E_DEVICE_INVALIDATED) {
+                    info!("capture endpoint invalidated (SCO dropped); re-attaching");
+                } else {
+                    warn!(error = %err, "capture session errored; re-attaching after endpoint returns");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn stream_one_session(
+    device: &IMMDevice,
+    tx: &mpsc::Sender<Bytes>,
+    stop: &Arc<AtomicBool>,
+) -> Result<()> {
     let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
 
     // Request 16 kHz / 16-bit / mono. Shared mode + AUTOCONVERTPCM lets the

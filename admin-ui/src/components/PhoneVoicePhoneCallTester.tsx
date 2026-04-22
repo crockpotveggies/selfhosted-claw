@@ -1,15 +1,5 @@
 import { useEffect, useState } from 'react';
-import {
-  CAlert,
-  CButton,
-  CCol,
-  CForm,
-  CFormInput,
-  CFormLabel,
-  CFormTextarea,
-  CRow,
-  CSpinner,
-} from '@coreui/react';
+import { CAlert, CButton, CFormInput, CFormLabel, CSpinner } from '@coreui/react';
 
 import { apiFetch } from '../admin/api';
 
@@ -24,14 +14,21 @@ interface SuccessState {
   receivingPerson: string;
 }
 
+interface PhoneCallControlsProps {
+  // Shared fields come from the parent so both testers use the same inputs.
+  reason: string;
+  receivingPerson: string;
+}
+
 const DTMF_KEYS: string[] = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'];
 // 10 minutes — safe upper bound so controls don't stay enabled forever after a call drops.
 const ACTIVE_CALL_TIMEOUT_MS = 10 * 60 * 1000;
 
-export function PhoneVoicePhoneCallTester() {
+export function PhoneVoicePhoneCallTester({
+  reason,
+  receivingPerson,
+}: PhoneCallControlsProps) {
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [reason, setReason] = useState('');
-  const [receivingPerson, setReceivingPerson] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState<SuccessState | null>(null);
@@ -186,140 +183,97 @@ export function PhoneVoicePhoneCallTester() {
   };
 
   return (
-    <CRow className="g-3">
-      <CCol xs={12} md={6}>
-        <CForm onSubmit={(event) => void submit(event)}>
-          <CRow className="g-3">
-            <CCol xs={12}>
-              <CFormLabel htmlFor="phone-voice-call-number">
-                Phone number
-              </CFormLabel>
-              <CFormInput
-                id="phone-voice-call-number"
-                type="tel"
-                placeholder="+15551234567"
-                value={phoneNumber}
-                onChange={(event) => setPhoneNumber(event.target.value)}
-                disabled={submitting}
-                required
-              />
-            </CCol>
-            <CCol xs={12}>
-              <CFormLabel htmlFor="phone-voice-call-person">
-                Name of person receiving the call
-              </CFormLabel>
-              <CFormInput
-                id="phone-voice-call-person"
-                type="text"
-                placeholder="Alice Smith"
-                value={receivingPerson}
-                onChange={(event) => setReceivingPerson(event.target.value)}
-                disabled={submitting}
-                required
-              />
-            </CCol>
-            <CCol xs={12}>
-              <CFormLabel htmlFor="phone-voice-call-reason">
-                Reason for call
-              </CFormLabel>
-              <CFormTextarea
-                id="phone-voice-call-reason"
-                rows={3}
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
-                disabled={submitting}
-              />
-              <div className="form-text small">
-                Added to the agent's context so it can explain why it's calling.
-              </div>
-            </CCol>
-          </CRow>
-
-          {error && (
-            <CAlert color="danger" className="mt-3 py-2 px-3 small mb-0">
-              {error}
-            </CAlert>
-          )}
-          {success && (
-            <CAlert color="success" className="mt-3 py-2 px-3 small mb-0">
-              Call placed to {success.phoneNumber}. The agent will wait for{' '}
-              {success.receivingPerson} to pick up, then introduce itself.
-            </CAlert>
-          )}
-
-          <div className="d-flex align-items-center gap-2 mt-3">
-            <CButton
-              type="submit"
-              color="primary"
-              disabled={submitting || !canSubmit}
-            >
-              {submitting ? 'Placing call...' : 'Place test call'}
-            </CButton>
-            {submitting && <CSpinner size="sm" />}
-          </div>
-        </CForm>
-      </CCol>
-
-      <CCol xs={12} md={6}>
-        <div className="border rounded p-3 h-100">
-          <div className="fw-semibold mb-2">Call controls</div>
-
+    <div className="d-flex flex-column gap-3">
+      <form onSubmit={(event) => void submit(event)}>
+        <CFormLabel htmlFor="phone-voice-call-number">Phone number</CFormLabel>
+        <CFormInput
+          id="phone-voice-call-number"
+          type="tel"
+          placeholder="+15551234567"
+          value={phoneNumber}
+          onChange={(event) => setPhoneNumber(event.target.value)}
+          disabled={submitting}
+          required
+        />
+        <div className="d-flex align-items-center gap-2 mt-2">
           <CButton
-            color="danger"
-            className="w-100 mb-3"
-            onClick={() => void endCall()}
-            disabled={!callActive || endingCall}
+            type="submit"
+            color="primary"
+            disabled={submitting || !canSubmit}
           >
-            {endingCall ? 'Ending...' : 'End Call'}
+            {submitting ? 'Placing call...' : 'Place test call'}
           </CButton>
-
-          <div className="small text-body-secondary mb-2">DTMF keypad</div>
-          <div
-            className="d-grid gap-2 mb-3"
-            style={{
-              gridTemplateColumns: 'repeat(3, 1fr)',
-            }}
-          >
-            {DTMF_KEYS.map((key) => (
-              <CButton
-                key={key}
-                color={pressedKey === key ? 'primary' : 'secondary'}
-                variant={pressedKey === key ? undefined : 'outline'}
-                onClick={() => sendDtmf(key)}
-                disabled={!callActive}
-                style={{ fontSize: '1.25rem', padding: '0.75rem 0' }}
-              >
-                {key}
-              </CButton>
-            ))}
-          </div>
-
-          <CButton
-            color={muted ? 'warning' : 'secondary'}
-            variant={muted ? undefined : 'outline'}
-            className="w-100 mb-2"
-            onClick={() => void toggleMute()}
-            disabled={!callActive}
-          >
-            {muted ? 'Unmute' : 'Mute'}
-          </CButton>
-
-          {controlError && (
-            <CAlert color="danger" className="py-2 px-3 small mb-2 mt-2">
-              {controlError}
-            </CAlert>
-          )}
-          {controlNotice && !controlError && (
-            <CAlert color="success" className="py-2 px-3 small mb-2 mt-2">
-              {controlNotice}
-            </CAlert>
-          )}
-
-          <div className="form-text small mt-2">
-            Controls are active while you've placed a test call here.
-          </div>
+          {submitting && <CSpinner size="sm" />}
         </div>
-      </CCol>
-    </CRow>
+        {error && (
+          <CAlert color="danger" className="mt-2 py-2 px-3 small mb-0">
+            {error}
+          </CAlert>
+        )}
+        {success && (
+          <CAlert color="success" className="mt-2 py-2 px-3 small mb-0">
+            Call placed to {success.phoneNumber}. Agent will wait for{' '}
+            {success.receivingPerson}, then introduce itself.
+          </CAlert>
+        )}
+      </form>
+
+      <div className="border rounded p-3">
+        <div className="fw-semibold mb-2">Call controls</div>
+
+        <CButton
+          color="danger"
+          className="w-100 mb-3"
+          onClick={() => void endCall()}
+          disabled={!callActive || endingCall}
+        >
+          {endingCall ? 'Ending...' : 'End Call'}
+        </CButton>
+
+        <div className="small text-body-secondary mb-2">DTMF keypad</div>
+        <div
+          className="d-grid gap-2 mb-3"
+          style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}
+        >
+          {DTMF_KEYS.map((key) => (
+            <CButton
+              key={key}
+              color={pressedKey === key ? 'primary' : 'secondary'}
+              variant={pressedKey === key ? undefined : 'outline'}
+              onClick={() => sendDtmf(key)}
+              disabled={!callActive}
+              style={{ fontSize: '1.25rem', padding: '0.75rem 0' }}
+            >
+              {key}
+            </CButton>
+          ))}
+        </div>
+
+        <CButton
+          color={muted ? 'warning' : 'secondary'}
+          variant={muted ? undefined : 'outline'}
+          className="w-100 mb-2"
+          onClick={() => void toggleMute()}
+          disabled={!callActive}
+        >
+          {muted ? 'Unmute' : 'Mute'}
+        </CButton>
+
+        {controlError && (
+          <CAlert color="danger" className="py-2 px-3 small mb-2 mt-2">
+            {controlError}
+          </CAlert>
+        )}
+        {controlNotice && !controlError && (
+          <CAlert color="success" className="py-2 px-3 small mb-2 mt-2">
+            {controlNotice}
+          </CAlert>
+        )}
+
+        <div className="form-text small mt-2">
+          Controls are active while you've placed a test call here.
+        </div>
+      </div>
+    </div>
   );
 }

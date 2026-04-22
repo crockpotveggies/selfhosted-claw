@@ -161,6 +161,9 @@ export interface BrowserVoiceSessionEvent {
   timestamp: string;
   action?: string;
   summary?: string;
+  // Free-form action payload. Populated for `tool_use` events so the admin
+  // UI transcript can render the tool name + arguments inline.
+  args?: Record<string, unknown>;
 }
 
 type BrowserVoiceEventListener = (event: BrowserVoiceSessionEvent) => void;
@@ -1003,20 +1006,36 @@ export class PhoneVoiceChannel implements Channel {
     return this.handoffStore.getPendingCount();
   }
 
-  async startBrowserVoiceSession(displayName?: string): Promise<{
+  async startBrowserVoiceSession(
+    displayName?: string,
+    options?: { reason?: string; receivingPerson?: string },
+  ): Promise<{
     sessionId: string;
     events: BrowserVoiceSessionEvent[];
   }> {
     await this.warmRuntime();
     const sessionId = `browser:${crypto.randomUUID()}`;
+    const reason = options?.reason?.trim() || undefined;
+    const expectedRecipient = options?.receivingPerson?.trim() || undefined;
+    // If the tester provided a reason + recipient, treat the session exactly
+    // like an outbound phone call: the agent waits for the caller to speak,
+    // then introduces itself with "Hi, it's X, is this <recipient>?" and
+    // states the reason. Otherwise treat as an inbound call — the agent
+    // answers and waits rather than front-loading "browser voice test"
+    // identity messaging, which was confusing the LLM into repeating itself.
+    const isOutboundStyle = Boolean(reason || expectedRecipient);
     const caller: VoiceCaller = {
       phoneNumber: '+19990000000',
       displayName: displayName?.trim() || 'Browser Tester',
-      relationshipHint: 'Local browser voice test session',
+      // Plumb reason + expected recipient so the LLM system prompt gets the
+      // same "Reason for calling" / "Expected recipient" lines it gets on an
+      // outbound phone test — keeps the two testers behaviorally identical.
+      reasonForCall: reason,
+      expectedRecipient,
     };
     const metadata: VoiceCallMetadata = {
       callId: `browser-call:${crypto.randomUUID()}`,
-      direction: 'incoming',
+      direction: isOutboundStyle ? 'outgoing' : 'incoming',
       state: 'active',
       startedAt: nowIso(),
     };
@@ -1040,13 +1059,22 @@ export class PhoneVoiceChannel implements Channel {
       }
     };
 
+    // Suppress the hardcoded "Browser voice test is ready" greeting — it was
+    // being front-loaded and then echoed as the LLM's first assistant turn,
+    // so subsequent turns kept repeating it. Mirror the outbound-call path:
+    // no greeting when outbound-style (agent waits for recipient to speak),
+    // a natural inbound greeting otherwise.
+    const greeting = isOutboundStyle
+      ? undefined
+      : `Hi, this is ${ASSISTANT_NAME}. How can I help?`;
+
     await this.runner.startSession(
       {
         sessionId,
         chatJid: `voice-browser:${sessionId}`,
         caller,
         metadata,
-        greeting: `Hi, this is ${ASSISTANT_NAME}. Browser voice test is ready.`,
+        greeting,
       },
       {
         onTranscriptFinal: async (event) => {
@@ -1085,6 +1113,7 @@ export class PhoneVoiceChannel implements Channel {
             type: 'action',
             action: event.action,
             text: event.reason,
+            args: event.args,
             timestamp: event.timestamp,
           });
         },

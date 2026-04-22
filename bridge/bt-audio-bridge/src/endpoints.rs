@@ -12,8 +12,17 @@ use windows::core::{Interface, Result, PCWSTR, PROPVARIANT, PWSTR};
 use windows::Win32::Media::Audio::{
     eCapture, eCommunications, eRender, EDataFlow, IAudioClient, IMMDevice,
     IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator, DEVICE_STATE, DEVICE_STATE_ACTIVE,
-    WAVEFORMATEXTENSIBLE,
+    DEVICE_STATE_DISABLED, DEVICE_STATE_UNPLUGGED, WAVEFORMATEXTENSIBLE,
 };
+
+// BT HFP endpoints live in UNPLUGGED state until an SCO channel opens (i.e.
+// until a phone call actually starts). We need to be able to discover and
+// open them pre-call so we're ready when audio goes live. DISABLED included
+// for completeness — users sometimes manually disable endpoints they want to
+// re-enable. NOTPRESENT is still excluded.
+const SELECTABLE_STATES: DEVICE_STATE = DEVICE_STATE(
+    DEVICE_STATE_ACTIVE.0 | DEVICE_STATE_UNPLUGGED.0 | DEVICE_STATE_DISABLED.0,
+);
 use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
 use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL, STGM_READ};
@@ -88,13 +97,19 @@ pub fn enumerate_and_print() -> Result<()> {
 }
 
 pub fn collect_active(enumerator: &IMMDeviceEnumerator) -> Result<Vec<Endpoint>> {
+    // Include NOTPRESENT for the diagnostic listing — BT HFP endpoints and
+    // Phone Link virtual endpoints sit in NOTPRESENT when idle, and seeing
+    // them is critical for diagnosing why audio bridging isn't attaching.
+    let all_states = DEVICE_STATE(
+        DEVICE_STATE_ACTIVE.0
+            | DEVICE_STATE_DISABLED.0
+            | DEVICE_STATE_UNPLUGGED.0
+            | windows::Win32::Media::Audio::DEVICE_STATE_NOTPRESENT.0,
+    );
     let mut endpoints: Vec<Endpoint> = Vec::new();
     for flow in [Flow::Render, Flow::Capture] {
-        // EnumAudioEndpoints filters to ACTIVE only — disconnected BT headsets
-        // show up as NOT_PRESENT and would clutter selection.
-        let collection = unsafe {
-            enumerator.EnumAudioEndpoints(flow.data_flow(), DEVICE_STATE_ACTIVE)?
-        };
+        let collection =
+            unsafe { enumerator.EnumAudioEndpoints(flow.data_flow(), all_states)? };
         let count = unsafe { collection.GetCount()? };
         for i in 0..count {
             let device: IMMDevice = unsafe { collection.Item(i)? };
@@ -133,7 +148,7 @@ pub fn select_endpoint_by_name(
 ) -> anyhow::Result<SelectedEndpoint> {
     let lower_sub = substring.to_lowercase();
     let collection = unsafe {
-        enumerator.EnumAudioEndpoints(flow.data_flow(), DEVICE_STATE_ACTIVE)?
+        enumerator.EnumAudioEndpoints(flow.data_flow(), SELECTABLE_STATES)?
     };
     let count = unsafe { collection.GetCount()? };
 

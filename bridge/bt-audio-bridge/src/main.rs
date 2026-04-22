@@ -9,6 +9,7 @@
 // orchestration; WASAPI capture and render threads have their own MTA apartments).
 
 mod capture;
+mod endpoint_watcher;
 mod endpoints;
 mod render;
 mod service;
@@ -134,12 +135,32 @@ fn main() -> Result<()> {
     // Parse CLI before tracing init so the service path can install its own
     // file-based subscriber. Previously we unconditionally initialised stdout
     // tracing, which silently blocked init_service_logging's try_init.
+    // Log raw argv BEFORE clap to diagnose what the service-spawned worker
+    // actually received. This survives clap parse failures.
+    let raw_args: Vec<String> = std::env::args().collect();
     let cli = Cli::parse();
     let is_service_run = matches!(cli.command, Some(Command::Service(ServiceCmd::Run(_))));
     if !is_service_run {
         let filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new("info"));
-        tracing_subscriber::fmt().with_env_filter(filter).init();
+        // When the bridge is spawned by the service (not interactively), its
+        // stdout is detached. Tee logs to both stdout AND a file in
+        // %LOCALAPPDATA% so we can see what's happening inside the child.
+        let log_dir = std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("C:\\ProgramData"))
+            .join("bt-audio-bridge");
+        let _ = std::fs::create_dir_all(&log_dir);
+        let file_log = tracing_appender::rolling::never(&log_dir, "worker.log");
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(file_log)
+            .with_ansi(false)
+            .init();
+        let arg_preview: Vec<String> = raw_args.iter().map(|a| {
+            if a.contains("token") || a.len() < 20 { a.clone() } else { format!("{}..({}chars)", &a[..a.char_indices().nth(8).map(|(i,_)| i).unwrap_or(a.len())], a.len()) }
+        }).collect();
+        info!(argv = ?arg_preview, admin_token_set = cli.admin_token.is_some(), "bridge worker starting");
     }
 
     // Main-thread COM (apartment-threaded) for enumeration; streaming threads

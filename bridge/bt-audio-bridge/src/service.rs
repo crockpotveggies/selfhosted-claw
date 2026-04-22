@@ -195,11 +195,16 @@ fn service_main(args: Vec<OsString>) {
 }
 
 fn run_service(args: Vec<OsString>) -> Result<()> {
-    // Parse the pass-through bridge args out of argv. SCM strips the binpath
-    // but keeps the trailing launch_arguments; our install put `service run
-    // <flags>` there, and windows-service delivers the raw `<flags>` here.
-    // Defensive: also accept a leading `service` / `run` if present.
-    let bridge = parse_passthrough_args(&args);
+    // SCM passes the arguments that were given to StartService — typically
+    // empty when the service auto-starts. The real bridge args live in the
+    // service BINARY_PATH_NAME (set at install time) and are available via
+    // std::env::args(). Prefer those; fall back to the SCM-delivered args
+    // for runtime overrides via `sc start bt-audio-bridge --admin-token Y`.
+    let env_args: Vec<OsString> =
+        std::env::args_os().skip(1).collect();
+    let combined: Vec<OsString> =
+        env_args.into_iter().chain(args.into_iter()).collect();
+    let bridge = parse_passthrough_args(&combined);
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let wake = Arc::new((Mutex::new(()), std::sync::Condvar::new()));
@@ -362,6 +367,14 @@ fn terminate_worker(process: HANDLE) {
 }
 
 fn spawn_worker(exe: &Path, argv_tail: &[String], session_id: u32) -> Result<Worker> {
+    info!(
+        session_id,
+        argv_count = argv_tail.len(),
+        argv_preview = ?argv_tail.iter().map(|a| {
+            if a.len() > 20 { format!("{}..({}chars)", &a[..8], a.len()) } else { a.clone() }
+        }).collect::<Vec<_>>(),
+        "spawn_worker begin"
+    );
     let user_token = query_user_token(session_id)?;
     let primary = duplicate_primary_token(user_token).inspect_err(|_| {
         unsafe {

@@ -11,20 +11,26 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use windows::Win32::Foundation::WAIT_OBJECT_0;
 use windows::Win32::Media::Audio::{
-    IAudioClient, IAudioRenderClient, IMMDeviceEnumerator, WAVEFORMATEX,
+    IAudioClient, IAudioRenderClient, IMMDevice, WAVEFORMATEX,
     AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, WAVE_FORMAT_PCM,
 };
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
-use crate::endpoints::{self, Flow};
+use crate::endpoint_watcher::EndpointWatcher;
+use crate::endpoints::Flow;
+
+// See capture.rs — same HRESULT used to recognise SCO drop / device disappear.
+const AUDCLNT_E_DEVICE_INVALIDATED: i32 = 0x88890004u32 as i32;
 
 const TARGET_SAMPLE_RATE: u32 = 16_000;
 const TARGET_CHANNELS: u16 = 1;
@@ -74,15 +80,38 @@ fn run_render(
     mut rx: mpsc::Receiver<Bytes>,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
-    let enumerator: IMMDeviceEnumerator = endpoints::create_enumerator()?;
-    let selected = endpoints::select_endpoint_by_name(&enumerator, Flow::Render, substring)?;
-    info!(
-        friendly_name = %selected.info.friendly_name,
-        id = %selected.info.id,
-        "render endpoint selected"
-    );
+    // Same hot-attach pattern as capture: wait for ACTIVE, stream, re-wait on
+    // device-invalidated (SCO drops at end of call).
+    let watcher = EndpointWatcher::new(Flow::Render, substring)
+        .context("create render endpoint watcher")?;
 
-    let device = selected.device;
+    while !stop.load(Ordering::SeqCst) {
+        let device = match watcher.wait_for_active(&stop, Duration::from_secs(1)) {
+            Some(d) => d,
+            None => break,
+        };
+        match stream_one_session(&device, &mut rx, &stop) {
+            Ok(()) => info!("render session ended cleanly; waiting for next ACTIVE transition"),
+            Err(err) => {
+                let hresult = err
+                    .downcast_ref::<windows::core::Error>()
+                    .map(|e| e.code().0);
+                if hresult == Some(AUDCLNT_E_DEVICE_INVALIDATED) {
+                    info!("render endpoint invalidated (SCO dropped); re-attaching");
+                } else {
+                    warn!(error = %err, "render session errored; re-attaching after endpoint returns");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn stream_one_session(
+    device: &IMMDevice,
+    rx: &mut mpsc::Receiver<Bytes>,
+    stop: &Arc<AtomicBool>,
+) -> Result<()> {
     let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
 
     let wf = WAVEFORMATEX {

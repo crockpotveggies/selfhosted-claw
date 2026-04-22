@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { MANAGED_F5_TTS_MODEL_NAME } from './local-tts.js';
 import { VoiceRunnerService } from './live-runner.js';
+import {
+  createVoiceToolRegistry,
+  type VoiceTool,
+} from './voice-tools.js';
 
 describe('VoiceRunnerService', () => {
   it('cancels active playback on barge-in partials', async () => {
@@ -1089,6 +1093,541 @@ describe('VoiceRunnerService', () => {
       expect(second.messages[0].content).not.toContain(
         'previous reply was interrupted',
       );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // --------------------------------------------------------------------
+  // Tool-calling (Option B via OpenArc / OpenAI-compatible `tools` param).
+  // --------------------------------------------------------------------
+
+  it('executes tool_calls from the LLM and re-prompts with the tool result', async () => {
+    const requestBodies: string[] = [];
+    let callIndex = 0;
+
+    // Fake tool we control — lets us assert it's executed with the right
+    // arguments, without touching real DuckDuckGo.
+    const executedWith: Array<Record<string, unknown>> = [];
+    const fakeTool: VoiceTool = {
+      schema: {
+        name: 'lookup_city',
+        description: 'Look up a city by name.',
+        parameters: {
+          type: 'object',
+          properties: { city: { type: 'string' } },
+          required: ['city'],
+        },
+      },
+      execute: async (args) => {
+        executedWith.push(args);
+        return 'Toronto is a city in Ontario, Canada; population ~2.8 million.';
+      },
+    };
+
+    const fetchMock = vi.fn(async (_url: string, init?: { body?: string }) => {
+      requestBodies.push(init?.body || '');
+      callIndex += 1;
+      if (callIndex === 1) {
+        // First turn: LLM decides to call the tool.
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: 'assistant',
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: 'call_abc123',
+                      type: 'function',
+                      function: {
+                        name: 'lookup_city',
+                        arguments: '{"city": "Toronto"}',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      // Follow-up turn: LLM responds with the spoken answer.
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content:
+                  'Toronto has about 2.8 million people, its the biggest city in Ontario.',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+
+    try {
+      const runner = new VoiceRunnerService(
+        {
+          voiceRunnerProvider: 'openai',
+          voiceRunnerBaseUrl: 'https://example.test/v1',
+          voiceRunnerApiKey: '',
+          voiceRunnerModel: 'gpt-4o-mini',
+          voiceSttProvider: 'mock',
+          voiceTtsProvider: 'mock',
+        },
+        { tools: createVoiceToolRegistry([fakeTool]) },
+      );
+
+      const turns: string[] = [];
+      const actions: Array<{ action: string; args?: unknown }> = [];
+      await runner.startSession(
+        {
+          sessionId: 'sess-tool-1',
+          chatJid: 'voice:+15551111111',
+          caller: {
+            phoneNumber: '+15551111111',
+            displayName: 'Caller',
+          },
+          metadata: {
+            callId: 'call-tool-1',
+            startedAt: new Date().toISOString(),
+            state: 'active',
+            direction: 'incoming',
+          },
+        },
+        {
+          onFinalizedAgentTurn: async (event) => {
+            turns.push(event.text);
+          },
+          onActionRequest: async (event) => {
+            actions.push({ action: event.action, args: event.args });
+          },
+        },
+      );
+      await runner.handleTranscriptFinal({
+        sessionId: 'sess-tool-1',
+        text: 'How many people live in Toronto?',
+        timestamp: new Date().toISOString(),
+      });
+
+      // Two LLM calls should have been issued.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // Tool was invoked with the right args.
+      expect(executedWith).toEqual([{ city: 'Toronto' }]);
+
+      // The second request must include the assistant(tool_calls) + tool msgs.
+      const second = JSON.parse(requestBodies[1]) as {
+        messages: Array<{
+          role: string;
+          content: string | null;
+          tool_call_id?: string;
+          name?: string;
+          tool_calls?: unknown[];
+        }>;
+      };
+      const toolResultMsg = second.messages.find((m) => m.role === 'tool');
+      expect(toolResultMsg).toBeDefined();
+      expect(toolResultMsg?.tool_call_id).toBe('call_abc123');
+      expect(toolResultMsg?.name).toBe('lookup_city');
+      expect(String(toolResultMsg?.content)).toContain('Toronto');
+      const assistantMsg = second.messages.find(
+        (m) => m.role === 'assistant' && m.tool_calls,
+      );
+      expect(assistantMsg).toBeDefined();
+
+      // Finalized turn includes the canned ack + the LLM's content answer.
+      expect(turns.length).toBe(1);
+      expect(turns[0]).toMatch(/moment|check|second/i);
+      expect(turns[0]).toContain('2.8 million');
+
+      // A tool_use action was surfaced for transcript visibility.
+      const toolActions = actions.filter((a) => a.action === 'tool_use');
+      expect(toolActions).toHaveLength(1);
+      expect(toolActions[0].args).toMatchObject({
+        tool: 'lookup_city',
+        arguments: { city: 'Toronto' },
+      });
+
+      // First request must include the tools parameter.
+      const first = JSON.parse(requestBodies[0]) as {
+        tools?: Array<{ function: { name: string } }>;
+      };
+      expect(first.tools).toBeDefined();
+      expect(first.tools?.some((t) => t.function.name === 'lookup_city')).toBe(
+        true,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('surfaces tool execution errors to the LLM (not the caller) so it can recover', async () => {
+    const thrownTool: VoiceTool = {
+      schema: {
+        name: 'flaky_tool',
+        description: 'A tool that throws.',
+        parameters: { type: 'object', properties: {} },
+      },
+      execute: async () => {
+        throw new Error('simulated upstream 500');
+      },
+    };
+
+    const requestBodies: string[] = [];
+    let callIndex = 0;
+    const fetchMock = vi.fn(async (_url: string, init?: { body?: string }) => {
+      requestBodies.push(init?.body || '');
+      callIndex += 1;
+      if (callIndex === 1) {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: 'assistant',
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: 'call_flaky',
+                      type: 'function',
+                      function: {
+                        name: 'flaky_tool',
+                        arguments: '{}',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: 'Sorry, I could not look that up just now.',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+
+    try {
+      const runner = new VoiceRunnerService(
+        {
+          voiceRunnerProvider: 'openai',
+          voiceRunnerBaseUrl: 'https://example.test/v1',
+          voiceRunnerApiKey: '',
+          voiceRunnerModel: 'gpt-4o-mini',
+          voiceSttProvider: 'mock',
+          voiceTtsProvider: 'mock',
+        },
+        { tools: createVoiceToolRegistry([thrownTool]) },
+      );
+      const turns: string[] = [];
+      await runner.startSession(
+        {
+          sessionId: 'sess-flaky',
+          chatJid: 'voice:+15551111112',
+          caller: { phoneNumber: '+15551111112', displayName: 'Caller' },
+          metadata: {
+            callId: 'call-flaky',
+            startedAt: new Date().toISOString(),
+            state: 'active',
+            direction: 'incoming',
+          },
+        },
+        {
+          onFinalizedAgentTurn: async (event) => {
+            turns.push(event.text);
+          },
+        },
+      );
+      await runner.handleTranscriptFinal({
+        sessionId: 'sess-flaky',
+        text: 'Check that thing',
+        timestamp: new Date().toISOString(),
+      });
+
+      // The second LLM call receives an error-shaped tool result, not a throw.
+      const second = JSON.parse(requestBodies[1]) as {
+        messages: Array<{
+          role: string;
+          content: string | null;
+          tool_call_id?: string;
+        }>;
+      };
+      const toolMsg = second.messages.find((m) => m.role === 'tool');
+      expect(toolMsg?.content).toMatch(/Error.*flaky_tool/i);
+
+      // Caller hears a graceful final response.
+      expect(turns[0]).toContain('Sorry');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('rejects unknown tool names as an error result instead of throwing', async () => {
+    // LLM calls a tool that isn't in the registry.
+    let callIndex = 0;
+    const requestBodies: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init?: { body?: string }) => {
+      requestBodies.push(init?.body || '');
+      callIndex += 1;
+      if (callIndex === 1) {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: 'call_ghost',
+                      type: 'function',
+                      function: {
+                        name: 'tool_that_does_not_exist',
+                        arguments: '{}',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'I cannot do that.' } }],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+
+    try {
+      const runner = new VoiceRunnerService({
+        voiceRunnerProvider: 'openai',
+        voiceRunnerBaseUrl: 'https://example.test/v1',
+        voiceRunnerApiKey: '',
+        voiceRunnerModel: 'gpt-4o-mini',
+        voiceSttProvider: 'mock',
+        voiceTtsProvider: 'mock',
+      });
+      await runner.startSession(
+        {
+          sessionId: 'sess-ghost',
+          chatJid: 'voice:+15551111113',
+          caller: { phoneNumber: '+15551111113', displayName: 'Caller' },
+          metadata: {
+            callId: 'call-ghost',
+            startedAt: new Date().toISOString(),
+            state: 'active',
+            direction: 'incoming',
+          },
+        },
+        {},
+      );
+      await runner.handleTranscriptFinal({
+        sessionId: 'sess-ghost',
+        text: 'Do the impossible thing',
+        timestamp: new Date().toISOString(),
+      });
+
+      const second = JSON.parse(requestBodies[1]) as {
+        messages: Array<{ role: string; content: string | null }>;
+      };
+      const toolMsg = second.messages.find((m) => m.role === 'tool');
+      expect(toolMsg?.content).toMatch(/Error.*tool_that_does_not_exist/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('no-tool turn behaves exactly as before (no extra LLM round-trip)', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: { content: 'Hello back, caller!' },
+                finish_reason: 'stop',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+
+    try {
+      const runner = new VoiceRunnerService({
+        voiceRunnerProvider: 'openai',
+        voiceRunnerBaseUrl: 'https://example.test/v1',
+        voiceRunnerApiKey: '',
+        voiceRunnerModel: 'gpt-4o-mini',
+        voiceSttProvider: 'mock',
+        voiceTtsProvider: 'mock',
+      });
+      const turns: string[] = [];
+      await runner.startSession(
+        {
+          sessionId: 'sess-plain',
+          chatJid: 'voice:+15551111114',
+          caller: { phoneNumber: '+15551111114', displayName: 'Caller' },
+          metadata: {
+            callId: 'call-plain',
+            startedAt: new Date().toISOString(),
+            state: 'active',
+            direction: 'incoming',
+          },
+        },
+        {
+          onFinalizedAgentTurn: async (event) => {
+            turns.push(event.text);
+          },
+        },
+      );
+      await runner.handleTranscriptFinal({
+        sessionId: 'sess-plain',
+        text: 'Hello',
+        timestamp: new Date().toISOString(),
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(turns).toEqual(['Hello back, caller!']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('caps consecutive tool calls at MAX_TOOL_ITERATIONS and strips tools on the final turn', async () => {
+    // Always emit tool_calls so the model WOULD loop forever without the cap.
+    const loopingTool: VoiceTool = {
+      schema: {
+        name: 'loop',
+        description: 'Loops forever.',
+        parameters: { type: 'object', properties: {} },
+      },
+      execute: async () => 'loop result',
+    };
+
+    const requestBodies: string[] = [];
+    let callIndex = 0;
+    const fetchMock = vi.fn(async (_url: string, init?: { body?: string }) => {
+      requestBodies.push(init?.body || '');
+      callIndex += 1;
+      // If the request carries no `tools`, we're on the forced-final turn:
+      // emit a content answer so the loop can terminate cleanly.
+      const body = init?.body ? JSON.parse(init.body) : {};
+      if (!body.tools) {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: { content: 'Final answer.' },
+                finish_reason: 'stop',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      // Otherwise keep looping tool calls.
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: null,
+                tool_calls: [
+                  {
+                    id: `call_${callIndex}`,
+                    type: 'function',
+                    function: { name: 'loop', arguments: '{}' },
+                  },
+                ],
+              },
+              finish_reason: 'tool_calls',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+
+    try {
+      const runner = new VoiceRunnerService(
+        {
+          voiceRunnerProvider: 'openai',
+          voiceRunnerBaseUrl: 'https://example.test/v1',
+          voiceRunnerApiKey: '',
+          voiceRunnerModel: 'gpt-4o-mini',
+          voiceSttProvider: 'mock',
+          voiceTtsProvider: 'mock',
+        },
+        { tools: createVoiceToolRegistry([loopingTool]) },
+      );
+      const turns: string[] = [];
+      await runner.startSession(
+        {
+          sessionId: 'sess-loop',
+          chatJid: 'voice:+15551111115',
+          caller: { phoneNumber: '+15551111115', displayName: 'Caller' },
+          metadata: {
+            callId: 'call-loop',
+            startedAt: new Date().toISOString(),
+            state: 'active',
+            direction: 'incoming',
+          },
+        },
+        {
+          onFinalizedAgentTurn: async (event) => {
+            turns.push(event.text);
+          },
+        },
+      );
+      await runner.handleTranscriptFinal({
+        sessionId: 'sess-loop',
+        text: 'loop forever',
+        timestamp: new Date().toISOString(),
+      });
+
+      // MAX_TOOL_ITERATIONS is 3, so we allow 3 tool-carrying turns + 1
+      // forced final turn without tools.
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      // Final call must have NO tools (we stripped them to force a spoken answer).
+      const lastBody = JSON.parse(requestBodies[requestBodies.length - 1]) as {
+        tools?: unknown;
+      };
+      expect(lastBody.tools).toBeUndefined();
+      // The accumulated turn text spans the canned "let me check" ack + the
+      // final answer produced on the tools-stripped turn. Match a substring.
+      expect(turns.length).toBeGreaterThan(0);
+      expect(turns[turns.length - 1]).toContain('Final answer.');
     } finally {
       vi.unstubAllGlobals();
     }

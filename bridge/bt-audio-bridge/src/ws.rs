@@ -76,9 +76,10 @@ pub async fn run_session(
     }
 
     info!(url = %cfg.url, "connecting to phone-voice WebSocket");
-    let (ws_stream, _resp) = connect_async(request)
+    let (ws_stream, resp) = connect_async(request)
         .await
         .context("WebSocket connect failed")?;
+    info!(status = %resp.status(), "WebSocket connected; sending start frame");
     let (mut sink, mut stream) = ws_stream.split();
 
     let start_msg = serde_json::json!({
@@ -88,6 +89,7 @@ pub async fn run_session(
     sink.send(Message::Text(start_msg.to_string().into()))
         .await
         .context("send start frame")?;
+    info!("WebSocket start frame sent; entering bidirectional pump");
 
     let mut ping_interval = tokio::time::interval(Duration::from_secs(15));
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

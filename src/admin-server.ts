@@ -1851,6 +1851,8 @@ export function startAdminServer(
         try {
           const body = JSON.parse((await readBody(req)) || '{}') as {
             displayName?: string;
+            reason?: string;
+            receivingPerson?: string;
           };
           const channel = getPhoneVoiceBrowserHarness(
             getIntegrationSettings('phone-voice'),
@@ -1858,7 +1860,10 @@ export function startAdminServer(
           sendJson(
             res,
             200,
-            await channel.startBrowserVoiceSession(body.displayName),
+            await channel.startBrowserVoiceSession(body.displayName, {
+              reason: body.reason,
+              receivingPerson: body.receivingPerson,
+            }),
           );
         } catch (err) {
           sendJson(res, 500, {

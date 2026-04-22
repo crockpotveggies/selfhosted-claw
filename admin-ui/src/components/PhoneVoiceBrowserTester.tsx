@@ -6,8 +6,11 @@ import {
   CCard,
   CCardBody,
   CCardHeader,
-  CFormInput,
+  CCol,
   CFormLabel,
+  CFormInput,
+  CFormTextarea,
+  CRow,
   CSpinner,
 } from '@coreui/react';
 
@@ -27,6 +30,10 @@ interface BrowserVoiceSessionEvent {
   timestamp: string;
   action?: string;
   summary?: string;
+  // `action` events produced by the voice runner carry a free-form args
+  // payload. For `tool_use` in particular we want to render the tool name +
+  // arguments inline in the transcript.
+  args?: Record<string, unknown>;
 }
 
 interface BrowserVoiceSessionStartResponse {
@@ -103,11 +110,29 @@ function appendTranscriptEvents(
         timestamp: event.timestamp,
       });
     } else if (event.type === 'action' && event.action) {
-      next.push({
-        role: 'system',
-        text: `Action: ${event.action}${event.text ? ` (${event.text})` : ''}`,
-        timestamp: event.timestamp,
-      });
+      // Special-case tool_use so the transcript shows
+      //   Tool: web_search({"query":"toronto weather"})
+      // instead of the generic
+      //   Action: tool_use (LLM invoked tool web_search)
+      if (event.action === 'tool_use' && event.args) {
+        const toolName =
+          typeof event.args.tool === 'string' ? event.args.tool : 'unknown';
+        const toolArgs =
+          event.args.arguments !== undefined
+            ? JSON.stringify(event.args.arguments)
+            : '';
+        next.push({
+          role: 'system',
+          text: `Tool: ${toolName}(${toolArgs})`,
+          timestamp: event.timestamp,
+        });
+      } else {
+        next.push({
+          role: 'system',
+          text: `Action: ${event.action}${event.text ? ` (${event.text})` : ''}`,
+          timestamp: event.timestamp,
+        });
+      }
     }
   }
   return next;
@@ -152,13 +177,18 @@ function TranscriptPanel({ transcript, emptyMessage }: TranscriptPanelProps) {
   );
 }
 
-interface BrowserModeProps {
-  transcript: TranscriptEntry[];
+interface BrowserControlsProps {
   setTranscript: React.Dispatch<React.SetStateAction<TranscriptEntry[]>>;
+  // Shared fields lifted to parent so both testers use the same inputs.
+  receivingPerson: string;
+  reason: string;
 }
 
-function BrowserMode({ transcript, setTranscript }: BrowserModeProps) {
-  const [displayName, setDisplayName] = useState('Browser Tester');
+function BrowserControls({
+  setTranscript,
+  receivingPerson,
+  reason,
+}: BrowserControlsProps) {
   const [sessionId, setSessionId] = useState('');
   const [starting, setStarting] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -324,6 +354,7 @@ function BrowserMode({ transcript, setTranscript }: BrowserModeProps) {
       closeSocket('abort');
       void stopStreamingAudio();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -468,7 +499,13 @@ function BrowserMode({ transcript, setTranscript }: BrowserModeProps) {
         '/api/admin/integrations/phone-voice/browser-session/start',
         {
           method: 'POST',
-          body: JSON.stringify({ displayName }),
+          body: JSON.stringify({
+            // Treat the receiving-person field as the caller's display name
+            // so the agent sees "Hi, I'm <person>" in its system prompt.
+            displayName: receivingPerson.trim() || 'Browser Tester',
+            reason: reason.trim() || undefined,
+            receivingPerson: receivingPerson.trim() || undefined,
+          }),
         },
       );
       sessionIdRef.current = started.sessionId;
@@ -510,9 +547,6 @@ function BrowserMode({ transcript, setTranscript }: BrowserModeProps) {
     }
   };
 
-  // Suppress unused warning — transcript is owned and rendered by the parent.
-  void transcript;
-
   const browserSupported =
     typeof navigator !== 'undefined' &&
     Boolean(navigator.mediaDevices?.getUserMedia) &&
@@ -523,30 +557,13 @@ function BrowserMode({ transcript, setTranscript }: BrowserModeProps) {
 
   return (
     <div>
-      <p className="text-body-secondary small mb-3">
-        Start a live browser call against the voice runner. Audio streams as
-        raw PCM16 over a WebSocket to the streaming STT server; end-of-turn is
-        detected from silence, and the same socket receives transcript and TTS
-        events in real time.
-      </p>
       {!browserSupported && (
         <CCallout color="warning" className="py-2 px-3 small">
           This browser does not expose the microphone APIs (AudioWorklet,
           WebSocket, MediaDevices) needed for live duplex voice testing.
         </CCallout>
       )}
-      <div className="mb-3">
-        <CFormLabel htmlFor="phone-voice-browser-display-name">
-          Caller Display Name
-        </CFormLabel>
-        <CFormInput
-          id="phone-voice-browser-display-name"
-          value={displayName}
-          onChange={(event) => setDisplayName(event.target.value)}
-          disabled={Boolean(sessionId) || starting}
-        />
-      </div>
-      <div className="d-flex flex-wrap gap-2 mb-3">
+      <div className="d-flex flex-wrap gap-2 mb-2">
         {!sessionId ? (
           <CButton
             color="primary"
@@ -569,15 +586,14 @@ function BrowserMode({ transcript, setTranscript }: BrowserModeProps) {
           <span className="small text-body-secondary d-inline-flex align-items-center gap-2">
             <CSpinner size="sm" />
             {preparing
-              ? 'Prewarming the browser voice runtime...'
-              : 'Bringing the live voice path online...'}
+              ? 'Prewarming runtime...'
+              : 'Bringing voice path online...'}
           </span>
         )}
       </div>
       {!sessionId && prepared && !preparing && (
         <CCallout color="success" className="py-2 px-3 small">
-          Browser voice runtime is hot. Starting the call should be
-          near-instant.
+          Browser voice runtime is hot. Starting the call should be near-instant.
         </CCallout>
       )}
       {sessionId && (
@@ -586,8 +602,8 @@ function BrowserMode({ transcript, setTranscript }: BrowserModeProps) {
           className="py-2 px-3 small"
         >
           {streaming
-            ? 'Live duplex call active. Speak naturally; PCM16 is streaming over the socket.'
-            : 'Session is up, but the microphone stream is not active yet.'}
+            ? 'Live duplex call active. Speak naturally.'
+            : 'Session up, microphone not yet streaming.'}
         </CCallout>
       )}
       {error && (
@@ -607,6 +623,9 @@ function BrowserMode({ transcript, setTranscript }: BrowserModeProps) {
 export function PhoneVoiceBrowserTester() {
   const [mode, setMode] = useState<TesterMode>('browser');
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
+  // Shared context fields — identical across Browser and Phone-Call testers.
+  const [reason, setReason] = useState('');
+  const [receivingPerson, setReceivingPerson] = useState('');
 
   const transcriptEmpty =
     mode === 'browser'
@@ -645,14 +664,56 @@ export function PhoneVoiceBrowserTester() {
           </CButtonGroup>
         </div>
 
-        {mode === 'browser' ? (
-          <BrowserMode
-            transcript={transcript}
-            setTranscript={setTranscript}
-          />
-        ) : (
-          <PhoneVoicePhoneCallTester />
-        )}
+        <CRow className="g-3">
+          <CCol xs={12} md={4}>
+            <CFormLabel htmlFor="phone-voice-shared-reason">
+              Reason for calling
+            </CFormLabel>
+            <CFormTextarea
+              id="phone-voice-shared-reason"
+              rows={6}
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="e.g. dog bath appointment; asking about the quote you sent"
+            />
+            <div className="form-text small">
+              Added to the agent's context so it can explain why it's calling.
+              Applies to both test modes.
+            </div>
+          </CCol>
+
+          <CCol xs={12} md={4}>
+            <CFormLabel htmlFor="phone-voice-shared-person">
+              Name of person
+            </CFormLabel>
+            <CFormInput
+              id="phone-voice-shared-person"
+              type="text"
+              value={receivingPerson}
+              onChange={(event) => setReceivingPerson(event.target.value)}
+              placeholder="Alice Smith"
+            />
+            <div className="form-text small">
+              Who the agent is calling (phone mode) or who's calling in (browser
+              mode).
+            </div>
+          </CCol>
+
+          <CCol xs={12} md={4}>
+            {mode === 'browser' ? (
+              <BrowserControls
+                setTranscript={setTranscript}
+                receivingPerson={receivingPerson}
+                reason={reason}
+              />
+            ) : (
+              <PhoneVoicePhoneCallTester
+                reason={reason}
+                receivingPerson={receivingPerson}
+              />
+            )}
+          </CCol>
+        </CRow>
       </CCardBody>
     </CCard>
   );

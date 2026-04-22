@@ -25,7 +25,12 @@ windows = { version = "0.58", features = [
   "Win32_System_RemoteDesktop",
   "Win32_System_Environment",
   "Win32_System_StationsAndDesktops",
+  # Needed for #[implement] on IMMNotificationClient (endpoint_watcher.rs).
+  "implement",
 ] }
+# The #[implement] macro expands to paths rooted at `::windows_core`, so it
+# needs to be a crate-level dep even though `windows::core` re-exports it.
+windows-core = "0.58"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"

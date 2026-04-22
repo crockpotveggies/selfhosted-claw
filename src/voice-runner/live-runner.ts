@@ -33,6 +33,11 @@ import {
   MANAGED_OPENARC_LLM_MODEL,
   usesManagedOpenArcLlm,
 } from './local-llm.js';
+import {
+  createVoiceToolRegistry,
+  describeAvailableToolsForPrompt,
+  type VoiceToolRegistry,
+} from './voice-tools.js';
 import type {
   VoiceActionRequest,
   VoiceAudioInputChunk,
@@ -194,10 +199,38 @@ interface BackendGenerateResult {
   }>;
 }
 
-interface LlmChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+// Message shape sent to OpenArc. `tool_calls` appears on assistant messages
+// that invoked tools; `tool_call_id` appears on tool-result messages.
+interface LlmToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
 }
+
+interface LlmChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: LlmToolCall[];
+  tool_call_id?: string;
+  name?: string;
+}
+
+/**
+ * Fallback text emitted when the LLM decides to invoke a tool before
+ * speaking anything. Keeps the caller aware that work is happening instead of
+ * being greeted with dead air while the tool runs.
+ */
+const TOOL_ACK_PHRASES: string[] = [
+  'Let me check that for you.',
+  'One moment while I look that up.',
+  'Give me a second.',
+];
+
+/** Hard ceiling on consecutive tool-call turns so a model loop can't hang a call. */
+const MAX_TOOL_ITERATIONS = 3;
 
 interface VoiceRunnerBackend {
   readonly name: string;
@@ -437,10 +470,28 @@ class HeuristicVoiceBackend implements VoiceRunnerBackend {
   }
 }
 
+// Result of reading one streamed LLM response from OpenArc.
+interface StreamTurnResult {
+  /** Visible text accumulated from `delta.content` (after `<think>` filtering). */
+  text: string;
+  /** Tool calls accumulated from `delta.tool_calls[]`, indexed by call index. */
+  toolCalls: LlmToolCall[];
+  /** `stop` for normal completion, `tool_calls` when the model invoked tools. */
+  finishReason: string;
+  /** Raw text prior to think-filtering, for diagnostics. */
+  rawText: string;
+}
+
 class OpenAiVoiceBackend implements VoiceRunnerBackend {
   readonly name = 'openai';
+  private readonly tools: VoiceToolRegistry;
 
-  constructor(private readonly settings: VoiceRunnerSettings) {}
+  constructor(
+    private readonly settings: VoiceRunnerSettings,
+    tools?: VoiceToolRegistry,
+  ) {
+    this.tools = tools ?? createVoiceToolRegistry();
+  }
 
   async warm(): Promise<void> {
     return;
@@ -449,16 +500,176 @@ class OpenAiVoiceBackend implements VoiceRunnerBackend {
   async generateTurn(
     input: BackendGenerateInput,
   ): Promise<BackendGenerateResult> {
+    // Build the initial conversation: system prompt (now tool-aware) + history
+    // + current user turn. The loop body may grow this with assistant+tool
+    // messages as the LLM fans out tool calls.
+    const messages: LlmChatMessage[] = buildLlmMessages(
+      input.session,
+      input.userText,
+      this.settings,
+      describeAvailableToolsForPrompt(this.tools),
+    );
+
+    const toolSchemas = this.tools.openAiSchemas();
+    // Aggregated visible text across all iterations — what eventually goes
+    // into session.history as the assistant turn.
+    let aggregateVisibleText = '';
+    // Whether we've already streamed any phrase to TTS this turn. Used to
+    // decide if we need a canned "let me check" before a tool runs.
+    let anyPhraseEmittedThisTurn = false;
+    // Collected action-request records for tool invocations (for transcript).
+    const toolActions: NonNullable<BackendGenerateResult['actions']> = [];
+
+    const emitPhraseWithTracking = async (chunk: string): Promise<void> => {
+      anyPhraseEmittedThisTurn = true;
+      await input.emitTextDelta(chunk);
+    };
+
+    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS + 1; iteration += 1) {
+      input.signal.throwIfAborted();
+      const isFinalAllowedIteration = iteration === MAX_TOOL_ITERATIONS;
+
+      const turn = await this.streamOnce({
+        messages,
+        signal: input.signal,
+        sessionId: input.session.start.sessionId,
+        tools: toolSchemas,
+        // On the final allowed iteration we strip tools so the model must
+        // produce a spoken answer instead of another tool call.
+        includeTools: !isFinalAllowedIteration,
+        emitPhrase: emitPhraseWithTracking,
+      });
+
+      if (turn.text.trim()) {
+        aggregateVisibleText = (aggregateVisibleText + ' ' + turn.text).trim();
+      }
+
+      // Branch: did the model decide to call tools or finish the turn?
+      if (
+        turn.finishReason === 'tool_calls' &&
+        turn.toolCalls.length > 0 &&
+        !isFinalAllowedIteration
+      ) {
+        // If the model is invoking a tool without first speaking anything,
+        // emit a canned acknowledgement so the caller doesn't hear dead air.
+        if (!anyPhraseEmittedThisTurn) {
+          const phrase =
+            TOOL_ACK_PHRASES[iteration % TOOL_ACK_PHRASES.length] ||
+            TOOL_ACK_PHRASES[0];
+          await emitPhraseWithTracking(phrase);
+          aggregateVisibleText = (aggregateVisibleText + ' ' + phrase).trim();
+        }
+
+        // Record the assistant turn's tool calls in the transcript so the
+        // admin UI shows "Action: web_search (query: ...)" lines.
+        for (const call of turn.toolCalls) {
+          const parsedArgs = safeParseJson(call.function.arguments);
+          toolActions.push({
+            action: 'tool_use',
+            args: {
+              tool: call.function.name,
+              arguments: parsedArgs,
+            },
+            reason: `LLM invoked tool ${call.function.name}`,
+          });
+        }
+
+        // Append the assistant-with-tool_calls message so the next turn has
+        // correct conversational state.
+        messages.push({
+          role: 'assistant',
+          content: null,
+          tool_calls: turn.toolCalls,
+        });
+
+        // Execute each tool sequentially. Parallel execution would cut
+        // latency but most tools are IO-bound and the voice turn is short;
+        // sequential keeps errors comprehensible.
+        for (const call of turn.toolCalls) {
+          const tool = this.tools.find(call.function.name);
+          let result: string;
+          if (!tool) {
+            result = `Error: tool "${call.function.name}" is not available.`;
+            log.warn(
+              {
+                sessionId: input.session.start.sessionId,
+                toolName: call.function.name,
+              },
+              'LLM invoked unknown tool',
+            );
+          } else {
+            const args = safeParseJson(call.function.arguments) ?? {};
+            try {
+              result = await tool.execute(
+                args as Record<string, unknown>,
+                input.signal,
+              );
+            } catch (err) {
+              if (isAbortError(err)) throw err;
+              const message = err instanceof Error ? err.message : String(err);
+              log.warn(
+                {
+                  err,
+                  sessionId: input.session.start.sessionId,
+                  toolName: call.function.name,
+                },
+                'Tool execution threw',
+              );
+              result = `Error: tool ${call.function.name} failed (${message}).`;
+            }
+          }
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            name: call.function.name,
+            content: result,
+          });
+        }
+        // Loop — next iteration invokes the LLM again with the tool result
+        // in context; the model responds with a spoken answer (or another
+        // tool call, capped by MAX_TOOL_ITERATIONS).
+        continue;
+      }
+
+      // Otherwise the LLM produced a final (content) turn. Done.
+      break;
+    }
+
+    const sideEffects = inferHeuristicResponse(input.userText);
+    return {
+      text: aggregateVisibleText.trim(),
+      actions: [...toolActions, ...(sideEffects.actions || [])],
+      handoffs: sideEffects.handoffs,
+    };
+  }
+
+  /**
+   * Issue one chat-completion request and consume the response. Content
+   * deltas are routed to TTS via `emitPhrase`. Tool-call deltas are
+   * accumulated; on stream end they're parsed and returned.
+   */
+  private async streamOnce(args: {
+    messages: LlmChatMessage[];
+    tools: Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }>;
+    includeTools: boolean;
+    signal: AbortSignal;
+    sessionId: string;
+    emitPhrase: (chunk: string) => Promise<void>;
+  }): Promise<StreamTurnResult> {
     const requestBody: Record<string, unknown> = {
       model: this.settings.llmModel,
       temperature: 0.2,
-      max_tokens: 160,
+      max_tokens: 320,
       stream: true,
-      messages: buildLlmMessages(input.session, input.userText, this.settings),
+      messages: args.messages,
     };
+    if (args.includeTools && args.tools.length > 0) {
+      requestBody.tools = args.tools;
+    }
     if (shouldDisableThinking(this.settings.llmModel)) {
       requestBody.chat_template_kwargs = { enable_thinking: false };
     }
+
     const response = await fetch(
       `${this.settings.llmBaseUrl.replace(/\/$/, '')}/chat/completions`,
       {
@@ -470,105 +681,224 @@ class OpenAiVoiceBackend implements VoiceRunnerBackend {
             : {}),
         },
         body: JSON.stringify(requestBody),
-        signal: input.signal,
+        signal: args.signal,
       },
     );
-
     if (!response.ok) {
       throw new Error(`voice runner backend failed (${response.status})`);
     }
 
     const contentType = response.headers.get('content-type') || '';
     if (response.body && contentType.includes('text/event-stream')) {
-      let text = '';
-      let rawText = '';
-      let pendingPhrase = '';
-      let firstEmitted = false;
-      const tail: string[] = [];
-      const thinkFilter = shouldDisableThinking(this.settings.llmModel)
-        ? createThinkFilter()
-        : null;
-      const filterDelta = (d: string): string =>
-        thinkFilter ? thinkFilter.push(d) : d;
-      const flushFilter = (): string =>
-        thinkFilter ? thinkFilter.flush() : '';
-      const enqueue = async (phrase: string): Promise<void> => {
-        if (!firstEmitted) {
-          firstEmitted = true;
-          await input.emitTextDelta(phrase);
-        } else {
-          tail.push(phrase);
-        }
-      };
-      for await (const data of readSseData(response.body)) {
-        input.signal.throwIfAborted();
-        if (!data || data === '[DONE]') continue;
-        const event = JSON.parse(data) as {
-          choices?: Array<{ delta?: { content?: string } }>;
-        };
-        const rawDelta = event.choices?.[0]?.delta?.content || '';
-        if (!rawDelta) continue;
-        rawText += rawDelta;
-        const delta = filterDelta(rawDelta);
-        if (!delta) continue;
-        text += delta;
-        pendingPhrase += delta;
-        const split = splitReadyVoicePhrases(pendingPhrase);
-        pendingPhrase = split.remaining;
-        for (const phrase of split.phrases) {
-          input.signal.throwIfAborted();
-          await enqueue(phrase);
-        }
-      }
-      const tailFlush = flushFilter();
-      if (tailFlush) {
-        text += tailFlush;
-        pendingPhrase += tailFlush;
-      }
-      const finalSplit = splitReadyVoicePhrases(pendingPhrase, true);
-      for (const phrase of finalSplit.phrases) {
-        input.signal.throwIfAborted();
-        await enqueue(phrase);
-      }
-      if (tail.length > 0) {
-        input.signal.throwIfAborted();
-        await input.emitTextDelta(tail.join(' '));
-      }
-      log.info(
-        {
-          sessionId: input.session.start.sessionId,
-          rawLen: rawText.length,
-          emittedLen: text.length,
-          rawTail: rawText.slice(-80),
-        },
-        'LLM stream ended',
-      );
-      const sideEffects = inferHeuristicResponse(input.userText);
-      return {
-        text: text.trim(),
-        actions: sideEffects.actions,
-        handoffs: sideEffects.handoffs,
-      };
+      return this.consumeStreamedSse({
+        body: response.body,
+        signal: args.signal,
+        sessionId: args.sessionId,
+        emitPhrase: args.emitPhrase,
+      });
     }
 
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+    // Non-streaming fallback: OpenArc typically returns SSE, but some test
+    // doubles and alt providers return JSON. Handle both for robustness.
+    return this.consumeJsonResponse(response, args);
+  }
+
+  private async consumeStreamedSse(args: {
+    body: ReadableStream<Uint8Array>;
+    signal: AbortSignal;
+    sessionId: string;
+    emitPhrase: (chunk: string) => Promise<void>;
+  }): Promise<StreamTurnResult> {
+    let text = '';
+    let rawText = '';
+    let pendingPhrase = '';
+    const tail: string[] = [];
+    const thinkFilter = shouldDisableThinking(this.settings.llmModel)
+      ? createThinkFilter()
+      : null;
+    const filterDelta = (d: string): string =>
+      thinkFilter ? thinkFilter.push(d) : d;
+    const flushFilter = (): string =>
+      thinkFilter ? thinkFilter.flush() : '';
+
+    // Per-index accumulator for `delta.tool_calls[]`. OpenArc emits them in
+    // chunks — first the id + name, then incremental argument deltas — so we
+    // must assemble the final JSON arguments string across deltas.
+    const toolAcc = new Map<
+      number,
+      { id: string; name: string; arguments: string }
+    >();
+    let finishReason = 'stop';
+    let phraseAlreadyEmitted = false;
+
+    const enqueue = async (phrase: string): Promise<void> => {
+      if (!phraseAlreadyEmitted) {
+        phraseAlreadyEmitted = true;
+        await args.emitPhrase(phrase);
+      } else {
+        tail.push(phrase);
+      }
     };
-    const rawText = payload.choices?.[0]?.message?.content?.trim() || '';
+
+    for await (const data of readSseData(args.body)) {
+      args.signal.throwIfAborted();
+      if (!data || data === '[DONE]') continue;
+      const event = JSON.parse(data) as {
+        choices?: Array<{
+          delta?: {
+            content?: string;
+            tool_calls?: Array<{
+              index?: number;
+              id?: string;
+              type?: string;
+              function?: { name?: string; arguments?: string };
+            }>;
+          };
+          finish_reason?: string | null;
+        }>;
+      };
+      const choice = event.choices?.[0];
+      if (!choice) continue;
+
+      const rawDelta = choice.delta?.content || '';
+      if (rawDelta) {
+        rawText += rawDelta;
+        const delta = filterDelta(rawDelta);
+        if (delta) {
+          text += delta;
+          pendingPhrase += delta;
+          const split = splitReadyVoicePhrases(pendingPhrase);
+          pendingPhrase = split.remaining;
+          for (const phrase of split.phrases) {
+            args.signal.throwIfAborted();
+            await enqueue(phrase);
+          }
+        }
+      }
+
+      // Merge tool_call deltas into the accumulator. First chunk carries
+      // id + name; subsequent chunks carry arguments piecewise.
+      for (const tc of choice.delta?.tool_calls || []) {
+        const idx = typeof tc.index === 'number' ? tc.index : 0;
+        const existing = toolAcc.get(idx) ?? { id: '', name: '', arguments: '' };
+        if (tc.id) existing.id = tc.id;
+        if (tc.function?.name) existing.name = tc.function.name;
+        if (tc.function?.arguments) {
+          existing.arguments += tc.function.arguments;
+        }
+        toolAcc.set(idx, existing);
+      }
+
+      if (choice.finish_reason) {
+        finishReason = choice.finish_reason;
+      }
+    }
+
+    // Drain the think filter and phrase buffer.
+    const tailFlush = flushFilter();
+    if (tailFlush) {
+      text += tailFlush;
+      pendingPhrase += tailFlush;
+    }
+    const finalSplit = splitReadyVoicePhrases(pendingPhrase, true);
+    for (const phrase of finalSplit.phrases) {
+      args.signal.throwIfAborted();
+      await enqueue(phrase);
+    }
+    if (tail.length > 0) {
+      args.signal.throwIfAborted();
+      await args.emitPhrase(tail.join(' '));
+    }
+
+    const toolCalls: LlmToolCall[] = [...toolAcc.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, acc]) => ({
+        id: acc.id || `call_${Math.random().toString(36).slice(2, 14)}`,
+        type: 'function' as const,
+        function: {
+          name: acc.name,
+          arguments: acc.arguments || '{}',
+        },
+      }))
+      .filter((c) => c.function.name);
+
+    log.info(
+      {
+        sessionId: args.sessionId,
+        rawLen: rawText.length,
+        emittedLen: text.length,
+        rawTail: rawText.slice(-80),
+        finishReason,
+        toolCallCount: toolCalls.length,
+      },
+      'LLM stream ended',
+    );
+
+    return { text: text.trim(), toolCalls, finishReason, rawText };
+  }
+
+  private async consumeJsonResponse(
+    response: Response,
+    args: {
+      signal: AbortSignal;
+      emitPhrase: (chunk: string) => Promise<void>;
+    },
+  ): Promise<StreamTurnResult> {
+    const payload = (await response.json()) as {
+      choices?: Array<{
+        message?: {
+          content?: string | null;
+          tool_calls?: Array<{
+            id?: string;
+            type?: string;
+            function?: { name?: string; arguments?: string };
+          }>;
+        };
+        finish_reason?: string;
+      }>;
+    };
+    const choice = payload.choices?.[0];
+    const rawText = (choice?.message?.content || '').trim();
     const text = shouldDisableThinking(this.settings.llmModel)
       ? rawText.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim()
       : rawText;
     if (text) {
-      input.signal.throwIfAborted();
-      await input.emitTextDelta(text);
+      args.signal.throwIfAborted();
+      await args.emitPhrase(text);
     }
-    const sideEffects = inferHeuristicResponse(input.userText);
+    const toolCalls: LlmToolCall[] = (choice?.message?.tool_calls || []).map(
+      (tc, idx) => ({
+        id: tc.id || `call_${idx}`,
+        type: 'function' as const,
+        function: {
+          name: tc.function?.name || '',
+          arguments: tc.function?.arguments || '{}',
+        },
+      }),
+    );
     return {
       text,
-      actions: sideEffects.actions,
-      handoffs: sideEffects.handoffs,
+      toolCalls,
+      finishReason: choice?.finish_reason || 'stop',
+      rawText,
     };
   }
+}
+
+function safeParseJson(text: string | undefined | null): unknown {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function isAbortError(err: unknown): boolean {
+  const e = err as { name?: string; message?: string } | null;
+  const name = e?.name || '';
+  const message = e?.message || '';
+  return name === 'AbortError' || /abort/i.test(message);
 }
 
 function shouldDisableThinking(model: string): boolean {
@@ -726,12 +1056,22 @@ function buildLlmMessages(
   session: LiveSession,
   userText: string,
   settings: VoiceRunnerSettings,
+  toolsBlock?: string,
 ): LlmChatMessage[] {
   // Order: persona > caller identity > call history > state > current input.
+  // If tools are available we rewrite `llmInstructions` to strip the stale
+  // "you cannot browse the web / look things up in real time" clause — it
+  // actively discourages the LLM from using the tools we just gave it.
+  const rewrittenInstructions = toolsBlock
+    ? stripNoLookupClause(settings.llmInstructions)
+    : settings.llmInstructions;
   const systemParts: string[] = [
     settings.llmSystemPrompt,
-    settings.llmInstructions,
+    rewrittenInstructions,
   ];
+  if (toolsBlock?.trim()) {
+    systemParts.push(toolsBlock.trim());
+  }
   if (shouldDisableThinking(settings.llmModel)) {
     // Qwen3's documented soft switch to disable reasoning.
     systemParts.push('/no_think');
@@ -787,6 +1127,32 @@ function buildLlmMessages(
   ];
 }
 
+// Removes the stale "you cannot browse the web, read files, run code, or look
+// things up in real time" clause from the default instructions when tools ARE
+// available. Matching is resilient to minor rewording via a two-step approach:
+//   1. Strip the exact default clause if present (fast-path).
+//   2. Fall back to regex that catches common rephrasings.
+// If nothing matches, the string is returned unchanged.
+function stripNoLookupClause(instructions: string): string {
+  if (!instructions) return instructions;
+  // Exact clause from DEFAULT_LLM_INSTRUCTIONS at top of this file.
+  const exact =
+    'What you cannot do mid-call: browse the web, read files, run code, or look things up in real time.';
+  if (instructions.includes(exact)) {
+    return instructions.replace(exact, '').replace(/\s{2,}/g, ' ').trim();
+  }
+  // Rephrasing fallback.
+  const patterns: RegExp[] = [
+    /What you cannot do[^.]*\.\s*/gi,
+    /You can(?:not|'t)\s+(?:browse|search|look up|use the (?:web|internet))[^.]*\.\s*/gi,
+  ];
+  let result = instructions;
+  for (const re of patterns) {
+    result = result.replace(re, '');
+  }
+  return result.replace(/\s{2,}/g, ' ').trim();
+}
+
 function buildCallerProfile(
   caller: VoiceCaller,
   metadata: VoiceCallMetadata,
@@ -817,13 +1183,16 @@ function buildCallerProfile(
   return lines.join('\n');
 }
 
-function buildBackend(settings: VoiceRunnerSettings): VoiceRunnerBackend {
+function buildBackend(
+  settings: VoiceRunnerSettings,
+  tools?: VoiceToolRegistry,
+): VoiceRunnerBackend {
   const wantsOpenAi =
     settings.llmProvider === 'openai' &&
     settings.llmBaseUrl.trim() &&
     settings.llmModel.trim();
   return wantsOpenAi
-    ? new OpenAiVoiceBackend(settings)
+    ? new OpenAiVoiceBackend(settings, tools)
     : new HeuristicVoiceBackend();
 }
 
@@ -975,6 +1344,15 @@ const STREAM_FINAL_TIMEOUT_MS = 2000;
 const BARGE_IN_MIN_WORDS = 4;
 const BARGE_IN_WINDOW_MS = 1500;
 
+export interface VoiceRunnerServiceOptions {
+  /**
+   * Optional custom tool registry for the voice LLM. When omitted, the
+   * default registry (web_search, get_current_time) is used. Tests inject a
+   * stub registry here to avoid real DuckDuckGo fetches.
+   */
+  tools?: VoiceToolRegistry;
+}
+
 export class VoiceRunnerService {
   private settings: VoiceRunnerSettings;
   private backend: VoiceRunnerBackend;
@@ -984,10 +1362,15 @@ export class VoiceRunnerService {
   private warmedAt?: string;
   private warmingPromise: Promise<void> | null = null;
   private readonly sessions = new Map<string, LiveSession>();
+  private readonly toolsOverride?: VoiceToolRegistry;
 
-  constructor(initialSettings?: Record<string, unknown>) {
+  constructor(
+    initialSettings?: Record<string, unknown>,
+    options?: VoiceRunnerServiceOptions,
+  ) {
     this.settings = settingsFromRecord(initialSettings);
-    this.backend = buildBackend(this.settings);
+    this.toolsOverride = options?.tools;
+    this.backend = buildBackend(this.settings, this.toolsOverride);
     this.sttProvider = buildVoiceSttProvider(this.settings);
     this.streamingSttProvider = buildVoiceStreamingSttProvider(this.settings);
     this.ttsProvider = buildVoiceTtsProvider(this.settings);
@@ -999,7 +1382,7 @@ export class VoiceRunnerService {
       JSON.stringify(next) !== JSON.stringify(this.settings);
     this.settings = next;
     if (providersChanged) {
-      this.backend = buildBackend(next);
+      this.backend = buildBackend(next, this.toolsOverride);
       this.sttProvider = buildVoiceSttProvider(next);
       this.streamingSttProvider = buildVoiceStreamingSttProvider(next);
       this.ttsProvider = buildVoiceTtsProvider(next);
