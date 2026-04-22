@@ -105,6 +105,56 @@ Subcommands:
   enumerate              Phase-1 diagnostic; prints active endpoints and exits
 ```
 
+## Running as a service
+
+Audio endpoints on Windows are session-scoped. If you log in to this PC
+over Remote Desktop (session 2+) but the Bluetooth audio endpoints are
+attached to the console session (session 3, say), a plain bridge started in
+your RDP session won't be able to open them. The service mode solves this
+by running a LocalSystem service in session 0 that cross-session-spawns the
+bridge worker into whichever session currently owns the console.
+
+Install (from an **Administrator** PowerShell):
+
+```powershell
+cd bridge\bt-audio-bridge
+cargo build --release
+.\target\release\bt-audio-bridge.exe service install `
+  --admin-token $env:ADMIN_UI_TOKEN `
+  --backend-url http://localhost:3030
+```
+
+This registers a service named `bt-audio-bridge` (DisplayName *"Self-Hosted
+Claw — BT Audio Bridge"*), Automatic start, LocalSystem. Start it:
+
+```powershell
+Start-Service bt-audio-bridge
+```
+
+The service then:
+
+1. Polls `WTSGetActiveConsoleSessionId` every ~5 s (or instantly on a
+   session-change event from the SCM).
+2. When a user is logged in at the console, obtains a primary token via
+   `WTSQueryUserToken` + `DuplicateTokenEx` and launches this same
+   `bt-audio-bridge.exe` via `CreateProcessAsUserW` in that session, on
+   `winsta0\default`, with a fresh environment block.
+3. Monitors the worker. On unexpected exit it respawns with a 3-30 s
+   exponential backoff; on a console-session change it kills the worker and
+   respawns it in the new session.
+
+Logs land at `%ProgramData%\bt-audio-bridge\service.log` (rotated at 5 MB,
+last 2 archived files retained).
+
+Uninstall:
+
+```powershell
+.\target\release\bt-audio-bridge.exe service uninstall
+```
+
+The `service run` subcommand is only for the SCM to invoke; don't run it
+yourself.
+
 ## Troubleshooting
 
 - **HFP endpoint doesn't appear in Phase 1 output**. Open Control Panel →

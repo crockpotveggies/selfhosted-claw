@@ -11,6 +11,7 @@
 mod capture;
 mod endpoints;
 mod render;
+mod service;
 mod session;
 mod ws;
 
@@ -76,6 +77,57 @@ struct Cli {
 enum Command {
     /// Print active WASAPI endpoints and exit (Phase 1 diagnostic).
     Enumerate,
+    /// Windows service operations: install, uninstall, or (SCM-invoked) run.
+    #[command(subcommand)]
+    Service(ServiceCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum ServiceCmd {
+    /// Register the Windows service (runs as LocalSystem, cross-session
+    /// spawns the bridge into the console user's session). Requires admin.
+    Install(ServiceBridgeArgs),
+    /// Stop + delete the Windows service. Requires admin.
+    Uninstall,
+    /// Invoked by the Service Control Manager. Not for interactive use.
+    Run(ServiceBridgeArgs),
+}
+
+#[derive(clap::Args, Debug, Default)]
+struct ServiceBridgeArgs {
+    /// Admin token persisted into the service binpath (install) or forwarded
+    /// to the cross-session worker (run).
+    #[arg(long)]
+    admin_token: Option<String>,
+    #[arg(long)]
+    backend_url: Option<String>,
+    #[arg(long)]
+    backend_ws: Option<String>,
+    #[arg(long)]
+    capture_name: Option<String>,
+    #[arg(long)]
+    render_name: Option<String>,
+    #[arg(long)]
+    session_id: Option<String>,
+    #[arg(long)]
+    poll_secs: Option<u64>,
+    #[arg(long)]
+    sample_rate_hz: Option<u32>,
+}
+
+impl From<ServiceBridgeArgs> for service::BridgeArgs {
+    fn from(a: ServiceBridgeArgs) -> Self {
+        Self {
+            admin_token: a.admin_token,
+            backend_url: a.backend_url,
+            backend_ws: a.backend_ws,
+            capture_name: a.capture_name,
+            render_name: a.render_name,
+            session_id: a.session_id,
+            poll_secs: a.poll_secs,
+            sample_rate_hz: a.sample_rate_hz,
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -95,6 +147,17 @@ fn main() -> Result<()> {
     let result = match cli.command {
         Some(Command::Enumerate) => {
             endpoints::enumerate_and_print().context("enumerate endpoints")
+        }
+        Some(Command::Service(ServiceCmd::Install(args))) => {
+            service::install(&args.into())
+        }
+        Some(Command::Service(ServiceCmd::Uninstall)) => service::uninstall(),
+        Some(Command::Service(ServiceCmd::Run(_))) => {
+            // Hand control to the SCM. The service loop parses its pass-through
+            // args from the argv delivered by the service dispatcher, so we
+            // deliberately ignore the `ServiceBridgeArgs` parsed by clap here —
+            // clap has already consumed those tokens to satisfy the subcommand.
+            service::dispatch()
         }
         None => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
