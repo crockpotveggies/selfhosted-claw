@@ -131,12 +131,16 @@ impl From<ServiceBridgeArgs> for service::BridgeArgs {
 }
 
 fn main() -> Result<()> {
-    // tracing must be initialised before any spawned threads log.
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
-
+    // Parse CLI before tracing init so the service path can install its own
+    // file-based subscriber. Previously we unconditionally initialised stdout
+    // tracing, which silently blocked init_service_logging's try_init.
     let cli = Cli::parse();
+    let is_service_run = matches!(cli.command, Some(Command::Service(ServiceCmd::Run(_))));
+    if !is_service_run {
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
 
     // Main-thread COM (apartment-threaded) for enumeration; streaming threads
     // initialise their own MTA apartments independently.

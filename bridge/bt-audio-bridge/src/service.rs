@@ -25,7 +25,10 @@ use windows::Win32::Security::{
     DuplicateTokenEx, SecurityIdentification, TokenPrimary, TOKEN_ACCESS_MASK,
 };
 use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
-use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
+use windows::Win32::System::RemoteDesktop::{
+    WTSEnumerateSessionsW, WTSFreeMemory, WTSGetActiveConsoleSessionId, WTSQueryUserToken,
+    WTSActive, WTSConnected, WTS_CURRENT_SERVER_HANDLE, WTS_SESSION_INFOW,
+};
 use windows::Win32::System::Threading::{
     CreateProcessAsUserW, TerminateProcess, WaitForSingleObject, CREATE_NO_WINDOW,
     CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
@@ -284,7 +287,11 @@ fn supervisor_loop(bridge: BridgeArgs, signals: &ServiceControlSignals) -> Resul
             break;
         }
 
-        let active = unsafe { WTSGetActiveConsoleSessionId() };
+        // Prefer the physical console session if it has a user; otherwise
+        // fall back to enumerating sessions and picking any active/connected
+        // user session. This handles the common case of RDP-only usage where
+        // the console is at the logon screen (no user token available).
+        let active = find_user_session();
 
         // If there's a running worker for the wrong session, or the console
         // vanished, kill it so we can respawn cleanly for the new session.
@@ -577,5 +584,68 @@ pub fn dispatch() -> Result<()> {
     windows_service::service_dispatcher::start(SERVICE_NAME, ffi_service_main)
         .context("service_dispatcher::start")?;
     Ok(())
+}
+
+/// Returns a session id with a real user token we can duplicate. Tries the
+/// physical console first; falls back to enumerating all sessions and picking
+/// the first Active user session, then any Connected user session.
+/// Returns u32::MAX when no suitable session exists (e.g. the box is at the
+/// login screen with nobody logged in anywhere).
+fn find_user_session() -> u32 {
+    let console = unsafe { WTSGetActiveConsoleSessionId() };
+    if console != u32::MAX && session_has_user_token(console) {
+        return console;
+    }
+    // Enumerate and pick a better candidate.
+    let mut info_ptr: *mut WTS_SESSION_INFOW = std::ptr::null_mut();
+    let mut count: u32 = 0;
+    let ok = unsafe {
+        WTSEnumerateSessionsW(
+            WTS_CURRENT_SERVER_HANDLE,
+            0,
+            1,
+            &mut info_ptr,
+            &mut count,
+        )
+    };
+    if ok.is_err() || info_ptr.is_null() {
+        return u32::MAX;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(info_ptr, count as usize) };
+    let mut active_match: Option<u32> = None;
+    let mut connected_match: Option<u32> = None;
+    for info in slice {
+        // Session 0 is services; never spawn workers there.
+        if info.SessionId == 0 {
+            continue;
+        }
+        if !session_has_user_token(info.SessionId) {
+            continue;
+        }
+        if info.State == WTSActive && active_match.is_none() {
+            active_match = Some(info.SessionId);
+        } else if info.State == WTSConnected && connected_match.is_none() {
+            connected_match = Some(info.SessionId);
+        }
+    }
+    unsafe {
+        WTSFreeMemory(info_ptr as *mut _);
+    }
+    active_match.or(connected_match).unwrap_or(u32::MAX)
+}
+
+/// Returns true if WTSQueryUserToken succeeds for the given session — i.e.
+/// there's a real user logged in there (not a logon-UI / services session).
+fn session_has_user_token(session_id: u32) -> bool {
+    let mut token = windows::Win32::Foundation::HANDLE::default();
+    let ok = unsafe { WTSQueryUserToken(session_id, &mut token) };
+    if ok.is_ok() && !token.is_invalid() {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(token);
+        }
+        true
+    } else {
+        false
+    }
 }
 
